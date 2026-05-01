@@ -20,6 +20,7 @@ CONF_SENSORS = "sensors"
 CONF_WEATHERS = "weathers"
 CONF_LIGHTS = "lights"
 CONF_SWITCHES = "switches"
+CONF_MEDIA_PLAYERS = "media_players"
 
 DEFAULT_BASE = "tab5"
 DEFAULT_PREFIX = "ha/statestream"

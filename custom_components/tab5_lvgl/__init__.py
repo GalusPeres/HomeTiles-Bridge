@@ -57,6 +57,7 @@ from .const import (
   CONF_HA_PREFIX,
   CONF_LIGHTS,
   CONF_MANUFACTURER,
+  CONF_MEDIA_PLAYERS,
   CONF_MODEL,
   CONF_SCENE_MAP,
   CONF_SENSORS,
@@ -96,6 +97,41 @@ LIGHT_SERVICE_FIELDS = {
   "flash",
   "white",
   "kelvin",
+}
+
+MEDIA_COMMAND_ALIASES = {
+  "on": "turn_on",
+  "turn_on": "turn_on",
+  "off": "turn_off",
+  "turn_off": "turn_off",
+  "play": "media_play",
+  "media_play": "media_play",
+  "pause": "media_pause",
+  "media_pause": "media_pause",
+  "play_pause": "media_play_pause",
+  "playpause": "media_play_pause",
+  "media_play_pause": "media_play_pause",
+  "toggle": "media_play_pause",
+  "stop": "media_stop",
+  "media_stop": "media_stop",
+  "next": "media_next_track",
+  "next_track": "media_next_track",
+  "media_next_track": "media_next_track",
+  "previous": "media_previous_track",
+  "previous_track": "media_previous_track",
+  "prev": "media_previous_track",
+  "media_previous_track": "media_previous_track",
+  "volume_up": "volume_up",
+  "volume_down": "volume_down",
+  "volume_set": "volume_set",
+  "set_volume": "volume_set",
+  "mute": "volume_mute",
+  "volume_mute": "volume_mute",
+  "select_source": "select_source",
+  "source": "select_source",
+  "seek": "media_seek",
+  "media_seek": "media_seek",
+  "play_media": "play_media",
 }
 
 SERVICE_SCHEMA = vol.Schema({vol.Optional("entry_id"): cv.string})
@@ -264,6 +300,7 @@ class Tab5Bridge:
     self.sensors: List[str] = []
     self.lights: List[str] = _unique_entities(list(data.get(CONF_LIGHTS, [])))
     self.switches: List[str] = _unique_entities(list(data.get(CONF_SWITCHES, [])))
+    self.media_players: List[str] = _unique_entities(list(data.get(CONF_MEDIA_PLAYERS, [])))
     self.tracked_entities: List[str] = []
     self.scene_map: Dict[str, str] = {
       (alias or "").lower(): entity
@@ -291,6 +328,7 @@ class Tab5Bridge:
     self._unsub_scene = None
     self._unsub_light = None
     self._unsub_switch = None
+    self._unsub_media = None
     self._unsub_request = None
     self._unsub_history = None
     self._unsub_weather = None
@@ -322,6 +360,7 @@ class Tab5Bridge:
     all_sensors: List[str] = []
     all_lights: List[str] = []
     all_switches: List[str] = []
+    all_media_players: List[str] = []
     all_weathers: List[str] = []
     all_scene_map: Dict[str, str] = {}
     for entry in self.hass.config_entries.async_entries(DOMAIN):
@@ -335,6 +374,7 @@ class Tab5Bridge:
       all_sensors.extend(sensors)
       all_lights.extend(list(data.get(CONF_LIGHTS, [])))
       all_switches.extend(list(data.get(CONF_SWITCHES, [])))
+      all_media_players.extend(list(data.get(CONF_MEDIA_PLAYERS, [])))
       all_weathers.extend(weathers)
       for alias, entity in (data.get(CONF_SCENE_MAP, {}) or {}).items():
         if alias and entity:
@@ -343,6 +383,7 @@ class Tab5Bridge:
       "sensors": _unique_entities(all_sensors),
       "lights": _unique_entities(all_lights),
       "switches": _unique_entities(all_switches),
+      "media_players": _unique_entities(all_media_players),
       "weathers": _unique_entities(all_weathers),
       "scene_map": all_scene_map,
     }
@@ -355,9 +396,12 @@ class Tab5Bridge:
     self.sensors = _unique_entities(merged["sensors"] + internal_sensors)
     self.lights = merged["lights"]
     self.switches = merged["switches"]
+    self.media_players = merged["media_players"]
     self.weathers = merged["weathers"]
     self.scene_map.update(merged["scene_map"])
-    self.tracked_entities = _unique_entities(self.sensors + self.lights + self.switches + self.weathers)
+    self.tracked_entities = _unique_entities(
+      self.sensors + self.lights + self.switches + self.media_players + self.weathers
+    )
 
   async def async_setup(self) -> None:
     """Subscribe to MQTT topics and start observers."""
@@ -385,6 +429,12 @@ class Tab5Bridge:
       self._async_handle_switch_command,
     )
 
+    self._unsub_media = await mqtt.async_subscribe(
+      self.hass,
+      f"{self.base_topic}/cmnd/media",
+      self._async_handle_media_command,
+    )
+
     if self.tracked_entities:
       self._unsub_state = async_track_state_change_event(
         self.hass,
@@ -395,13 +445,14 @@ class Tab5Bridge:
     self._prime_icon_cache()
 
     _LOGGER.info(
-      "Tab5 MQTT bridge ready (device=%s, base=%s, ha_prefix=%s, sensors=%d, lights=%d, switches=%d)",
+      "Tab5 MQTT bridge ready (device=%s, base=%s, ha_prefix=%s, sensors=%d, lights=%d, switches=%d, media=%d)",
       self.device_id or "n/a",
       self.base_topic,
       self.ha_prefix,
       len(self.sensors),
       len(self.lights),
       len(self.switches),
+      len(self.media_players),
     )
     if self.config_topic:
       request_topic = f"{CONFIG_TOPIC_ROOT}/{self.device_id}/bridge/request"
@@ -451,6 +502,9 @@ class Tab5Bridge:
     if self._unsub_switch:
       self._unsub_switch()
       self._unsub_switch = None
+    if self._unsub_media:
+      self._unsub_media()
+      self._unsub_media = None
     if hasattr(self, "_unsub_request") and self._unsub_request:
       self._unsub_request()
       self._unsub_request = None
@@ -488,6 +542,8 @@ class Tab5Bridge:
         "light_meta": self._build_entity_meta(self.lights),
         "switches": self.switches,
         "switch_meta": self._build_entity_meta(self.switches),
+        CONF_MEDIA_PLAYERS: self.media_players,
+        "media_player_meta": self._build_entity_meta(self.media_players),
         "scene_meta": self._build_scene_meta(),
         "scene_map": self.scene_map,
     }
@@ -1319,6 +1375,101 @@ class Tab5Bridge:
       blocking=False,
     )
 
+  async def _async_handle_media_command(self, msg: ReceiveMessage) -> None:
+    """Execute media player commands originating from the Tab5."""
+    payload = msg.payload.strip()
+    if not payload:
+      return
+
+    entity_id = None
+    command = None
+    parsed_payload: Dict[str, Any] = {}
+
+    parsed = _try_parse_json(payload)
+    if isinstance(parsed, dict):
+      parsed_payload = parsed
+      entity_id = parsed.get("entity_id") or parsed.get("entity")
+      if entity_id is not None:
+        entity_id = str(entity_id).strip()
+      command = _normalise_media_command(
+        parsed.get("command") or parsed.get("state") or parsed.get("service")
+      )
+    elif isinstance(parsed, str):
+      payload = parsed.strip()
+
+    if command is None:
+      parsed_entity, parsed_command = _parse_simple_command(payload)
+      if entity_id is None:
+        entity_id = parsed_entity
+      if command is None:
+        command = _normalise_media_command(parsed_command)
+
+    if command is None and parsed_payload:
+      if parsed_payload.get("volume_level") is not None or parsed_payload.get("volume") is not None:
+        command = "volume_set"
+      elif parsed_payload.get("is_volume_muted") is not None or parsed_payload.get("muted") is not None:
+        command = "volume_mute"
+      elif parsed_payload.get("source"):
+        command = "select_source"
+      elif parsed_payload.get("seek_position") is not None or parsed_payload.get("position") is not None:
+        command = "media_seek"
+      elif parsed_payload.get("media_content_id") and parsed_payload.get("media_content_type"):
+        command = "play_media"
+
+    entity_id = self._resolve_target_entity(entity_id, self.media_players)
+    if not entity_id:
+      _LOGGER.warning("Unhandled media command from Tab5 (unknown entity): %s", msg.payload)
+      return
+
+    command = _normalise_media_command(command)
+    if not command:
+      _LOGGER.warning("Unhandled media command from Tab5: %s", msg.payload)
+      return
+
+    service_payload: Dict[str, Any] = {"entity_id": entity_id}
+
+    if command == "volume_set":
+      raw_volume = parsed_payload.get("volume_level", parsed_payload.get("volume"))
+      volume = _coerce_float(raw_volume)
+      if volume is None:
+        _LOGGER.warning("Unhandled media volume command from Tab5 (missing volume): %s", msg.payload)
+        return
+      if volume > 1.0:
+        volume = volume / 100.0
+      service_payload["volume_level"] = min(1.0, max(0.0, volume))
+    elif command == "volume_mute":
+      muted = _coerce_bool(parsed_payload.get("is_volume_muted", parsed_payload.get("muted")))
+      if muted is None:
+        muted = True
+      service_payload["is_volume_muted"] = muted
+    elif command == "select_source":
+      source = str(parsed_payload.get("source") or "").strip()
+      if not source:
+        _LOGGER.warning("Unhandled media source command from Tab5 (missing source): %s", msg.payload)
+        return
+      service_payload["source"] = source
+    elif command == "media_seek":
+      position = _coerce_float(parsed_payload.get("seek_position", parsed_payload.get("position")))
+      if position is None:
+        _LOGGER.warning("Unhandled media seek command from Tab5 (missing position): %s", msg.payload)
+        return
+      service_payload["seek_position"] = position
+    elif command == "play_media":
+      content_id = str(parsed_payload.get("media_content_id") or "").strip()
+      content_type = str(parsed_payload.get("media_content_type") or "").strip()
+      if not content_id or not content_type:
+        _LOGGER.warning("Unhandled play_media command from Tab5 (missing content): %s", msg.payload)
+        return
+      service_payload["media_content_id"] = content_id
+      service_payload["media_content_type"] = content_type
+
+    await self.hass.services.async_call(
+      "media_player",
+      command,
+      service_payload,
+      blocking=False,
+    )
+
   def _resolve_target_entity(self, entity_id: Optional[str], candidates: List[str]) -> Optional[str]:
     if entity_id:
       entity_id = entity_id.strip()
@@ -1518,6 +1669,8 @@ class Tab5Bridge:
       if isinstance(hs, (list, tuple)) and len(hs) >= 2:
         payload["hs_color"] = [float(hs[0]), float(hs[1])]
       return json.dumps(payload)
+    if entity_id.startswith("media_player."):
+      return json.dumps(_extract_media_player_payload(state, self.hass), default=str)
     return state.state.replace(",", ".")
 
   async def _async_publish_weather_state(self, entity_id: str, state: State, retain: bool = True) -> None:
@@ -2193,6 +2346,15 @@ def _normalise_command(value: Any) -> Optional[str]:
   return None
 
 
+def _normalise_media_command(value: Any) -> Optional[str]:
+  if value is None:
+    return None
+  text = str(value).strip().lower().replace("-", "_")
+  if not text:
+    return None
+  return MEDIA_COMMAND_ALIASES.get(text)
+
+
 def _parse_simple_command(payload: str) -> Tuple[Optional[str], Optional[str]]:
   text = (payload or "").strip()
   if not text:
@@ -2227,6 +2389,28 @@ def _coerce_int(value: Any, default: int, minimum: int, maximum: int) -> int:
   if result > maximum:
     return maximum
   return result
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+  if isinstance(value, bool):
+    return None
+  try:
+    return float(str(value).strip().replace(",", "."))
+  except (TypeError, ValueError):
+    return None
+
+
+def _coerce_bool(value: Any) -> Optional[bool]:
+  if isinstance(value, bool):
+    return value
+  if value is None:
+    return None
+  text = str(value).strip().lower()
+  if text in ("1", "true", "yes", "on"):
+    return True
+  if text in ("0", "false", "no", "off"):
+    return False
+  return None
 
 
 def _normalise_topic(value: Optional[str], default: str) -> str:
@@ -2277,6 +2461,16 @@ def _fallback_icon_from_state(state: State) -> Optional[str]:
     return "mdi:toggle-switch"
   if domain == "scene":
     return "mdi:palette"
+  if domain == "media_player":
+    if state.state == "playing":
+      return "mdi:play-circle"
+    if state.state == "paused":
+      return "mdi:pause-circle"
+    if state.state in {"off", "unavailable"}:
+      return "mdi:television-off"
+    if device_class == "speaker":
+      return "mdi:speaker"
+    return "mdi:television"
 
   if domain == "sensor":
     is_battery_like = device_class == "battery"
@@ -2451,6 +2645,48 @@ def _weather_icon_from_state(state: State, hass: Optional[HomeAssistant] = None)
   return None
 
 
+def _extract_media_player_payload(state: State, hass: Optional[HomeAssistant] = None) -> Dict[str, Any]:
+  attrs = state.attributes or {}
+  payload: Dict[str, Any] = {"state": state.state}
+
+  name = state.name
+  if isinstance(name, str) and name.strip():
+    payload["name"] = name.strip()
+
+  icon = _extract_mdi_icon(state, hass)
+  if isinstance(icon, str) and icon.strip():
+    payload["icon"] = icon.strip()
+
+  for key in (
+    "app_name",
+    "entity_picture",
+    "is_volume_muted",
+    "media_album_name",
+    "media_artist",
+    "media_channel",
+    "media_content_id",
+    "media_content_type",
+    "media_duration",
+    "media_episode",
+    "media_image_url",
+    "media_position",
+    "media_position_updated_at",
+    "media_season",
+    "media_series_title",
+    "media_title",
+    "repeat",
+    "shuffle",
+    "source",
+    "source_list",
+    "supported_features",
+    "volume_level",
+  ):
+    if key in attrs and attrs[key] is not None:
+      payload[key] = _normalize_weather_value(attrs[key])
+
+  return payload
+
+
 def _extract_weather_payload(state: State, hass: Optional[HomeAssistant] = None) -> Dict[str, Any]:
   attrs = state.attributes or {}
   payload: Dict[str, Any] = {"state": state.state}
@@ -2584,6 +2820,11 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     raise ValueError("invalid_switches")
   switches = [str(item).strip() for item in switches_raw if str(item).strip()]
 
+  media_players_raw = payload.get("media_players") or []
+  if not isinstance(media_players_raw, list):
+    raise ValueError("invalid_media_players")
+  media_players = [str(item).strip() for item in media_players_raw if str(item).strip()]
+
   scene_map_raw = payload.get("scene_map") or {}
   if not isinstance(scene_map_raw, dict):
     raise ValueError("invalid_scene_map")
@@ -2605,6 +2846,7 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     CONF_WEATHERS: weathers,
     CONF_LIGHTS: lights,
     CONF_SWITCHES: switches,
+    CONF_MEDIA_PLAYERS: media_players,
     CONF_SCENE_MAP: scene_map,
   }
   if manufacturer:

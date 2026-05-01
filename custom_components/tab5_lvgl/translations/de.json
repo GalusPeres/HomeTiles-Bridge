@@ -44,6 +44,7 @@
           "weathers": "Wetter",
           "lights": "Lichter",
           "switches": "Schalter",
+          "media_players": "Media Player",
           "scene_entities": "Szenen / Scripts",
           "scene_map_text": "Szenen- / Script-Alias"
         }

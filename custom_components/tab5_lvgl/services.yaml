@@ -1,6 +1,6 @@
 publish_snapshot:
   name: Publish Snapshot
-  description: Push all configured entity states (sensors, lights, switches) to the Tab5 topics.
+  description: Push all configured entity states (sensors, lights, switches, media players) to the Tab5 topics.
   fields:
     entry_id:
       description: Target Tab5 config entry (leave empty if only one exists).
