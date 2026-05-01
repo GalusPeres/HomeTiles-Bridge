@@ -45,6 +45,10 @@ try:
   from homeassistant.helpers.icon import icon_for_entity
 except Exception:  # pragma: no cover - optional fallback
   icon_for_entity = None
+try:
+  from homeassistant.helpers.network import get_url
+except Exception:  # pragma: no cover - older HA fallback
+  get_url = None
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -2683,6 +2687,16 @@ def _extract_media_player_payload(state: State, hass: Optional[HomeAssistant] = 
   ):
     if key in attrs and attrs[key] is not None:
       payload[key] = _normalize_weather_value(attrs[key])
+
+  for url_key in ("entity_picture", "media_image_url"):
+    value = payload.get(url_key)
+    if isinstance(value, str) and value.startswith("/") and hass is not None and get_url is not None:
+      try:
+        base = get_url(hass, prefer_external=False, allow_internal=True, allow_external=True)
+      except Exception:  # pragma: no cover - get_url may raise NoURLAvailableError
+        base = None
+      if isinstance(base, str) and base:
+        payload[url_key] = base.rstrip("/") + value
 
   return payload
 
