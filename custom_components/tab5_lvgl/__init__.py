@@ -101,10 +101,15 @@ def _is_png_payload(data: bytes) -> bool:
 def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
   """Resize media artwork to a small JPEG payload for MQTT/display use."""
   try:
-    from PIL import Image, ImageOps
+    from PIL import Image, ImageFile, ImageOps
   except Exception as err:
     _LOGGER.warning("Tab5 media cover: Pillow not available (%s)", err)
     return None
+
+  # HA's media_player_proxy occasionally truncates the JPEG by a few bytes
+  # before the EOI marker. Tell Pillow to accept partial files so we still get
+  # a usable thumbnail instead of dropping the cover entirely.
+  ImageFile.LOAD_TRUNCATED_IMAGES = True
 
   try:
     with Image.open(BytesIO(data)) as image:
@@ -704,7 +709,20 @@ class Tab5Bridge:
             content_type,
           )
           return
-        data = await response.content.read(MEDIA_COVER_FETCH_MAX_BYTES + 1)
+        # Drain the response in chunks. A single read(N) on aiohttp
+        # occasionally returns short when the server uses chunked transfer
+        # encoding (HA media_player_proxy does this), which leaves the JPEG
+        # truncated. Looping until EOF or the byte cap is reached avoids that.
+        chunks: List[bytes] = []
+        received = 0
+        async for chunk in response.content.iter_chunked(16384):
+          if not chunk:
+            break
+          chunks.append(chunk)
+          received += len(chunk)
+          if received > MEDIA_COVER_FETCH_MAX_BYTES:
+            break
+        data = b"".join(chunks)
     except Exception as err:  # pragma: no cover - network dependent
       _LOGGER.warning("Tab5 media cover fetch failed for %s: %s", entity_id, err)
       return
