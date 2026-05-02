@@ -91,7 +91,7 @@ PLATFORMS = ["light", "select", "switch", "sensor"]
 MEDIA_COVER_MAX_BYTES = 20000
 MEDIA_COVER_FETCH_MAX_BYTES = 240000
 MEDIA_COVER_CACHE_MAX = 24
-MEDIA_COVER_THUMBNAIL_SIZE = 192
+MEDIA_COVER_THUMBNAIL_SIZE = 96
 
 
 def _is_png_payload(data: bytes) -> bool:
