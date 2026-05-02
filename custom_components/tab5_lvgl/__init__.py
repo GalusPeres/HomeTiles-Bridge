@@ -91,7 +91,7 @@ PLATFORMS = ["light", "select", "switch", "sensor"]
 MEDIA_COVER_MAX_BYTES = 20000
 MEDIA_COVER_FETCH_MAX_BYTES = 240000
 MEDIA_COVER_CACHE_MAX = 24
-MEDIA_COVER_THUMBNAIL_SIZE = 96
+MEDIA_COVER_THUMBNAIL_SIZE = 144
 
 
 def _is_png_payload(data: bytes) -> bool:
@@ -118,9 +118,16 @@ def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
       else:
         image = image.convert("RGB")
 
-      for quality in (78, 70, 62, 54, 46, 38):
+      for quality in (86, 78, 70, 62, 54, 46):
         output = BytesIO()
-        image.save(output, format="JPEG", quality=quality, optimize=True)
+        image.save(
+          output,
+          format="JPEG",
+          quality=quality,
+          optimize=False,
+          progressive=False,
+          subsampling=0,
+        )
         resized = output.getvalue()
         if len(resized) <= MEDIA_COVER_MAX_BYTES:
           return resized, "image/jpeg"
