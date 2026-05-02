@@ -812,10 +812,11 @@ class Tab5Bridge:
       else:
         resized_data, resized_mime = resized
         _LOGGER.warning(
-          "Tab5 media cover converted for %s: %s, %s -> %s bytes",
+          "Tab5 media cover converted for %s: %s %s bytes -> %s %s bytes",
           entity_id,
           content_type or "unknown",
           len(data),
+          resized_mime,
           len(resized_data),
         )
         data = resized_data
