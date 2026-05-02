@@ -715,7 +715,7 @@ class Tab5Bridge:
       )
       return
 
-    should_convert = content_type == "image/png" or _is_png_payload(data)
+    should_convert = True
 
     if should_convert or len(data) > MEDIA_COVER_MAX_BYTES:
       resized = await self.hass.async_add_executor_job(_resize_media_cover, data)
