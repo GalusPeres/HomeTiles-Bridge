@@ -94,6 +94,10 @@ MEDIA_COVER_CACHE_MAX = 24
 MEDIA_COVER_THUMBNAIL_SIZE = 192
 
 
+def _is_png_payload(data: bytes) -> bool:
+  return data.startswith(b"\x89PNG\r\n\x1a\n")
+
+
 def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
   """Resize media artwork to a small JPEG payload for MQTT/display use."""
   try:
@@ -704,20 +708,23 @@ class Tab5Bridge:
       )
       return
 
-    if len(data) > MEDIA_COVER_MAX_BYTES:
+    should_convert = content_type == "image/png" or _is_png_payload(data)
+
+    if should_convert or len(data) > MEDIA_COVER_MAX_BYTES:
       resized = await self.hass.async_add_executor_job(_resize_media_cover, data)
       if not resized:
         _LOGGER.warning(
-          "Tab5 media cover skipped for %s: %s bytes > %s and resize failed",
+          "Tab5 media cover skipped for %s: %s bytes, type=%s, conversion failed",
           entity_id,
           len(data),
-          MEDIA_COVER_MAX_BYTES,
+          content_type or "unknown",
         )
         return
       resized_data, resized_mime = resized
       _LOGGER.warning(
-        "Tab5 media cover resized for %s: %s -> %s bytes",
+        "Tab5 media cover converted for %s: %s, %s -> %s bytes",
         entity_id,
+        content_type or "unknown",
         len(data),
         len(resized_data),
       )
