@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from datetime import date, datetime, timedelta
+from io import BytesIO
 import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -88,7 +89,41 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["light", "select", "switch", "sensor"]
 
 MEDIA_COVER_MAX_BYTES = 9000
+MEDIA_COVER_FETCH_MAX_BYTES = 120000
 MEDIA_COVER_CACHE_MAX = 24
+MEDIA_COVER_THUMBNAIL_SIZE = 128
+
+
+def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
+  """Resize media artwork to a small JPEG payload for MQTT/display use."""
+  try:
+    from PIL import Image, ImageOps
+  except Exception:
+    return None
+
+  try:
+    with Image.open(BytesIO(data)) as image:
+      image = ImageOps.exif_transpose(image)
+      image.thumbnail((MEDIA_COVER_THUMBNAIL_SIZE, MEDIA_COVER_THUMBNAIL_SIZE))
+
+      if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+        background = Image.new("RGB", image.size, (0, 0, 0))
+        alpha = image.convert("RGBA").split()[-1]
+        background.paste(image.convert("RGBA"), mask=alpha)
+        image = background
+      else:
+        image = image.convert("RGB")
+
+      for quality in (78, 70, 62, 54, 46, 38):
+        output = BytesIO()
+        image.save(output, format="JPEG", quality=quality, optimize=True)
+        resized = output.getvalue()
+        if len(resized) <= MEDIA_COVER_MAX_BYTES:
+          return resized, "image/jpeg"
+      return resized, "image/jpeg"
+  except Exception:
+    return None
+
 
 LIGHT_SERVICE_FIELDS = {
   "transition",
@@ -651,7 +686,7 @@ class Tab5Bridge:
             content_type,
           )
           return
-        data = await response.content.read(MEDIA_COVER_MAX_BYTES + 1)
+        data = await response.content.read(MEDIA_COVER_FETCH_MAX_BYTES + 1)
     except Exception as err:  # pragma: no cover - network dependent
       _LOGGER.warning("Tab5 media cover fetch failed for %s: %s", entity_id, err)
       return
@@ -660,9 +695,38 @@ class Tab5Bridge:
       _LOGGER.warning("Tab5 media cover skipped for %s: empty response", entity_id)
       return
 
+    if len(data) > MEDIA_COVER_FETCH_MAX_BYTES:
+      _LOGGER.warning(
+        "Tab5 media cover skipped for %s: %s bytes > fetch limit %s",
+        entity_id,
+        len(data),
+        MEDIA_COVER_FETCH_MAX_BYTES,
+      )
+      return
+
+    if len(data) > MEDIA_COVER_MAX_BYTES:
+      resized = await self.hass.async_add_executor_job(_resize_media_cover, data)
+      if not resized:
+        _LOGGER.warning(
+          "Tab5 media cover skipped for %s: %s bytes > %s and resize failed",
+          entity_id,
+          len(data),
+          MEDIA_COVER_MAX_BYTES,
+        )
+        return
+      resized_data, resized_mime = resized
+      _LOGGER.warning(
+        "Tab5 media cover resized for %s: %s -> %s bytes",
+        entity_id,
+        len(data),
+        len(resized_data),
+      )
+      data = resized_data
+      content_type = resized_mime
+
     if len(data) > MEDIA_COVER_MAX_BYTES:
       _LOGGER.warning(
-        "Tab5 media cover skipped for %s: %s bytes > %s",
+        "Tab5 media cover skipped for %s: resized %s bytes > %s",
         entity_id,
         len(data),
         MEDIA_COVER_MAX_BYTES,
