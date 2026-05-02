@@ -89,7 +89,9 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["light", "select", "switch", "sensor"]
 
 MEDIA_COVER_MAX_BYTES = 20000
-MEDIA_COVER_FETCH_MAX_BYTES = 240000
+# Source covers from HA media_player_proxy can be 200-500 KB (HD album art).
+# Pillow resize to 144x144 thumbnail still produces 5-15 KB output regardless.
+MEDIA_COVER_FETCH_MAX_BYTES = 1_500_000
 MEDIA_COVER_CACHE_MAX = 24
 MEDIA_COVER_THUMBNAIL_SIZE = 144
 
