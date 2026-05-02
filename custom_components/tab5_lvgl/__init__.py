@@ -594,8 +594,15 @@ class Tab5Bridge:
   async def _async_build_state_payload(self, entity_id: str, state: State) -> str:
     if entity_id.startswith("media_player."):
       payload = _extract_media_player_payload(state, self.hass)
-      await self._async_attach_media_cover_data(payload)
-      return json.dumps(payload, default=str)
+      await self._async_attach_media_cover_data(entity_id, payload)
+      payload_text = json.dumps(payload, default=str)
+      _LOGGER.warning(
+        "Tab5 media state payload for %s: %s chars, cover_data=%s",
+        entity_id,
+        len(payload_text),
+        "entity_picture_data" in payload,
+      )
+      return payload_text
     return self._build_state_payload(entity_id, state)
 
   async def _async_publish_entity_state(self, entity_id: str, state: State) -> None:
@@ -605,7 +612,7 @@ class Tab5Bridge:
     if _is_weather_entity(entity_id):
       await self._async_publish_weather_state(entity_id, state, retain=True)
 
-  async def _async_attach_media_cover_data(self, payload: Dict[str, Any]) -> None:
+  async def _async_attach_media_cover_data(self, entity_id: str, payload: Dict[str, Any]) -> None:
     url = ""
     for key in ("entity_picture", "media_image_url"):
       value = payload.get(key)
@@ -613,28 +620,53 @@ class Tab5Bridge:
         url = value
         break
     if not url:
+      _LOGGER.warning("Tab5 media cover missing URL for %s", entity_id)
       return
 
     cached = self._media_cover_cache.get(url)
     if cached:
       payload.update(cached)
+      _LOGGER.warning(
+        "Tab5 media cover cache hit for %s: %s bytes",
+        entity_id,
+        cached.get("entity_picture_bytes"),
+      )
       return
 
     try:
       session = async_get_clientsession(self.hass)
       async with session.get(url, timeout=5) as response:
         if response.status != 200:
+          _LOGGER.warning(
+            "Tab5 media cover fetch failed for %s: HTTP %s",
+            entity_id,
+            response.status,
+          )
           return
         content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
         if content_type and not content_type.startswith("image/"):
+          _LOGGER.warning(
+            "Tab5 media cover skipped for %s: content-type=%s",
+            entity_id,
+            content_type,
+          )
           return
         data = await response.content.read(MEDIA_COVER_MAX_BYTES + 1)
     except Exception as err:  # pragma: no cover - network dependent
-      _LOGGER.debug("Tab5 media cover fetch failed for %s: %s", url, err)
+      _LOGGER.warning("Tab5 media cover fetch failed for %s: %s", entity_id, err)
       return
 
-    if len(data) == 0 or len(data) > MEDIA_COVER_MAX_BYTES:
-      _LOGGER.debug("Tab5 media cover skipped (%s bytes) for %s", len(data), url)
+    if len(data) == 0:
+      _LOGGER.warning("Tab5 media cover skipped for %s: empty response", entity_id)
+      return
+
+    if len(data) > MEDIA_COVER_MAX_BYTES:
+      _LOGGER.warning(
+        "Tab5 media cover skipped for %s: %s bytes > %s",
+        entity_id,
+        len(data),
+        MEDIA_COVER_MAX_BYTES,
+      )
       return
 
     cover_payload = {
@@ -646,6 +678,12 @@ class Tab5Bridge:
     while len(self._media_cover_cache) > MEDIA_COVER_CACHE_MAX:
       self._media_cover_cache.pop(next(iter(self._media_cover_cache)))
     payload.update(cover_payload)
+    _LOGGER.warning(
+      "Tab5 media cover attached for %s: %s bytes, base64=%s chars",
+      entity_id,
+      len(data),
+      len(cover_payload["entity_picture_data"]),
+    )
 
 
   async def _async_handle_connected(self, msg: ReceiveMessage) -> None:
