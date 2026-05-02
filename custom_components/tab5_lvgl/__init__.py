@@ -88,10 +88,10 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["light", "select", "switch", "sensor"]
 
-MEDIA_COVER_MAX_BYTES = 9000
-MEDIA_COVER_FETCH_MAX_BYTES = 120000
+MEDIA_COVER_MAX_BYTES = 20000
+MEDIA_COVER_FETCH_MAX_BYTES = 240000
 MEDIA_COVER_CACHE_MAX = 24
-MEDIA_COVER_THUMBNAIL_SIZE = 128
+MEDIA_COVER_THUMBNAIL_SIZE = 192
 
 
 def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
