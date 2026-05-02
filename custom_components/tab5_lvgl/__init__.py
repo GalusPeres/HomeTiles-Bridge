@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import date, datetime, timedelta
 import json
 import logging
@@ -38,6 +39,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, State, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
@@ -84,6 +86,9 @@ from .device_helpers import entry_device_id, entry_device_info, entry_device_nam
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["light", "select", "switch", "sensor"]
+
+MEDIA_COVER_MAX_BYTES = 9000
+MEDIA_COVER_CACHE_MAX = 24
 
 LIGHT_SERVICE_FIELDS = {
   "transition",
@@ -306,6 +311,7 @@ class Tab5Bridge:
     self.switches: List[str] = _unique_entities(list(data.get(CONF_SWITCHES, [])))
     self.media_players: List[str] = _unique_entities(list(data.get(CONF_MEDIA_PLAYERS, [])))
     self.tracked_entities: List[str] = []
+    self._media_cover_cache: Dict[str, Dict[str, Any]] = {}
     self.scene_map: Dict[str, str] = {
       (alias or "").lower(): entity
       for alias, entity in (data.get(CONF_SCENE_MAP, {}) or {}).items()
@@ -583,11 +589,63 @@ class Tab5Bridge:
       state = self.hass.states.get(entity_id)
       if not state:
         continue
-      topic = self._ha_topic_for_entity(entity_id, "state")
-      payload = self._build_state_payload(entity_id, state)
-      await mqtt.async_publish(self.hass, topic, payload, qos=0, retain=True)
-      if _is_weather_entity(entity_id):
-        await self._async_publish_weather_state(entity_id, state, retain=True)
+      await self._async_publish_entity_state(entity_id, state)
+
+  async def _async_build_state_payload(self, entity_id: str, state: State) -> str:
+    if entity_id.startswith("media_player."):
+      payload = _extract_media_player_payload(state, self.hass)
+      await self._async_attach_media_cover_data(payload)
+      return json.dumps(payload, default=str)
+    return self._build_state_payload(entity_id, state)
+
+  async def _async_publish_entity_state(self, entity_id: str, state: State) -> None:
+    topic = self._ha_topic_for_entity(entity_id, "state")
+    payload = await self._async_build_state_payload(entity_id, state)
+    await mqtt.async_publish(self.hass, topic, payload, qos=0, retain=True)
+    if _is_weather_entity(entity_id):
+      await self._async_publish_weather_state(entity_id, state, retain=True)
+
+  async def _async_attach_media_cover_data(self, payload: Dict[str, Any]) -> None:
+    url = ""
+    for key in ("entity_picture", "media_image_url"):
+      value = payload.get(key)
+      if isinstance(value, str) and value.startswith(("http://", "https://")):
+        url = value
+        break
+    if not url:
+      return
+
+    cached = self._media_cover_cache.get(url)
+    if cached:
+      payload.update(cached)
+      return
+
+    try:
+      session = async_get_clientsession(self.hass)
+      async with session.get(url, timeout=5) as response:
+        if response.status != 200:
+          return
+        content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+        if content_type and not content_type.startswith("image/"):
+          return
+        data = await response.content.read(MEDIA_COVER_MAX_BYTES + 1)
+    except Exception as err:  # pragma: no cover - network dependent
+      _LOGGER.debug("Tab5 media cover fetch failed for %s: %s", url, err)
+      return
+
+    if len(data) == 0 or len(data) > MEDIA_COVER_MAX_BYTES:
+      _LOGGER.debug("Tab5 media cover skipped (%s bytes) for %s", len(data), url)
+      return
+
+    cover_payload = {
+      "entity_picture_data": base64.b64encode(data).decode("ascii"),
+      "entity_picture_mime": content_type or "image/*",
+      "entity_picture_bytes": len(data),
+    }
+    self._media_cover_cache[url] = cover_payload
+    while len(self._media_cover_cache) > MEDIA_COVER_CACHE_MAX:
+      self._media_cover_cache.pop(next(iter(self._media_cover_cache)))
+    payload.update(cover_payload)
 
 
   async def _async_handle_connected(self, msg: ReceiveMessage) -> None:
@@ -1491,16 +1549,7 @@ class Tab5Bridge:
     if not entity_id or not new_state:
       return
 
-    topic = self._ha_topic_for_entity(entity_id, "state")
-    payload = self._build_state_payload(entity_id, new_state)
-    self.hass.async_create_task(
-      mqtt.async_publish(self.hass, topic, payload, qos=0, retain=True)
-    )
-    if _is_weather_entity(entity_id):
-      weather_topic = self._ha_topic_for_entity(entity_id, "weather")
-      self.hass.async_create_task(
-        self._async_publish_weather_state(entity_id, new_state, retain=True)
-      )
+    self.hass.async_create_task(self._async_publish_entity_state(entity_id, new_state))
 
     # Live icon updates without full grid reload.
     if entity_id in self.tracked_entities:
@@ -2668,21 +2717,9 @@ def _extract_media_player_payload(state: State, hass: Optional[HomeAssistant] = 
     "media_album_name",
     "media_artist",
     "media_channel",
-    "media_content_id",
-    "media_content_type",
-    "media_duration",
-    "media_episode",
     "media_image_url",
-    "media_position",
-    "media_position_updated_at",
-    "media_season",
-    "media_series_title",
     "media_title",
-    "repeat",
-    "shuffle",
     "source",
-    "source_list",
-    "supported_features",
     "volume_level",
   ):
     if key in attrs and attrs[key] is not None:
