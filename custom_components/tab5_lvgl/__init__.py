@@ -102,7 +102,8 @@ def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
   """Resize media artwork to a small JPEG payload for MQTT/display use."""
   try:
     from PIL import Image, ImageOps
-  except Exception:
+  except Exception as err:
+    _LOGGER.warning("Tab5 media cover: Pillow not available (%s)", err)
     return None
 
   try:
@@ -132,7 +133,13 @@ def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
         if len(resized) <= MEDIA_COVER_MAX_BYTES:
           return resized, "image/jpeg"
       return resized, "image/jpeg"
-  except Exception:
+  except Exception as err:
+    _LOGGER.warning(
+      "Tab5 media cover: resize failed (%s: %s, %s bytes input)",
+      type(err).__name__,
+      err,
+      len(data),
+    )
     return None
 
 
@@ -720,23 +727,41 @@ class Tab5Bridge:
     if should_convert or len(data) > MEDIA_COVER_MAX_BYTES:
       resized = await self.hass.async_add_executor_job(_resize_media_cover, data)
       if not resized:
+        # Fallback: if Pillow is missing or the resize crashes, still ship the
+        # original payload as long as it fits the MQTT cover budget. Otherwise
+        # we drop the cover (display has no way to scale it down on its own).
+        if len(data) <= MEDIA_COVER_MAX_BYTES and (
+          content_type.startswith("image/jpeg")
+          or content_type.startswith("image/jpg")
+          or content_type.startswith("image/png")
+          or _is_png_payload(data)
+          or data[:3] == b"\xff\xd8\xff"
+        ):
+          _LOGGER.warning(
+            "Tab5 media cover: resize failed for %s, sending original (%s bytes, %s)",
+            entity_id,
+            len(data),
+            content_type or "unknown",
+          )
+        else:
+          _LOGGER.warning(
+            "Tab5 media cover skipped for %s: %s bytes, type=%s, conversion failed",
+            entity_id,
+            len(data),
+            content_type or "unknown",
+          )
+          return
+      else:
+        resized_data, resized_mime = resized
         _LOGGER.warning(
-          "Tab5 media cover skipped for %s: %s bytes, type=%s, conversion failed",
+          "Tab5 media cover converted for %s: %s, %s -> %s bytes",
           entity_id,
-          len(data),
           content_type or "unknown",
+          len(data),
+          len(resized_data),
         )
-        return
-      resized_data, resized_mime = resized
-      _LOGGER.warning(
-        "Tab5 media cover converted for %s: %s, %s -> %s bytes",
-        entity_id,
-        content_type or "unknown",
-        len(data),
-        len(resized_data),
-      )
-      data = resized_data
-      content_type = resized_mime
+        data = resized_data
+        content_type = resized_mime
 
     if len(data) > MEDIA_COVER_MAX_BYTES:
       _LOGGER.warning(
