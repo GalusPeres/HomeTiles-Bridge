@@ -702,13 +702,6 @@ class Tab5Bridge:
           )
           return
         content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
-        if content_type and not content_type.startswith("image/"):
-          _LOGGER.warning(
-            "Tab5 media cover skipped for %s: content-type=%s",
-            entity_id,
-            content_type,
-          )
-          return
         # Drain the response in chunks. A single read(N) on aiohttp
         # occasionally returns short when the server uses chunked transfer
         # encoding (HA media_player_proxy does this), which leaves the JPEG
@@ -730,6 +723,43 @@ class Tab5Bridge:
     if len(data) == 0:
       _LOGGER.warning("Tab5 media cover skipped for %s: empty response", entity_id)
       return
+
+    # Some upstreams (radio TuneIn covers, etc.) advertise
+    # application/octet-stream or no content-type at all. Don't reject those;
+    # sniff the magic bytes instead and assign the correct MIME so the display
+    # picks the right decoder.
+    if data[:3] == b"\xff\xd8\xff":
+      sniffed_mime = "image/jpeg"
+    elif _is_png_payload(data):
+      sniffed_mime = "image/png"
+    elif data[:6] in (b"GIF87a", b"GIF89a"):
+      sniffed_mime = "image/gif"
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+      sniffed_mime = "image/webp"
+    else:
+      sniffed_mime = ""
+
+    if not content_type or not content_type.startswith("image/"):
+      if sniffed_mime:
+        _LOGGER.warning(
+          "Tab5 media cover: %s reported content-type=%s, sniffed %s",
+          entity_id,
+          content_type or "<none>",
+          sniffed_mime,
+        )
+        content_type = sniffed_mime
+      else:
+        _LOGGER.warning(
+          "Tab5 media cover skipped for %s: content-type=%s, magic=%s",
+          entity_id,
+          content_type or "<none>",
+          data[:4].hex(),
+        )
+        return
+    elif sniffed_mime and sniffed_mime != content_type:
+      # Server lied about the type (e.g. claimed jpeg but body is png) - trust
+      # the bytes since the display routes by MIME.
+      content_type = sniffed_mime
 
     if len(data) > MEDIA_COVER_FETCH_MAX_BYTES:
       _LOGGER.warning(
