@@ -672,7 +672,11 @@ class Tab5Bridge:
 
   async def _async_attach_media_cover_data(self, entity_id: str, payload: Dict[str, Any]) -> None:
     url = ""
-    for key in ("entity_picture", "media_image_url"):
+    # Prefer media_image_url first - it usually points at the upstream CDN
+    # (e.g. Spotify scdn.co) which is more stable than HA's media_player_proxy.
+    # The proxy occasionally serves truncated JPEGs which the display then
+    # renders only partially.
+    for key in ("media_image_url", "entity_picture"):
       value = payload.get(key)
       if isinstance(value, str) and value.startswith(("http://", "https://")):
         url = value
@@ -680,6 +684,12 @@ class Tab5Bridge:
     if not url:
       _LOGGER.warning("Tab5 media cover missing URL for %s", entity_id)
       return
+
+    _LOGGER.warning(
+      "Tab5 media cover fetching for %s: %s",
+      entity_id,
+      url[:120] + ("..." if len(url) > 120 else ""),
+    )
 
     cached = self._media_cover_cache.get(url)
     if cached:

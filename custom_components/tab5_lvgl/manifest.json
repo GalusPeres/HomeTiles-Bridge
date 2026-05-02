@@ -1,7 +1,7 @@
 {
   "domain": "tab5_lvgl",
   "name": "ESP32-P4 HomeAssistant Display Bridge",
-  "version": "0.5.31",
+  "version": "0.5.32",
   "documentation": "https://github.com/GalusPeres/ESP32-P4-HomeAssistant-Display-Bridge",
   "issue_tracker": "https://github.com/GalusPeres/ESP32-P4-HomeAssistant-Display-Bridge/issues",
   "requirements": [],
