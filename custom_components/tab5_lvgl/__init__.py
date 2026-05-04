@@ -1757,6 +1757,8 @@ class Tab5Bridge:
     if entity_id in self.tracked_entities:
       if _is_weather_entity(entity_id):
         icon = _weather_icon_from_state(new_state, self.hass) or ""
+      elif entity_id.startswith("media_player."):
+        icon = _extract_media_player_mdi_icon(new_state, self.hass) or ""
       else:
         icon = _extract_mdi_icon(new_state, self.hass) or ""
       if self._icon_cache.get(entity_id, "") != icon:
@@ -1894,6 +1896,8 @@ class Tab5Bridge:
         continue
       if _is_weather_entity(entity_id):
         icon = _weather_icon_from_state(state, self.hass) or ""
+      elif entity_id.startswith("media_player."):
+        icon = _extract_media_player_mdi_icon(state, self.hass) or ""
       else:
         icon = _extract_mdi_icon(state, self.hass) or ""
       self._icon_cache[entity_id] = icon
@@ -1991,7 +1995,10 @@ class Tab5Bridge:
         unit = state.attributes.get("unit_of_measurement")
         name = state.name
         value = state.state
-        icon = _extract_mdi_icon(state, self.hass)
+        if entity_id.startswith("media_player."):
+          icon = _extract_media_player_mdi_icon(state, self.hass)
+        else:
+          icon = _extract_mdi_icon(state, self.hass)
         if isinstance(unit, str) and unit.strip():
           entry["unit"] = unit.strip()
         if isinstance(name, str) and name.strip():
@@ -2717,12 +2724,6 @@ def _fallback_icon_from_state(state: State) -> Optional[str]:
   if domain == "scene":
     return "mdi:palette"
   if domain == "media_player":
-    if state.state == "playing":
-      return "mdi:play-circle"
-    if state.state == "paused":
-      return "mdi:pause-circle"
-    if state.state in {"off", "unavailable"}:
-      return "mdi:television-off"
     if device_class == "speaker":
       return "mdi:speaker"
     return "mdi:television"
@@ -2761,6 +2762,20 @@ def _fallback_icon_from_state(state: State) -> Optional[str]:
   return None
 
 
+def _normalize_mdi_icon_value(icon: Any) -> Optional[str]:
+  if not isinstance(icon, str):
+    return None
+  icon = icon.strip()
+  if not icon:
+    return None
+  # Accept standard MDI prefixes (mdi:home, mdi-home) or bare icon names.
+  if ":" in icon and not icon.startswith("mdi:"):
+    return None
+  if icon.startswith("mdi-"):
+    return "mdi:" + icon[4:]
+  return icon
+
+
 def _extract_mdi_icon(state: State, hass: Optional[HomeAssistant] = None) -> Optional[str]:
   if not state:
     return None
@@ -2792,17 +2807,34 @@ def _extract_mdi_icon(state: State, hass: Optional[HomeAssistant] = None) -> Opt
       icon = None
   if not icon:
     icon = _fallback_icon_from_state(state)
-  if not isinstance(icon, str):
+  return _normalize_mdi_icon_value(icon)
+
+
+def _extract_media_player_mdi_icon(state: State, hass: Optional[HomeAssistant] = None) -> Optional[str]:
+  """Return the entity icon for media players, not the playback-state icon."""
+  if not state:
     return None
-  icon = icon.strip()
-  if not icon:
-    return None
-  # Accept standard MDI prefixes (mdi:home, mdi-home) or bare icon names.
-  if ":" in icon and not icon.startswith("mdi:"):
-    return None
-  if icon.startswith("mdi-"):
-    return "mdi:" + icon[4:]
-  return icon
+
+  raw_icon = state.attributes.get("icon")
+  icon = _normalize_mdi_icon_value(raw_icon)
+  if icon:
+    return icon
+
+  if hass and icon_for_entity:
+    try:
+      icon = icon_for_entity(hass, state.entity_id)
+    except TypeError:
+      try:
+        icon = icon_for_entity(hass, state)
+      except Exception:
+        icon = None
+    except Exception:
+      icon = None
+    icon = _normalize_mdi_icon_value(icon)
+    if icon:
+      return icon
+
+  return _fallback_icon_from_state(state)
 
 
 def _normalize_weather_value(value: Any) -> Any:
@@ -2908,7 +2940,7 @@ def _extract_media_player_payload(state: State, hass: Optional[HomeAssistant] = 
   if isinstance(name, str) and name.strip():
     payload["name"] = name.strip()
 
-  icon = _extract_mdi_icon(state, hass)
+  icon = _extract_media_player_mdi_icon(state, hass)
   if isinstance(icon, str) and icon.strip():
     payload["icon"] = icon.strip()
 
