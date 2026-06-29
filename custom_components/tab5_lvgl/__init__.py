@@ -557,6 +557,11 @@ class Tab5Bridge:
 
   async def async_unload(self) -> None:
     """Cleanup subscriptions."""
+    # Release any state-publish ownership so a surviving entry can reclaim it.
+    owners = self.hass.data.get(DOMAIN, {}).get("state_owners")
+    if owners:
+      for key in [k for k, v in owners.items() if v == self.entry.entry_id]:
+        owners.pop(key, None)
     if self._unsub_state:
       self._unsub_state()
       self._unsub_state = None
@@ -665,7 +670,29 @@ class Tab5Bridge:
       return payload_text
     return self._build_state_payload(entity_id, state)
 
+  def _owns_state_publish(self, entity_id: str) -> bool:
+    """Return True if this entry is responsible for publishing entity_id.
+
+    Multiple config entries (devices) can track the same entities while
+    sharing the same ha_prefix, which means they all resolve to the SAME
+    global ``<ha_prefix>/<entity>/state`` topic. Without coordination every
+    state change is published once per device (e.g. 3x for three displays),
+    tripling MQTT traffic and the per-update work on every display. We let
+    the first entry that handles a given (ha_prefix, entity) own its
+    publishes; the others skip. Ownership is released on unload so a
+    surviving entry can reclaim it.
+    """
+    owners = self.hass.data[DOMAIN].setdefault("state_owners", {})
+    key = (self.ha_prefix, entity_id)
+    owner = owners.get(key)
+    if owner is None:
+      owners[key] = self.entry.entry_id
+      return True
+    return owner == self.entry.entry_id
+
   async def _async_publish_entity_state(self, entity_id: str, state: State) -> None:
+    if not self._owns_state_publish(entity_id):
+      return
     topic = self._ha_topic_for_entity(entity_id, "state")
     payload = await self._async_build_state_payload(entity_id, state)
     await mqtt.async_publish(self.hass, topic, payload, qos=0, retain=True)
