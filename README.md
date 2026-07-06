@@ -15,6 +15,8 @@ This integration is the Home Assistant companion for the **ESP32-P4 HomeAssistan
 
 **Firmware repository:** [ESP32-P4-HomeAssistant-Display](https://github.com/GalusPeres/ESP32-P4-HomeAssistant-Display)
 
+**Documentation:** [galusperes.github.io/ESP32-P4-HomeAssistant-Display](https://galusperes.github.io/ESP32-P4-HomeAssistant-Display/) — full setup guide, [bridge configuration](https://galusperes.github.io/ESP32-P4-HomeAssistant-Display/bridge/), tile reference, and FAQ
+
 ## Installation
 
 ### Via HACS (Recommended)
@@ -42,6 +44,8 @@ This integration is the Home Assistant companion for the **ESP32-P4 HomeAssistan
 3. Add the integration via Settings > Devices & Services
 
 ## Configuration
+
+Detailed instructions: [bridge documentation](https://galusperes.github.io/ESP32-P4-HomeAssistant-Display/bridge/)
 
 Configure via the Home Assistant UI:
 
