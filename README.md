@@ -1,10 +1,10 @@
-# ESP32-P4 HomeAssistant Display Bridge
+# HomeTiles Bridge
 
-Home Assistant custom integration for the [ESP32-P4 HomeAssistant Display](https://github.com/GalusPeres/ESP32-P4-HomeAssistant-Display) project. Bridges Home Assistant entities, sensors, weather, energy data and more to ESP32-based LVGL displays via MQTT.
+Home Assistant custom integration for the [HomeTiles](https://github.com/GalusPeres/HomeTiles) project. Bridges Home Assistant entities, sensors, weather, energy data and more to ESP32-based LVGL displays via MQTT.
 
 ## About
 
-This integration is the Home Assistant companion for the **ESP32-P4 HomeAssistant Display** firmware. It handles:
+This integration is the Home Assistant companion for the **HomeTiles** firmware. It handles:
 
 - Pushing entity states, metadata and icons to the display in real time
 - Sensor history for popup charts (24h / 5min buckets)
@@ -13,9 +13,9 @@ This integration is the Home Assistant companion for the **ESP32-P4 HomeAssistan
 - Light, switch, media player and scene control from the display
 - Auto-discovery of integration-owned sensors (battery, temperature)
 
-**Firmware repository:** [ESP32-P4-HomeAssistant-Display](https://github.com/GalusPeres/ESP32-P4-HomeAssistant-Display)
+**Firmware repository:** [HomeTiles](https://github.com/GalusPeres/HomeTiles)
 
-**Documentation:** [galusperes.github.io/ESP32-P4-HomeAssistant-Display](https://galusperes.github.io/ESP32-P4-HomeAssistant-Display/) — full setup guide, [bridge configuration](https://galusperes.github.io/ESP32-P4-HomeAssistant-Display/bridge/), tile reference, and FAQ
+**Documentation:** [galusperes.github.io/HomeTiles](https://galusperes.github.io/HomeTiles/) — full setup guide, [bridge configuration](https://galusperes.github.io/HomeTiles/bridge/), tile reference, and FAQ
 
 ## Installation
 
@@ -23,19 +23,19 @@ This integration is the Home Assistant companion for the **ESP32-P4 HomeAssistan
 
 1. Add this repository as a custom repository in HACS:
    - HACS > Integrations > three-dot menu (top right) > Custom repositories
-   - Repository: `https://github.com/GalusPeres/ESP32-P4-HomeAssistant-Display-Bridge`
+   - Repository: `https://github.com/GalusPeres/HomeTiles-Bridge`
    - Category: Integration
    - Click "Add"
 
 2. Install the integration:
-   - HACS > Integrations > Search for "ESP32-P4 HomeAssistant Display Bridge"
+   - HACS > Integrations > Search for "HomeTiles Bridge"
    - Click "Download"
 
 3. Restart Home Assistant
 
 4. Add the integration:
    - Settings > Devices & Services > Add Integration
-   - Search for "ESP32-P4 HomeAssistant Display Bridge"
+   - Search for "HomeTiles Bridge"
 
 ### Manual Installation
 
@@ -45,7 +45,7 @@ This integration is the Home Assistant companion for the **ESP32-P4 HomeAssistan
 
 ## Configuration
 
-Detailed instructions: [bridge documentation](https://galusperes.github.io/ESP32-P4-HomeAssistant-Display/bridge/)
+Detailed instructions: [bridge documentation](https://galusperes.github.io/HomeTiles/bridge/)
 
 Configure via the Home Assistant UI:
 
@@ -74,7 +74,7 @@ The integration communicates with the display firmware via MQTT:
 
 - Home Assistant 2025.11 or newer
 - MQTT broker configured in Home Assistant
-- [ESP32-P4 HomeAssistant Display](https://github.com/GalusPeres/ESP32-P4-HomeAssistant-Display) firmware
+- [HomeTiles](https://github.com/GalusPeres/HomeTiles) firmware
 
 ## Release Process
 

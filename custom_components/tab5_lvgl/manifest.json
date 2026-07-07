@@ -1,9 +1,9 @@
 {
   "domain": "tab5_lvgl",
-  "name": "ESP32-P4 HomeAssistant Display Bridge",
+  "name": "HomeTiles Bridge",
   "version": "0.5.38",
-  "documentation": "https://github.com/GalusPeres/ESP32-P4-HomeAssistant-Display-Bridge",
-  "issue_tracker": "https://github.com/GalusPeres/ESP32-P4-HomeAssistant-Display-Bridge/issues",
+  "documentation": "https://github.com/GalusPeres/HomeTiles-Bridge",
+  "issue_tracker": "https://github.com/GalusPeres/HomeTiles-Bridge/issues",
   "requirements": [],
   "dependencies": ["mqtt"],
   "after_dependencies": ["recorder"],
