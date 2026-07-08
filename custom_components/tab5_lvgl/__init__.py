@@ -3090,6 +3090,17 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
       if not existing.get(key) and data.get(key):
         existing[key] = data[key]
         changed = True
+    # Gleiches Prinzip fuer Entity-/Szenen-Zuordnungen: ein per Zeroconf VOR
+    # dem ersten MQTT-Connect erzeugter Eintrag hat hier noch nichts (siehe
+    # async_step_zeroconf_confirm in config_flow.py), waehrend der Nutzer auf
+    # dem Panel selbst (handleSaveBridge) schon vorher etwas eingerichtet
+    # haben kann. Ohne dieses Nachtragen wuerde genau dieser Fall die bereits
+    # gemachte Konfiguration beim ersten echten Connect stillschweigend
+    # verwerfen, weil sonst nur der SOURCE_IMPORT-Erstell-Pfad sie uebernimmt.
+    for key in (CONF_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES, CONF_MEDIA_PLAYERS, CONF_SCENE_MAP):
+      if not existing.get(key) and data.get(key):
+        existing[key] = data[key]
+        changed = True
     if changed:
       _LOGGER.info("Tab5 LVGL: Geraeteinfo fuer bestehende Bridge %s nachgetragen", device_id)
       hass.config_entries.async_update_entry(entry, data=existing)

@@ -11,10 +11,26 @@
           "manufacturer": "Manufacturer (optional)",
           "model": "Model (optional)"
         }
+      },
+      "zeroconf_confirm": {
+        "title": "Panel discovered",
+        "description": "**{name}** ({model}) was found on the network at {host}. HomeTiles Bridge will send Home Assistant's MQTT credentials to the panel; it will then restart.",
+        "data": {
+          "base_topic": "MQTT base topic",
+          "ha_prefix": "HA entity prefix"
+        }
       }
     },
     "error": {
-      "topic_already_configured": "A panel with this MQTT topic is already configured."
+      "topic_already_configured": "A panel with this MQTT topic is already configured.",
+      "cannot_connect": "Could not reach the panel. Check that it's still on the network and try again."
+    },
+    "abort": {
+      "missing_device_id": "The discovered device did not send a valid identifier.",
+      "mqtt_not_configured": "No MQTT integration is set up in Home Assistant. Please set up the MQTT integration first.",
+      "unsupported_broker": "The configured MQTT broker requires TLS or a client certificate, which the panel does not support. Please enter the broker credentials manually in the panel's web interface.",
+      "mqtt_read_failed": "Could not read the MQTT credentials.",
+      "already_configured": "This panel is already configured."
     }
   },
   "options": {

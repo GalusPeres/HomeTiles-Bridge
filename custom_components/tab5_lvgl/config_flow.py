@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlparse
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import callback
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.network import get_url
 
 from .const import (
   CONF_BASE_TOPIC,
@@ -44,20 +50,33 @@ _LOGGER = logging.getLogger(__name__)
 class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   VERSION = 1
 
+  # Von async_step_zeroconf zwischengespeichert, bis async_step_zeroconf_confirm
+  # abgeschlossen ist (kein persistenter State, nur fuer die Dauer des Flows).
+  _discovered_host: Optional[str] = None
+  _discovered_device_id: Optional[str] = None
+  _discovered_name: Optional[str] = None
+  _discovered_model: Optional[str] = None
+
+  def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
+    UND async_step_zeroconf_confirm genutzt, damit beide Wege dieselbe Regel haben."""
+    errors: Dict[str, str] = {}
+    base = _normalise_topic(user_input.get(CONF_BASE_TOPIC, DEFAULT_BASE), DEFAULT_BASE)
+    prefix = _normalise_topic(user_input.get(CONF_HA_PREFIX, DEFAULT_PREFIX), DEFAULT_PREFIX)
+    for entry in self._async_current_entries():
+      if entry.data.get(CONF_BASE_TOPIC) == base:
+        errors["base_topic"] = "topic_already_configured"
+        break
+    return {CONF_BASE_TOPIC: base, CONF_HA_PREFIX: prefix}, errors
+
   async def async_step_user(self, user_input: Dict[str, Any] | None = None):
     errors: Dict[str, str] = {}
 
     if user_input is not None:
-      base = _normalise_topic(user_input.get(CONF_BASE_TOPIC, DEFAULT_BASE), DEFAULT_BASE)
-      prefix = _normalise_topic(user_input.get(CONF_HA_PREFIX, DEFAULT_PREFIX), DEFAULT_PREFIX)
-
-      for entry in self._async_current_entries():
-        if entry.data.get(CONF_BASE_TOPIC) == base:
-          errors["base_topic"] = "topic_already_configured"
-          break
+      topics, errors = self._validate_topic_input(user_input)
 
       if not errors:
-        data: Dict[str, Any] = {CONF_BASE_TOPIC: base, CONF_HA_PREFIX: prefix}
+        data: Dict[str, Any] = dict(topics)
         for key in (CONF_DEVICE_NAME, CONF_MANUFACTURER, CONF_MODEL):
           val = (user_input.get(key) or "").strip()
           if val:
@@ -83,6 +102,80 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       await self.async_set_unique_id(device_id)
       self._abort_if_unique_id_configured()
     return self.async_create_entry(title=_entry_title(import_data), data=import_data)
+
+  async def async_step_zeroconf(self, discovery_info: Any):
+    """Panel per mDNS gefunden, BEVOR es MQTT-Zugangsdaten hat (siehe Firmware:
+    startMdns() in network_manager.cpp). Zeigt eine Discovery-Karte; der eigentliche
+    Zugangsdaten-Push passiert erst nach Nutzerbestaetigung in der confirm-Stufe."""
+    props = getattr(discovery_info, "properties", None) or {}
+    device_id = _txt(props, "device_id")
+    if not device_id:
+      return self.async_abort(reason="missing_device_id")
+
+    # Erste Zeile, bei JEDEM Aufruf: HA ruft diese Stufe bei jedem Re-Announce /
+    # jedem Neustart erneut auf, solange das Geraet sendet. Ohne konsistente
+    # unique_id wuerden mehrere "Neues Geraet gefunden"-Karten fuer dasselbe
+    # physische Panel entstehen.
+    await self.async_set_unique_id(device_id)
+    self._abort_if_unique_id_configured()
+
+    name = _txt(props, "name") or device_id
+    self._discovered_host = _discovery_host(discovery_info)
+    self._discovered_device_id = device_id
+    self._discovered_name = name
+    self._discovered_model = _txt(props, "model")
+    self.context["title_placeholders"] = {"name": name}
+
+    if not self._discovered_host:
+      return self.async_abort(reason="missing_device_id")
+
+    return await self.async_step_zeroconf_confirm()
+
+  async def async_step_zeroconf_confirm(self, user_input: Dict[str, Any] | None = None):
+    errors: Dict[str, str] = {}
+
+    if user_input is not None:
+      topics, errors = self._validate_topic_input(user_input)
+
+      if not errors:
+        creds, cred_error = _get_broker_credentials(self.hass)
+        if cred_error:
+          # Nicht ueber dieses Formular loesbar (keine/inkompatible MQTT-Konfiguration
+          # in HA) -- Flow beenden statt ein Formular zu zeigen, das nichts hilft.
+          return self.async_abort(reason=cred_error)
+
+        pushed = await _push_credentials_to_device(
+          self.hass,
+          self._discovered_host,
+          creds,
+          topics[CONF_BASE_TOPIC],
+          topics[CONF_HA_PREFIX],
+        )
+        if not pushed:
+          errors["base"] = "cannot_connect"
+        else:
+          data: Dict[str, Any] = dict(topics)
+          data[CONF_DEVICE_ID] = self._discovered_device_id
+          if self._discovered_name:
+            data[CONF_DEVICE_NAME] = self._discovered_name
+          if self._discovered_model:
+            data[CONF_MANUFACTURER] = "HomeTiles"
+            data[CONF_MODEL] = self._discovered_model
+          return self.async_create_entry(title=_entry_title(data), data=data)
+
+    return self.async_show_form(
+      step_id="zeroconf_confirm",
+      data_schema=vol.Schema({
+        vol.Required(CONF_BASE_TOPIC, default=DEFAULT_BASE): str,
+        vol.Required(CONF_HA_PREFIX, default=DEFAULT_PREFIX): str,
+      }),
+      description_placeholders={
+        "name": self._discovered_name or self._discovered_device_id or "",
+        "model": self._discovered_model or "HomeTiles",
+        "host": self._discovered_host or "",
+      },
+      errors=errors,
+    )
 
   @staticmethod
   @callback
@@ -348,6 +441,120 @@ def _normalise_topic(value: str | None, default: str) -> str:
   while result.endswith("/"):
     result = result[:-1]
   return result or default
+
+
+def _txt(props: Dict[str, Any], key: str) -> str:
+  """mDNS-TXT-Werte sind je nach HA-Version bereits str oder noch rohe bytes."""
+  val = props.get(key)
+  if isinstance(val, bytes):
+    try:
+      return val.decode("utf-8").strip()
+    except Exception:  # pragma: no cover - kaputte TXT-Daten
+      return ""
+  return str(val).strip() if val is not None else ""
+
+
+def _discovery_host(discovery_info: Any) -> str:
+  """Feldname fuer die Ziel-IP variiert je nach HA-Version (host vs. ip_address)."""
+  host = getattr(discovery_info, "host", None)
+  if host:
+    return str(host)
+  ip = getattr(discovery_info, "ip_address", None)
+  if ip:
+    return str(ip)
+  return ""
+
+
+def _get_broker_credentials(hass: HomeAssistant) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+  """Liest die Zugangsdaten von HA's eigener mqtt-Integration aus.
+
+  Rueckgabe (creds, error): error ist None bei Erfolg, sonst einer von
+  "mqtt_not_configured" / "unsupported_broker" / "mqtt_read_failed" -- alle
+  drei sind ueber dieses Formular nicht loesbar, der Flow bricht dann ab statt
+  ein Formular zu zeigen, das dem Nutzer nicht weiterhilft.
+  """
+  try:
+    from homeassistant.components.mqtt.const import CONF_BROKER, CONF_CLIENT_CERT, CONF_CLIENT_KEY
+    from homeassistant.const import CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+  except ImportError:  # pragma: no cover - HA-interne Struktur hat sich geaendert
+    return None, "mqtt_read_failed"
+
+  # "mqtt" ist Literal statt mqtt.DOMAIN, um nicht von einem re-exportierten
+  # Attribut abzuhaengen, das in dieser HA-Version evtl. nicht existiert.
+  mqtt_entries = [
+    entry for entry in hass.config_entries.async_entries("mqtt")
+    if entry.state is ConfigEntryState.LOADED
+  ]
+  if not mqtt_entries:
+    return None, "mqtt_not_configured"
+
+  data = dict(mqtt_entries[0].data or {})
+  broker = data.get(CONF_BROKER)
+  if not broker:
+    return None, "mqtt_not_configured"
+
+  try:
+    port = int(data.get(CONF_PORT, 1883) or 1883)
+  except (TypeError, ValueError):
+    port = 1883
+
+  # Die Firmware kann kein TLS (nur ein plaines WiFiClient, siehe
+  # network_manager.h) -- ein Broker, der Client-Zertifikate verlangt oder nur
+  # ueber den TLS-Standardport 8883 erreichbar ist, wuerde nie funktionieren.
+  if port == 8883 or data.get(CONF_CLIENT_CERT) or data.get(CONF_CLIENT_KEY):
+    return None, "unsupported_broker"
+
+  # Der Mosquitto-Add-on nutzt intern "core-mosquitto" (nur im Supervisor-
+  # Docker-Netz aufloesbar) -- vom ESP32 aus per LAN nicht erreichbar. Auf die
+  # intern erreichbare HA-URL ausweichen, Broker-Port bleibt unveraendert.
+  if broker in ("core-mosquitto", "localhost", "127.0.0.1", "::1"):
+    try:
+      internal = get_url(hass, prefer_external=False, allow_internal=True)
+      host_part = urlparse(internal).hostname
+      if host_part:
+        broker = host_part
+    except Exception:  # pragma: no cover - keine interne URL konfiguriert
+      pass
+
+  return {
+    "host": broker,
+    "port": port,
+    "username": data.get(CONF_USERNAME) or "",
+    "password": data.get(CONF_PASSWORD) or "",
+  }, None
+
+
+async def _push_credentials_to_device(
+  hass: HomeAssistant,
+  device_host: str,
+  creds: Dict[str, Any],
+  base_topic: str,
+  ha_prefix: str,
+) -> bool:
+  """Schiebt die Broker-Zugangsdaten per POST /mqtt (bestehender Admin-Endpoint,
+  siehe web_admin_handlers.cpp:handleSaveMQTT) auf das Panel und stoesst danach
+  einen Neustart an (POST /restart) -- ohne den bleibt mqtt_enabled auf dem
+  Boot-Latch stehen und die neuen Zugangsdaten wirken nie (siehe network_manager.cpp)."""
+  session = async_get_clientsession(hass)
+  timeout = aiohttp.ClientTimeout(total=5)
+  form = {
+    "mqtt_host": str(creds["host"]),
+    "mqtt_port": str(creds["port"]),
+    "mqtt_user": creds["username"],
+    "mqtt_pass": creds["password"],
+    "mqtt_base": base_topic,
+    "ha_prefix": ha_prefix,
+  }
+  try:
+    async with session.post(f"http://{device_host}/mqtt", data=form, timeout=timeout) as resp:
+      if resp.status not in (200, 303):
+        return False
+    async with session.post(f"http://{device_host}/restart", data={}, timeout=timeout) as resp:
+      if resp.status not in (200, 303):
+        return False
+  except (aiohttp.ClientError, asyncio.TimeoutError):
+    return False
+  return True
 
 
 def _entry_title(data: Dict[str, Any]) -> str:
