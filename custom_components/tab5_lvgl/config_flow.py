@@ -92,6 +92,13 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     creds, cred_error = _get_broker_credentials(self.hass, self._discovered_host)
     if creds is None:
       creds = _fallback_broker_credentials(self.hass, self._discovered_host)
+    else:
+      creds = dict(creds)
+      # HA's own MQTT integration credentials are often internal/add-on
+      # credentials and may not be the login a physical panel should use.
+      # Keep host/port automatic, but make auth an explicit user decision.
+      creds["username"] = ""
+      creds["password"] = ""
     self._discovered_mqtt_creds = dict(creds)
     self._discovered_mqtt_error = cred_error
     return dict(creds), cred_error
