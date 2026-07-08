@@ -107,9 +107,11 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Panel per mDNS gefunden, BEVOR es MQTT-Zugangsdaten hat (siehe Firmware:
     startMdns() in network_manager.cpp). Zeigt eine Discovery-Karte; der eigentliche
     Zugangsdaten-Push passiert erst nach Nutzerbestaetigung in der confirm-Stufe."""
+    _LOGGER.info("Tab5 LVGL: Zeroconf-Discovery ausgeloest: %r", discovery_info)
     props = getattr(discovery_info, "properties", None) or {}
     device_id = _txt(props, "device_id")
     if not device_id:
+      _LOGGER.warning("Tab5 LVGL: Zeroconf-Discovery ohne device_id in den TXT-Records, ignoriert. properties=%r", props)
       return self.async_abort(reason="missing_device_id")
 
     # Erste Zeile, bei JEDEM Aufruf: HA ruft diese Stufe bei jedem Re-Announce /
@@ -127,8 +129,11 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     self.context["title_placeholders"] = {"name": name}
 
     if not self._discovered_host:
+      _LOGGER.warning("Tab5 LVGL: Zeroconf-Discovery fuer %s ohne verwertbare Host-Adresse, ignoriert.", device_id)
       return self.async_abort(reason="missing_device_id")
 
+    _LOGGER.info("Tab5 LVGL: neues Panel per Zeroconf gefunden: device_id=%s host=%s name=%s model=%s",
+                 device_id, self._discovered_host, name, self._discovered_model)
     return await self.async_step_zeroconf_confirm()
 
   async def async_step_zeroconf_confirm(self, user_input: Dict[str, Any] | None = None):
@@ -140,6 +145,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       if not errors:
         creds, cred_error = _get_broker_credentials(self.hass)
         if cred_error:
+          _LOGGER.warning("Tab5 LVGL: Zeroconf-Pairing fuer %s abgebrochen, Grund=%s",
+                           self._discovered_device_id, cred_error)
           # Nicht ueber dieses Formular loesbar (keine/inkompatible MQTT-Konfiguration
           # in HA) -- Flow beenden statt ein Formular zu zeigen, das nichts hilft.
           return self.async_abort(reason=cred_error)
@@ -152,8 +159,12 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
           topics[CONF_HA_PREFIX],
         )
         if not pushed:
+          _LOGGER.warning("Tab5 LVGL: Zugangsdaten-Push an %s (%s) fehlgeschlagen",
+                           self._discovered_device_id, self._discovered_host)
           errors["base"] = "cannot_connect"
         else:
+          _LOGGER.info("Tab5 LVGL: Zugangsdaten erfolgreich an %s (%s) gepusht",
+                       self._discovered_device_id, self._discovered_host)
           data: Dict[str, Any] = dict(topics)
           data[CONF_DEVICE_ID] = self._discovered_device_id
           if self._discovered_name:
