@@ -22,7 +22,7 @@ CONF_LIGHTS = "lights"
 CONF_SWITCHES = "switches"
 CONF_MEDIA_PLAYERS = "media_players"
 
-DEFAULT_BASE = "tab5"
+DEFAULT_BASE = "hometiles"
 DEFAULT_PREFIX = "ha/statestream"
 SERVICE_PUBLISH_SNAPSHOT = "publish_snapshot"
 
