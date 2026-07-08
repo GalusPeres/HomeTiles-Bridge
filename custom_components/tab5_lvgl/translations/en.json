@@ -14,8 +14,12 @@
       },
       "zeroconf_confirm": {
         "title": "Panel discovered",
-        "description": "**{name}** ({model}) was found on the network at {host}. HomeTiles Bridge will send Home Assistant's MQTT credentials to the panel; it will then restart.",
+        "description": "**{name}** ({model}) was found on the network at {host}. HomeTiles Bridge will send the MQTT credentials below to the panel; it will then restart. The values are prefilled automatically and can be adjusted before sending.",
         "data": {
+          "mqtt_host": "MQTT host / IP",
+          "mqtt_port": "MQTT port",
+          "mqtt_username": "MQTT username",
+          "mqtt_password": "MQTT password",
           "base_topic": "MQTT base topic",
           "ha_prefix": "HA entity prefix"
         }
@@ -23,7 +27,9 @@
     },
     "error": {
       "topic_already_configured": "A panel with this MQTT topic is already configured.",
-      "cannot_connect": "Could not reach the panel. Check that it's still on the network and try again."
+      "cannot_connect": "Could not reach the panel. Check that it's still on the network and try again.",
+      "mqtt_host_required": "Enter an MQTT host or IP address.",
+      "invalid_port": "Enter a valid MQTT port between 1 and 65535."
     },
     "abort": {
       "missing_device_id": "The discovered device did not send a valid identifier.",

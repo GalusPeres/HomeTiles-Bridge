@@ -44,6 +44,11 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+CONF_PROVISION_MQTT_HOST = "mqtt_host"
+CONF_PROVISION_MQTT_PORT = "mqtt_port"
+CONF_PROVISION_MQTT_USERNAME = "mqtt_username"
+CONF_PROVISION_MQTT_PASSWORD = "mqtt_password"
+
 
 # ---------------------------------------------------------------------------
 #  Config flow — adding a new panel (device info only)
@@ -60,6 +65,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   _discovered_model: Optional[str] = None
   _discovered_base_topic: Optional[str] = None
   _discovered_ha_prefix: Optional[str] = None
+  _discovered_mqtt_creds: Optional[Dict[str, Any]] = None
+  _discovered_mqtt_error: Optional[str] = None
 
   def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
@@ -72,6 +79,22 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors["base_topic"] = "topic_already_configured"
         break
     return {CONF_BASE_TOPIC: base, CONF_HA_PREFIX: prefix}, errors
+
+  def _mqtt_defaults_for_discovery(self) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Ermittelt MQTT-Vorschlaege fuer den Discovery-Dialog.
+
+    Die Werte werden nur als Formular-Default genutzt. Der Nutzer kann sie vor
+    dem Push ans Panel immer ueberschreiben.
+    """
+    if self._discovered_mqtt_creds is not None:
+      return dict(self._discovered_mqtt_creds), self._discovered_mqtt_error
+
+    creds, cred_error = _get_broker_credentials(self.hass, self._discovered_host)
+    if creds is None:
+      creds = _fallback_broker_credentials(self.hass, self._discovered_host)
+    self._discovered_mqtt_creds = dict(creds)
+    self._discovered_mqtt_error = cred_error
+    return dict(creds), cred_error
 
   async def async_step_user(self, user_input: Dict[str, Any] | None = None):
     errors: Dict[str, str] = {}
@@ -132,6 +155,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     self._discovered_model = _txt(props, "model")
     self._discovered_base_topic = _txt(props, "base_topic")
     self._discovered_ha_prefix = _txt(props, "ha_prefix")
+    self._discovered_mqtt_creds = None
+    self._discovered_mqtt_error = None
     self.context["title_placeholders"] = {"name": name}
 
     if not self._discovered_host:
@@ -144,19 +169,14 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
   async def async_step_zeroconf_confirm(self, user_input: Dict[str, Any] | None = None):
     errors: Dict[str, str] = {}
+    mqtt_defaults, _ = self._mqtt_defaults_for_discovery()
 
     if user_input is not None:
       topics, errors = self._validate_topic_input(user_input)
+      creds, mqtt_errors = _mqtt_credentials_from_user_input(user_input, mqtt_defaults)
+      errors.update(mqtt_errors)
 
       if not errors:
-        creds, cred_error = _get_broker_credentials(self.hass, self._discovered_host)
-        if cred_error:
-          _LOGGER.warning("Tab5 LVGL: Zeroconf-Pairing fuer %s abgebrochen, Grund=%s",
-                           self._discovered_device_id, cred_error)
-          # Nicht ueber dieses Formular loesbar (keine/inkompatible MQTT-Konfiguration
-          # in HA) -- Flow beenden statt ein Formular zu zeigen, das nichts hilft.
-          return self.async_abort(reason=cred_error)
-
         pushed = await _push_credentials_to_device(
           self.hass,
           self._discovered_host,
@@ -190,6 +210,10 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     return self.async_show_form(
       step_id="zeroconf_confirm",
       data_schema=vol.Schema({
+        vol.Required(CONF_PROVISION_MQTT_HOST, default=mqtt_defaults.get("host", "")): str,
+        vol.Required(CONF_PROVISION_MQTT_PORT, default=mqtt_defaults.get("port", 1883)): int,
+        vol.Optional(CONF_PROVISION_MQTT_USERNAME, default=mqtt_defaults.get("username", "")): str,
+        vol.Optional(CONF_PROVISION_MQTT_PASSWORD, default=mqtt_defaults.get("password", "")): _password_schema(),
         vol.Required(CONF_BASE_TOPIC, default=base_default): str,
         vol.Required(CONF_HA_PREFIX, default=prefix_default): str,
       }),
@@ -590,13 +614,67 @@ def _broker_host_for_panel(hass: HomeAssistant, broker: str, device_host: str | 
   return broker
 
 
+def _password_schema() -> Any:
+  try:
+    return selector.TextSelector(
+      selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+    )
+  except (AttributeError, TypeError):
+    return str
+
+
+def _fallback_broker_credentials(hass: HomeAssistant, device_host: str | None = None) -> Dict[str, Any]:
+  return {
+    "host": _source_ip_for_target(device_host) or _ha_url_host(hass, prefer_external=False),
+    "port": 1883,
+    "username": "",
+    "password": "",
+  }
+
+
+def _mqtt_credentials_from_user_input(
+  user_input: Dict[str, Any],
+  defaults: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
+  errors: Dict[str, str] = {}
+
+  host = _normalise_broker_host_input(
+    user_input.get(CONF_PROVISION_MQTT_HOST, defaults.get("host", ""))
+  )
+  if not host:
+    errors[CONF_PROVISION_MQTT_HOST] = "mqtt_host_required"
+
+  try:
+    port = int(user_input.get(CONF_PROVISION_MQTT_PORT, defaults.get("port", 1883)) or 1883)
+  except (TypeError, ValueError):
+    port = 1883
+    errors[CONF_PROVISION_MQTT_PORT] = "invalid_port"
+
+  if port < 1 or port > 65535:
+    errors[CONF_PROVISION_MQTT_PORT] = "invalid_port"
+
+  return {
+    "host": host,
+    "port": port,
+    "username": str(user_input.get(CONF_PROVISION_MQTT_USERNAME, defaults.get("username", "")) or "").strip(),
+    "password": str(user_input.get(CONF_PROVISION_MQTT_PASSWORD, defaults.get("password", "")) or ""),
+  }, errors
+
+
+def _normalise_broker_host_input(value: Any) -> str:
+  text = str(value or "").strip()
+  if not text:
+    return ""
+  host = _host_from_url(text)
+  return host or text
+
+
 def _get_broker_credentials(hass: HomeAssistant, device_host: str | None = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
   """Liest die Zugangsdaten von HA's eigener mqtt-Integration aus.
 
   Rueckgabe (creds, error): error ist None bei Erfolg, sonst einer von
-  "mqtt_not_configured" / "unsupported_broker" / "mqtt_read_failed" -- alle
-  drei sind ueber dieses Formular nicht loesbar, der Flow bricht dann ab statt
-  ein Formular zu zeigen, das dem Nutzer nicht weiterhilft.
+  "mqtt_not_configured" / "unsupported_broker" / "mqtt_read_failed". Der
+  Discovery-Dialog zeigt in diesen Faellen trotzdem manuell aenderbare Felder.
   """
   try:
     from homeassistant.components.mqtt.const import CONF_BROKER, CONF_CLIENT_CERT, CONF_CLIENT_KEY
