@@ -262,6 +262,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   if dev_info.get("model"):
     kwargs["model"] = dev_info["model"]
   device_reg.async_get_or_create(**kwargs)
+  # Der Entry-Titel wird sonst nur einmal bei der Ersterstellung gesetzt und
+  # danach nie wieder - anders als der Geraetename oben, der bei jedem Setup
+  # frisch berechnet wird. Ohne diesen Abgleich laufen beide Namen auseinander
+  # (sichtbar als zwei verschiedene Labels uebereinander in der Geraete-Liste),
+  # sobald sich am Default-/Fallback-Namen mal etwas aendert.
+  if entry.title != dev_info["name"]:
+    hass.config_entries.async_update_entry(entry, title=dev_info["name"])
   _migrate_internal_sensor_entity_ids(hass, entry)
   bridge = Tab5Bridge(hass, entry)
   await bridge.async_setup()
