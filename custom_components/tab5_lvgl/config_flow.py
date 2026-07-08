@@ -144,7 +144,11 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Panel per mDNS gefunden, BEVOR es MQTT-Zugangsdaten hat (siehe Firmware:
     startMdns() in network_manager.cpp). Zeigt eine Discovery-Karte; der eigentliche
     Zugangsdaten-Push passiert erst nach Nutzerbestaetigung in der confirm-Stufe."""
-    _LOGGER.info("Tab5 LVGL: Zeroconf-Discovery ausgeloest: %r", discovery_info)
+    # WARNING statt INFO: bei diesem Nutzer kommen INFO-Meldungen im
+    # exportierten HA-Log nicht an (Logger-Level-Problem, unabhaengig von
+    # unserem Code) -- WARNING kommt nachweislich durch (siehe die
+    # "Tab5 LVGL DEBUG: Publishing config..."-Zeilen in __init__.py).
+    _LOGGER.warning("Tab5 LVGL DEBUG: Zeroconf-Discovery ausgeloest: %r", discovery_info)
     props = getattr(discovery_info, "properties", None) or {}
     device_id = _txt(props, "device_id")
     if not device_id:
@@ -173,8 +177,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       _LOGGER.warning("Tab5 LVGL: Zeroconf-Discovery fuer %s ohne verwertbare Host-Adresse, ignoriert.", device_id)
       return self.async_abort(reason="missing_device_id")
 
-    _LOGGER.info("Tab5 LVGL: neues Panel per Zeroconf gefunden: device_id=%s host=%s name=%s model=%s base=%s",
-                 device_id, self._discovered_host, name, self._discovered_model, self._discovered_base_topic)
+    _LOGGER.warning("Tab5 LVGL DEBUG: neues Panel per Zeroconf gefunden: device_id=%s host=%s name=%s model=%s base=%s",
+                    device_id, self._discovered_host, name, self._discovered_model, self._discovered_base_topic)
     return await self.async_step_zeroconf_confirm()
 
   async def async_step_zeroconf_confirm(self, user_input: Dict[str, Any] | None = None):
