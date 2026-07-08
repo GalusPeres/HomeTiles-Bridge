@@ -402,6 +402,7 @@ class Tab5Bridge:
     )
     self._unsub_state = None
     self._unsub_connected = None
+    self._unsub_ip = None
     self._unsub_scene = None
     self._unsub_light = None
     self._unsub_switch = None
@@ -487,6 +488,11 @@ class Tab5Bridge:
       self.hass,
       f"{self.base_topic}/stat/connected",
       self._async_handle_connected,
+    )
+    self._unsub_ip = await mqtt.async_subscribe(
+      self.hass,
+      f"{self.base_topic}/stat/ip",
+      self._async_handle_ip,
     )
     self._unsub_scene = await mqtt.async_subscribe(
       self.hass,
@@ -575,6 +581,9 @@ class Tab5Bridge:
     if self._unsub_connected:
       self._unsub_connected()
       self._unsub_connected = None
+    if self._unsub_ip:
+      self._unsub_ip()
+      self._unsub_ip = None
     if self._unsub_scene:
       self._unsub_scene()
       self._unsub_scene = None
@@ -891,6 +900,22 @@ class Tab5Bridge:
       await self.async_publish_config_to_device()
       await self.async_publish_snapshot()
       self._schedule_config_refresh()
+
+  async def _async_handle_ip(self, msg: ReceiveMessage) -> None:
+    """Mirror the panel's current LAN IP onto the device's configuration_url,
+    so the HA device page gets a working link into the panel's own web-admin
+    UI. Retained on the firmware side, so this also fires right after
+    subscribe with whatever IP the panel last connected from."""
+    ip = msg.payload.strip()
+    if not ip or not self.device_id:
+      return
+    device_reg = dr.async_get(self.hass)
+    device = device_reg.async_get_device(identifiers={(DOMAIN, self.device_id)})
+    if not device:
+      return
+    url = f"http://{ip}/"
+    if device.configuration_url != url:
+      device_reg.async_update_device(device.id, configuration_url=url)
 
   async def _async_handle_request(self, msg: ReceiveMessage) -> None:
     """Handle explicit bridge refresh requests."""

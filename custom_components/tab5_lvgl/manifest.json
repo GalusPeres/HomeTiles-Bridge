@@ -1,7 +1,7 @@
 {
   "domain": "tab5_lvgl",
   "name": "HomeTiles Bridge",
-  "version": "0.6.17",
+  "version": "0.6.18",
   "documentation": "https://github.com/GalusPeres/HomeTiles-Bridge",
   "issue_tracker": "https://github.com/GalusPeres/HomeTiles-Bridge/issues",
   "requirements": [],
