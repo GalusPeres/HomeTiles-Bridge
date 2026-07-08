@@ -357,7 +357,7 @@ def _entry_title(data: Dict[str, Any]) -> str:
   device_id = data.get(CONF_DEVICE_ID)
   if device_id:
     return f"Panel {device_id[-4:].upper()}"
-  return "LVGL Panel"
+  return "HomeTiles Panel"
 
 
 def _normalise_entity_list(values: Any) -> list[str]:

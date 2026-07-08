@@ -3199,4 +3199,4 @@ def _entry_title(data: Dict[str, Any]) -> str:
   if device_id:
     suffix = device_id[-4:].upper()
     return f"Panel {suffix}"
-  return "LVGL Panel"
+  return "HomeTiles Panel"

@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Add panel",
-        "description": "Set up a new LVGL panel.",
+        "description": "Set up a new HomeTiles panel.",
         "data": {
           "base_topic": "MQTT base topic",
           "ha_prefix": "HA entity prefix",

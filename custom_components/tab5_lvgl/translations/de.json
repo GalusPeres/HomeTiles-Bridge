@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Panel hinzuf\u00fcgen",
-        "description": "Neues LVGL-Panel einrichten.",
+        "description": "Neues HomeTiles-Panel einrichten.",
         "data": {
           "base_topic": "MQTT-Basis",
           "ha_prefix": "HA-Praefix",

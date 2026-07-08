@@ -51,7 +51,7 @@ def entry_device_name(entry: ConfigEntry) -> str:
     if device_id:
         suffix = str(device_id)[-4:].upper()
         return f"Panel {suffix}"
-    return "LVGL Panel"
+    return "HomeTiles Panel"
 
 
 def entry_device_info(entry: ConfigEntry) -> DeviceInfo:
