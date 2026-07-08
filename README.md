@@ -1,4 +1,4 @@
-# HomeTiles Bridge
+# <img src="logo.png" width="34" alt="" align="top"> HomeTiles Bridge
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=GalusPeres&repository=HomeTiles-Bridge&category=integration)
 
