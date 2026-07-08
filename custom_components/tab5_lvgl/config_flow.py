@@ -525,6 +525,51 @@ def _discovery_host(discovery_info: Any) -> str:
   return ""
 
 
+def _host_from_url(value: str | None) -> str:
+  text = str(value or "").strip()
+  if not text:
+    return ""
+  parsed = urlparse(text if "://" in text else f"//{text}")
+  return (parsed.hostname or text).strip("[]").lower()
+
+
+def _ha_url_host(hass: HomeAssistant, prefer_external: bool) -> str:
+  try:
+    url = get_url(
+      hass,
+      prefer_external=prefer_external,
+      allow_internal=True,
+      allow_external=True,
+    )
+  except Exception:  # pragma: no cover - HA may not have both URLs configured
+    return ""
+  return _host_from_url(url)
+
+
+def _broker_host_for_panel(hass: HomeAssistant, broker: str) -> str:
+  broker = str(broker or "").strip()
+  broker_host = _host_from_url(broker)
+  if not broker_host:
+    return broker
+
+  internal_host = _ha_url_host(hass, prefer_external=False)
+  external_host = _ha_url_host(hass, prefer_external=True)
+  local_only_hosts = {"core-mosquitto", "localhost", "127.0.0.1", "::1"}
+
+  if broker_host in local_only_hosts:
+    return internal_host or broker
+
+  if internal_host and external_host and broker_host == external_host and internal_host != external_host:
+    _LOGGER.info(
+      "Tab5 LVGL: MQTT-Broker %s entspricht externer HA-URL, verwende fuer Panel interne Adresse %s",
+      broker,
+      internal_host,
+    )
+    return internal_host
+
+  return broker
+
+
 def _get_broker_credentials(hass: HomeAssistant) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
   """Liest die Zugangsdaten von HA's eigener mqtt-Integration aus.
 
@@ -552,6 +597,7 @@ def _get_broker_credentials(hass: HomeAssistant) -> Tuple[Optional[Dict[str, Any
   broker = data.get(CONF_BROKER)
   if not broker:
     return None, "mqtt_not_configured"
+  broker = _broker_host_for_panel(hass, str(broker))
 
   try:
     port = int(data.get(CONF_PORT, 1883) or 1883)
@@ -563,18 +609,6 @@ def _get_broker_credentials(hass: HomeAssistant) -> Tuple[Optional[Dict[str, Any
   # ueber den TLS-Standardport 8883 erreichbar ist, wuerde nie funktionieren.
   if port == 8883 or data.get(CONF_CLIENT_CERT) or data.get(CONF_CLIENT_KEY):
     return None, "unsupported_broker"
-
-  # Der Mosquitto-Add-on nutzt intern "core-mosquitto" (nur im Supervisor-
-  # Docker-Netz aufloesbar) -- vom ESP32 aus per LAN nicht erreichbar. Auf die
-  # intern erreichbare HA-URL ausweichen, Broker-Port bleibt unveraendert.
-  if broker in ("core-mosquitto", "localhost", "127.0.0.1", "::1"):
-    try:
-      internal = get_url(hass, prefer_external=False, allow_internal=True)
-      host_part = urlparse(internal).hostname
-      if host_part:
-        broker = host_part
-    except Exception:  # pragma: no cover - keine interne URL konfiguriert
-      pass
 
   return {
     "host": broker,
