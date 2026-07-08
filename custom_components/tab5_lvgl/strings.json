@@ -14,7 +14,7 @@
       },
       "zeroconf_confirm": {
         "title": "Panel gefunden",
-        "description": "**{name}** ({model}) wurde im Netzwerk unter {host} gefunden. Die HomeTiles Bridge sendet die MQTT-Zugangsdaten unten an das Panel; es startet danach neu. Host und Port sind automatisch vorausgef\u00fcllt. Benutzername und Passwort bitte eintragen, falls dein MQTT-Broker Login-Daten verlangt.",
+        "description": "**{name}** ({model}) wurde im Netzwerk unter {host} gefunden. Die HomeTiles Bridge sendet die MQTT-Zugangsdaten unten an das Panel; es startet danach neu. Host und Port sind automatisch vorausgef\u00fcllt. Wenn ein einzelner Mosquitto-Addon-Login lesbar ist, wird er ebenfalls vorausgef\u00fcllt; sonst bitte Benutzername und Passwort eintragen.",
         "data": {
           "mqtt_host": "MQTT Host / IP",
           "mqtt_port": "MQTT Port",

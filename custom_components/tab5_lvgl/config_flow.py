@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import os
 import socket
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
@@ -80,7 +81,7 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         break
     return {CONF_BASE_TOPIC: base, CONF_HA_PREFIX: prefix}, errors
 
-  def _mqtt_defaults_for_discovery(self) -> Tuple[Dict[str, Any], Optional[str]]:
+  async def _mqtt_defaults_for_discovery(self) -> Tuple[Dict[str, Any], Optional[str]]:
     """Ermittelt MQTT-Vorschlaege fuer den Discovery-Dialog.
 
     Die Werte werden nur als Formular-Default genutzt. Der Nutzer kann sie vor
@@ -99,6 +100,11 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       # Keep host/port automatic, but make auth an explicit user decision.
       creds["username"] = ""
       creds["password"] = ""
+    mosquitto_logins = await _get_mosquitto_addon_logins(self.hass)
+    if len(mosquitto_logins) == 1:
+      username, password = next(iter(mosquitto_logins.items()))
+      creds["username"] = username
+      creds["password"] = password
     self._discovered_mqtt_creds = dict(creds)
     self._discovered_mqtt_error = cred_error
     return dict(creds), cred_error
@@ -176,7 +182,7 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
   async def async_step_zeroconf_confirm(self, user_input: Dict[str, Any] | None = None):
     errors: Dict[str, str] = {}
-    mqtt_defaults, _ = self._mqtt_defaults_for_discovery()
+    mqtt_defaults, _ = await self._mqtt_defaults_for_discovery()
 
     if user_input is not None:
       topics, errors = self._validate_topic_input(user_input)
@@ -637,6 +643,64 @@ def _fallback_broker_credentials(hass: HomeAssistant, device_host: str | None = 
     "username": "",
     "password": "",
   }
+
+
+async def _get_mosquitto_addon_logins(hass: HomeAssistant) -> Dict[str, str]:
+  """Liest nutzbare Mosquitto-Addon-Logins via Supervisor, wenn verfuegbar."""
+  token = os.environ.get("SUPERVISOR_TOKEN")
+  if not token:
+    return {}
+
+  session = async_get_clientsession(hass)
+  timeout = aiohttp.ClientTimeout(total=4)
+  headers = {"Authorization": f"Bearer {token}"}
+  for slug in ("core_mosquitto", "local_mosquitto"):
+    try:
+      async with session.get(
+        f"http://supervisor/addons/{slug}/options",
+        headers=headers,
+        timeout=timeout,
+      ) as resp:
+        if resp.status == 404:
+          continue
+        if resp.status != 200:
+          _LOGGER.debug("Mosquitto addon options unavailable via Supervisor: HTTP %s", resp.status)
+          continue
+        payload = await resp.json(content_type=None)
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+      continue
+
+    logins = _extract_mosquitto_logins(payload)
+    if logins:
+      _LOGGER.debug("Mosquitto addon login defaults found via Supervisor: %d login(s)", len(logins))
+      return logins
+  return {}
+
+
+def _extract_mosquitto_logins(payload: Dict[str, Any]) -> Dict[str, str]:
+  data = payload.get("data") if isinstance(payload, dict) else None
+  if isinstance(data, dict) and isinstance(data.get("options"), dict):
+    options = data["options"]
+  elif isinstance(data, dict):
+    options = data
+  else:
+    options = payload if isinstance(payload, dict) else {}
+
+  raw_logins = options.get("logins")
+  if not isinstance(raw_logins, list):
+    return {}
+
+  result: Dict[str, str] = {}
+  for item in raw_logins:
+    if not isinstance(item, dict):
+      continue
+    if item.get("password_pre_hashed"):
+      continue
+    username = str(item.get("username") or "").strip()
+    password = str(item.get("password") or "")
+    if username and password:
+      result[username] = password
+  return result
 
 
 def _mqtt_credentials_from_user_input(

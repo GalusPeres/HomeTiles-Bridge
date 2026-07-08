@@ -14,7 +14,7 @@
       },
       "zeroconf_confirm": {
         "title": "Panel discovered",
-        "description": "**{name}** ({model}) was found on the network at {host}. HomeTiles Bridge will send the MQTT credentials below to the panel; it will then restart. Host and port are prefilled automatically. Enter username and password if your MQTT broker requires login credentials.",
+        "description": "**{name}** ({model}) was found on the network at {host}. HomeTiles Bridge will send the MQTT credentials below to the panel; it will then restart. Host and port are prefilled automatically. If exactly one Mosquitto add-on login is readable, it is prefilled too; otherwise enter username and password.",
         "data": {
           "mqtt_host": "MQTT host / IP",
           "mqtt_port": "MQTT port",
