@@ -3079,7 +3079,20 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
   entry = _find_entry_by_device_id(hass, device_id)
 
   if entry:
-    # Gerät ist bereits mit dieser Integration verbunden -> nichts zu tun
+    # Geraet ist bereits verbunden - trotzdem pruefen, ob die Firmware jetzt
+    # Geraetename/Hersteller/Modell mitliefert, die beim urspruenglichen
+    # Verbinden noch fehlten (z.B. nach einem Firmware-Update). Ein vom Nutzer
+    # manuell gesetzter Wert (siehe entry_device_name()) bleibt unangetastet,
+    # da hier nur echte Luecken aufgefuellt werden, nie Bestehendes ueberschrieben.
+    existing = dict(entry.data)
+    changed = False
+    for key in (CONF_MANUFACTURER, CONF_MODEL, CONF_DEVICE_NAME):
+      if not existing.get(key) and data.get(key):
+        existing[key] = data[key]
+        changed = True
+    if changed:
+      _LOGGER.info("Tab5 LVGL: Geraeteinfo fuer bestehende Bridge %s nachgetragen", device_id)
+      hass.config_entries.async_update_entry(entry, data=existing)
     return
 
   fallback = _find_entry_by_base(hass, data.get(CONF_BASE_TOPIC))
