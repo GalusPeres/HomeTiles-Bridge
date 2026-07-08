@@ -305,6 +305,22 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
         errors["base"] = err.args[0]
       else:
         self.hass.config_entries.async_update_entry(self.config_entry, data=updated)
+        # Diese Auswahl gilt laut Formularbeschreibung "fuer alle Panels", lag
+        # bisher aber nur auf dem einen Eintrag, ueber dessen Menue man sie
+        # bearbeitet hat -- wurde der geloescht (z.B. zum Neu-Pairen nach
+        # einem device_id-Wechsel), war die gesamte Auswahl ersatzlos weg.
+        # Auf allen Eintraegen spiegeln, wie es async_step_energy schon tut.
+        shared_keys = (
+          CONF_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES,
+          CONF_MEDIA_PLAYERS, CONF_SCENE_MAP, CONF_SCENE_MAP_TEXT,
+        )
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+          if entry.entry_id == self.config_entry.entry_id:
+            continue
+          other = dict(entry.data or {})
+          for key in shared_keys:
+            other[key] = updated[key]
+          self.hass.config_entries.async_update_entry(entry, data=other)
         return self.async_create_entry(title="", data={})
 
     merged = _merge_all_entities(self.hass, current)
