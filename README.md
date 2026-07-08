@@ -1,5 +1,7 @@
 # HomeTiles Bridge
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=GalusPeres&repository=HomeTiles-Bridge&category=integration)
+
 Home Assistant custom integration for the [HomeTiles](https://github.com/GalusPeres/HomeTiles) project. Bridges Home Assistant entities, sensors, weather, energy data and more to ESP32-based LVGL displays via MQTT.
 
 ## About
@@ -21,7 +23,7 @@ This integration is the Home Assistant companion for the **HomeTiles** firmware.
 
 ### Via HACS (Recommended)
 
-1. Add this repository as a custom repository in HACS:
+1. Click the "Open in HACS" badge above (opens the custom repository dialog directly in your Home Assistant), or add it manually:
    - HACS > Integrations > three-dot menu (top right) > Custom repositories
    - Repository: `https://github.com/GalusPeres/HomeTiles-Bridge`
    - Category: Integration
