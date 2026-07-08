@@ -86,7 +86,7 @@ from .device_helpers import entry_device_id, entry_device_info, entry_device_nam
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["light", "select", "switch", "sensor"]
+PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor"]
 
 MEDIA_COVER_MAX_BYTES = 20000
 # Source covers from HA media_player_proxy can be 200-500 KB (HD album art).
