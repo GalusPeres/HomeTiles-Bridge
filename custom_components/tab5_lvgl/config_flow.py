@@ -56,6 +56,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   _discovered_device_id: Optional[str] = None
   _discovered_name: Optional[str] = None
   _discovered_model: Optional[str] = None
+  _discovered_base_topic: Optional[str] = None
+  _discovered_ha_prefix: Optional[str] = None
 
   def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
@@ -64,7 +66,7 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     base = _normalise_topic(user_input.get(CONF_BASE_TOPIC, DEFAULT_BASE), DEFAULT_BASE)
     prefix = _normalise_topic(user_input.get(CONF_HA_PREFIX, DEFAULT_PREFIX), DEFAULT_PREFIX)
     for entry in self._async_current_entries():
-      if entry.data.get(CONF_BASE_TOPIC) == base:
+      if _entry_base_topic(entry) == base:
         errors["base_topic"] = "topic_already_configured"
         break
     return {CONF_BASE_TOPIC: base, CONF_HA_PREFIX: prefix}, errors
@@ -126,14 +128,16 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     self._discovered_device_id = device_id
     self._discovered_name = name
     self._discovered_model = _txt(props, "model")
+    self._discovered_base_topic = _txt(props, "base_topic")
+    self._discovered_ha_prefix = _txt(props, "ha_prefix")
     self.context["title_placeholders"] = {"name": name}
 
     if not self._discovered_host:
       _LOGGER.warning("Tab5 LVGL: Zeroconf-Discovery fuer %s ohne verwertbare Host-Adresse, ignoriert.", device_id)
       return self.async_abort(reason="missing_device_id")
 
-    _LOGGER.info("Tab5 LVGL: neues Panel per Zeroconf gefunden: device_id=%s host=%s name=%s model=%s",
-                 device_id, self._discovered_host, name, self._discovered_model)
+    _LOGGER.info("Tab5 LVGL: neues Panel per Zeroconf gefunden: device_id=%s host=%s name=%s model=%s base=%s",
+                 device_id, self._discovered_host, name, self._discovered_model, self._discovered_base_topic)
     return await self.async_step_zeroconf_confirm()
 
   async def async_step_zeroconf_confirm(self, user_input: Dict[str, Any] | None = None):
@@ -174,11 +178,18 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data[CONF_MODEL] = self._discovered_model
           return self.async_create_entry(title=_entry_title(data), data=data)
 
+    base_default = _default_base_for_discovery(
+      self._discovered_base_topic,
+      self._discovered_device_id,
+      self._async_current_entries(),
+    )
+    prefix_default = _normalise_topic(self._discovered_ha_prefix, DEFAULT_PREFIX)
+
     return self.async_show_form(
       step_id="zeroconf_confirm",
       data_schema=vol.Schema({
-        vol.Required(CONF_BASE_TOPIC, default=DEFAULT_BASE): str,
-        vol.Required(CONF_HA_PREFIX, default=DEFAULT_PREFIX): str,
+        vol.Required(CONF_BASE_TOPIC, default=base_default): str,
+        vol.Required(CONF_HA_PREFIX, default=prefix_default): str,
       }),
       description_placeholders={
         "name": self._discovered_name or self._discovered_device_id or "",
@@ -454,6 +465,44 @@ def _normalise_topic(value: str | None, default: str) -> str:
   return result or default
 
 
+def _entry_base_topic(entry: config_entries.ConfigEntry) -> str:
+  data = dict(entry.data or {})
+  if entry.options:
+    data.update(entry.options)
+  return _normalise_topic(data.get(CONF_BASE_TOPIC), DEFAULT_BASE)
+
+
+def _base_topic_used(entries: list[config_entries.ConfigEntry], base_topic: str) -> bool:
+  return any(_entry_base_topic(entry) == base_topic for entry in entries)
+
+
+def _default_base_for_discovery(
+  preferred: str | None,
+  device_id: str | None,
+  entries: list[config_entries.ConfigEntry],
+) -> str:
+  base = _normalise_topic(preferred, DEFAULT_BASE)
+  if not _base_topic_used(entries, base):
+    return base
+
+  suffix = ""
+  if device_id:
+    suffix = str(device_id).split("_")[-1].strip().lower()
+  if not suffix:
+    suffix = "panel"
+
+  candidate = _normalise_topic(f"{DEFAULT_BASE}_{suffix}", DEFAULT_BASE)
+  if not _base_topic_used(entries, candidate):
+    return candidate
+
+  index = 2
+  while True:
+    numbered = f"{candidate}_{index}"
+    if not _base_topic_used(entries, numbered):
+      return numbered
+    index += 1
+
+
 def _txt(props: Dict[str, Any], key: str) -> str:
   """mDNS-TXT-Werte sind je nach HA-Version bereits str oder noch rohe bytes."""
   val = props.get(key)
@@ -557,10 +606,10 @@ async def _push_credentials_to_device(
     "ha_prefix": ha_prefix,
   }
   try:
-    async with session.post(f"http://{device_host}/mqtt", data=form, timeout=timeout) as resp:
+    async with session.post(f"http://{device_host}/mqtt", data=form, timeout=timeout, allow_redirects=False) as resp:
       if resp.status not in (200, 303):
         return False
-    async with session.post(f"http://{device_host}/restart", data={}, timeout=timeout) as resp:
+    async with session.post(f"http://{device_host}/restart", data={}, timeout=timeout, allow_redirects=False) as resp:
       if resp.status not in (200, 303):
         return False
   except (aiohttp.ClientError, asyncio.TimeoutError):
