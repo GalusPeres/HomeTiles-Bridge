@@ -543,7 +543,11 @@ def _default_base_for_discovery(
 
   suffix = ""
   if device_id:
-    suffix = str(device_id).split("_")[-1].strip().lower()
+    # Letzte 4 Zeichen der device_id als kurzer Kollisions-Suffix -- unabhaengig
+    # davon, ob die ID (alt) Unterstriche enthaelt oder (neu, volle MAC als
+    # Hex) keine. split("_")[-1] gab bei der neuen Hex-only-Form die komplette
+    # device_id zurueck, statt nur ein kurzes Suffix.
+    suffix = str(device_id).strip().lower()[-4:]
   if not suffix:
     suffix = "panel"
 
