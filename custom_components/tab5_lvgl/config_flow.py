@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
+import socket
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -147,7 +149,7 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       topics, errors = self._validate_topic_input(user_input)
 
       if not errors:
-        creds, cred_error = _get_broker_credentials(self.hass)
+        creds, cred_error = _get_broker_credentials(self.hass, self._discovered_host)
         if cred_error:
           _LOGGER.warning("Tab5 LVGL: Zeroconf-Pairing fuer %s abgebrochen, Grund=%s",
                            self._discovered_device_id, cred_error)
@@ -546,7 +548,24 @@ def _ha_url_host(hass: HomeAssistant, prefer_external: bool) -> str:
   return _host_from_url(url)
 
 
-def _broker_host_for_panel(hass: HomeAssistant, broker: str) -> str:
+def _source_ip_for_target(target_host: str | None) -> str:
+  try:
+    target_ip = ipaddress.ip_address(str(target_host or "").strip())
+  except ValueError:
+    return ""
+
+  family = socket.AF_INET6 if target_ip.version == 6 else socket.AF_INET
+  address = (str(target_ip), 9, 0, 0) if target_ip.version == 6 else (str(target_ip), 9)
+  try:
+    with socket.socket(family, socket.SOCK_DGRAM) as sock:
+      sock.connect(address)
+      source_ip = sock.getsockname()[0]
+  except OSError:
+    return ""
+  return source_ip if source_ip and not source_ip.startswith("0.") else ""
+
+
+def _broker_host_for_panel(hass: HomeAssistant, broker: str, device_host: str | None = None) -> str:
   broker = str(broker or "").strip()
   broker_host = _host_from_url(broker)
   if not broker_host:
@@ -554,23 +573,24 @@ def _broker_host_for_panel(hass: HomeAssistant, broker: str) -> str:
 
   internal_host = _ha_url_host(hass, prefer_external=False)
   external_host = _ha_url_host(hass, prefer_external=True)
+  source_ip = _source_ip_for_target(device_host)
   local_only_hosts = {"core-mosquitto", "localhost", "127.0.0.1", "::1"}
 
   if broker_host in local_only_hosts:
-    return internal_host or broker
+    return source_ip or internal_host or broker
 
-  if internal_host and external_host and broker_host == external_host and internal_host != external_host:
+  if broker_host in {host for host in (internal_host, external_host) if host}:
     _LOGGER.info(
-      "Tab5 LVGL: MQTT-Broker %s entspricht externer HA-URL, verwende fuer Panel interne Adresse %s",
+      "Tab5 LVGL: MQTT-Broker %s entspricht HA-URL, verwende fuer Panel lokale Adresse %s",
       broker,
-      internal_host,
+      source_ip or internal_host or broker,
     )
-    return internal_host
+    return source_ip or internal_host or broker
 
   return broker
 
 
-def _get_broker_credentials(hass: HomeAssistant) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def _get_broker_credentials(hass: HomeAssistant, device_host: str | None = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
   """Liest die Zugangsdaten von HA's eigener mqtt-Integration aus.
 
   Rueckgabe (creds, error): error ist None bei Erfolg, sonst einer von
@@ -597,7 +617,7 @@ def _get_broker_credentials(hass: HomeAssistant) -> Tuple[Optional[Dict[str, Any
   broker = data.get(CONF_BROKER)
   if not broker:
     return None, "mqtt_not_configured"
-  broker = _broker_host_for_panel(hass, str(broker))
+  broker = _broker_host_for_panel(hass, str(broker), device_host)
 
   try:
     port = int(data.get(CONF_PORT, 1883) or 1883)
