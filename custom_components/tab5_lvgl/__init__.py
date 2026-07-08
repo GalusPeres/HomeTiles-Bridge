@@ -293,7 +293,7 @@ def _migrate_internal_sensor_entity_ids(hass: HomeAssistant, entry: ConfigEntry)
     "_external_temperature": "sensor.tab5_external_temperature",
   }
 
-  for reg_entry in registry.entities.values():
+  for reg_entry in list(registry.entities.values()):
     if reg_entry.config_entry_id != entry.entry_id:
       continue
     if reg_entry.domain != "sensor":
