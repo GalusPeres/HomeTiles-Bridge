@@ -88,7 +88,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor"]
 
-MEDIA_COVER_MAX_BYTES = 20000
+MEDIA_COVER_MAX_BYTES = 14000
 # Source covers from HA media_player_proxy can be 200-500 KB (HD album art).
 # Pillow prepares one 240x240 cover for both the compact tile and the larger
 # popup. Older firmware accepts the same payload fields and JPEG format and
@@ -130,7 +130,7 @@ def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
 
       # Keep the 240x240 resolution and lower only JPEG quality as needed so
       # the Base64-encoded image still fits the existing MQTT message budget.
-      for quality in (86, 78, 70, 62, 54, 46, 38, 30):
+      for quality in (84, 76, 68, 60, 52, 44, 36, 28, 22, 18):
         output = BytesIO()
         image.save(
           output,
