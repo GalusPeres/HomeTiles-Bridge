@@ -383,6 +383,7 @@ class Tab5Bridge:
     self.media_players: List[str] = _unique_entities(list(data.get(CONF_MEDIA_PLAYERS, [])))
     self.tracked_entities: List[str] = []
     self._media_cover_cache: Dict[str, Dict[str, Any]] = {}
+    self._media_publish_generation: Dict[str, int] = {}
     self.scene_map: Dict[str, str] = {
       (alias or "").lower(): entity
       for alias, entity in (data.get(CONF_SCENE_MAP, {}) or {}).items()
@@ -676,17 +677,25 @@ class Tab5Bridge:
         continue
       await self._async_publish_entity_state(entity_id, state)
 
-  async def _async_build_state_payload(self, entity_id: str, state: State) -> str:
+  async def _async_build_state_payload(
+    self,
+    entity_id: str,
+    state: State,
+    *,
+    include_media_cover: bool = True,
+  ) -> str:
     if entity_id.startswith("media_player."):
       payload = _extract_media_player_payload(state, self.hass)
-      await self._async_attach_media_cover_data(entity_id, payload)
+      if include_media_cover:
+        await self._async_attach_media_cover_data(entity_id, payload)
       payload_text = json.dumps(payload, default=str)
-      _LOGGER.warning(
-        "Tab5 media state payload for %s: %s chars, cover_data=%s",
-        entity_id,
-        len(payload_text),
-        "entity_picture_data" in payload,
-      )
+      if include_media_cover:
+        _LOGGER.warning(
+          "Tab5 media state payload for %s: %s chars, cover_data=%s",
+          entity_id,
+          len(payload_text),
+          "entity_picture_data" in payload,
+        )
       return payload_text
     return self._build_state_payload(entity_id, state)
 
@@ -714,7 +723,31 @@ class Tab5Bridge:
     if not self._owns_state_publish(entity_id):
       return
     topic = self._ha_topic_for_entity(entity_id, "state")
+
+    if entity_id.startswith("media_player."):
+      generation = self._media_publish_generation.get(entity_id, 0) + 1
+      self._media_publish_generation[entity_id] = generation
+      # Publish the small state on an additional topic first. Previously every
+      # play/pause/volume change waited for cover fetch/resize and then travelled
+      # as a 12-19 KB MQTT packet. New firmware subscribes to state_fast as well
+      # as state. Older firmware remains on the unchanged, full retained state
+      # topic, so its cover/update behaviour stays completely compatible.
+      fast_payload = await self._async_build_state_payload(
+        entity_id,
+        state,
+        include_media_cover=False,
+      )
+      fast_topic = self._ha_topic_for_entity(entity_id, "state_fast")
+      await mqtt.async_publish(self.hass, fast_topic, fast_payload, qos=0, retain=True)
+
     payload = await self._async_build_state_payload(entity_id, state)
+    if entity_id.startswith("media_player."):
+      # State-change tasks run concurrently. A slow cover HTTP request from an
+      # older event must never arrive after a newer play/pause/title state and
+      # overwrite it on the retained topic.
+      if self._media_publish_generation.get(entity_id) != generation:
+        _LOGGER.debug("Skipping stale media payload for %s", entity_id)
+        return
     await mqtt.async_publish(self.hass, topic, payload, qos=0, retain=True)
     if _is_weather_entity(entity_id):
       await self._async_publish_weather_state(entity_id, state, retain=True)
