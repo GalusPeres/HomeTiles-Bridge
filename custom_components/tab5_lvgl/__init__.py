@@ -2015,6 +2015,34 @@ class Tab5Bridge:
           brightness_pct = round(brightness / 255 * 100)
       if brightness_pct is not None:
         payload["brightness_pct"] = brightness_pct
+
+      # Preserve Home Assistant's native CCT state and range. A CCT-only
+      # light can also expose converted rgb_color/hs_color attributes; those
+      # values describe its current appearance, not additional capabilities.
+      color_temp_kelvin = attrs.get("color_temp_kelvin")
+      if not isinstance(color_temp_kelvin, (int, float)):
+        color_temp_mired = attrs.get("color_temp")
+        if isinstance(color_temp_mired, (int, float)) and color_temp_mired > 0:
+          color_temp_kelvin = 1_000_000 / color_temp_mired
+      if isinstance(color_temp_kelvin, (int, float)) and color_temp_kelvin > 0:
+        payload["color_temp_kelvin"] = round(color_temp_kelvin)
+
+      min_color_temp_kelvin = attrs.get("min_color_temp_kelvin")
+      if not isinstance(min_color_temp_kelvin, (int, float)):
+        max_mireds = attrs.get("max_mireds")
+        if isinstance(max_mireds, (int, float)) and max_mireds > 0:
+          min_color_temp_kelvin = 1_000_000 / max_mireds
+      if isinstance(min_color_temp_kelvin, (int, float)) and min_color_temp_kelvin > 0:
+        payload["min_color_temp_kelvin"] = round(min_color_temp_kelvin)
+
+      max_color_temp_kelvin = attrs.get("max_color_temp_kelvin")
+      if not isinstance(max_color_temp_kelvin, (int, float)):
+        min_mireds = attrs.get("min_mireds")
+        if isinstance(min_mireds, (int, float)) and min_mireds > 0:
+          max_color_temp_kelvin = 1_000_000 / min_mireds
+      if isinstance(max_color_temp_kelvin, (int, float)) and max_color_temp_kelvin > 0:
+        payload["max_color_temp_kelvin"] = round(max_color_temp_kelvin)
+
       rgb = attrs.get("rgb_color")
       if isinstance(rgb, (list, tuple)) and len(rgb) >= 3:
         r, g, b = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
