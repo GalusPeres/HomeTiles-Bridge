@@ -1784,6 +1784,13 @@ class Tab5Bridge:
       service_data["hvac_mode"] = hvac_mode
     elif command in ("turn_on", "turn_off", "toggle"):
       service = command
+    elif command == "set_humidity" or parsed.get("humidity") is not None:
+      humidity = _coerce_float(parsed.get("humidity"))
+      if humidity is None:
+        _LOGGER.warning("Climate humidity command is invalid: %s", msg.payload)
+        return
+      service = "set_humidity"
+      service_data["humidity"] = humidity
     elif command == "set_fan_mode" or parsed.get("fan_mode") is not None:
       fan_mode = str(parsed.get("fan_mode") or "").strip()
       if not fan_mode:
@@ -1791,6 +1798,26 @@ class Tab5Bridge:
         return
       service = "set_fan_mode"
       service_data["fan_mode"] = fan_mode
+    elif command == "set_swing_mode" or parsed.get("swing_mode") is not None:
+      swing_mode = str(parsed.get("swing_mode") or "").strip()
+      if not swing_mode:
+        _LOGGER.warning("Climate swing command is missing swing_mode: %s", msg.payload)
+        return
+      service = "set_swing_mode"
+      service_data["swing_mode"] = swing_mode
+    elif (
+      command == "set_swing_horizontal_mode"
+      or parsed.get("swing_horizontal_mode") is not None
+    ):
+      swing_mode = str(parsed.get("swing_horizontal_mode") or "").strip()
+      if not swing_mode:
+        _LOGGER.warning(
+          "Climate horizontal swing command is missing swing_horizontal_mode: %s",
+          msg.payload,
+        )
+        return
+      service = "set_swing_horizontal_mode"
+      service_data["swing_horizontal_mode"] = swing_mode
     elif command == "set_preset_mode" or parsed.get("preset_mode") is not None:
       preset_mode = str(parsed.get("preset_mode") or "").strip()
       if not preset_mode:
@@ -2145,11 +2172,16 @@ class Tab5Bridge:
       for key in (
         "hvac_action",
         "current_temperature",
+        "current_humidity",
         "temperature",
+        "target_humidity",
+        "humidity",
         "target_temp_low",
         "target_temp_high",
         "min_temp",
         "max_temp",
+        "min_humidity",
+        "max_humidity",
         "target_temp_step",
         "precision",
         "hvac_modes",
@@ -2159,6 +2191,8 @@ class Tab5Bridge:
         "preset_modes",
         "swing_mode",
         "swing_modes",
+        "swing_horizontal_mode",
+        "swing_horizontal_modes",
       ):
         value = attrs.get(key)
         if value is not None:
