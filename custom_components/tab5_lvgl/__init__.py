@@ -56,6 +56,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
   CONF_BASE_TOPIC,
+  CONF_CLIMATES,
   CONF_DEVICE_ID,
   CONF_DEVICE_NAME,
   CONF_ENERGY_ELECTRICITY,
@@ -381,6 +382,7 @@ class Tab5Bridge:
     self.lights: List[str] = _unique_entities(list(data.get(CONF_LIGHTS, [])))
     self.switches: List[str] = _unique_entities(list(data.get(CONF_SWITCHES, [])))
     self.media_players: List[str] = _unique_entities(list(data.get(CONF_MEDIA_PLAYERS, [])))
+    self.climates: List[str] = _unique_entities(list(data.get(CONF_CLIMATES, [])))
     self.tracked_entities: List[str] = []
     self._media_cover_cache: Dict[str, Dict[str, Any]] = {}
     self._media_publish_generation: Dict[str, int] = {}
@@ -412,6 +414,7 @@ class Tab5Bridge:
     self._unsub_light = None
     self._unsub_switch = None
     self._unsub_media = None
+    self._unsub_climate = None
     self._unsub_request = None
     self._unsub_history = None
     self._unsub_weather = None
@@ -444,6 +447,7 @@ class Tab5Bridge:
     all_lights: List[str] = []
     all_switches: List[str] = []
     all_media_players: List[str] = []
+    all_climates: List[str] = []
     all_weathers: List[str] = []
     all_scene_map: Dict[str, str] = {}
     for entry in self.hass.config_entries.async_entries(DOMAIN):
@@ -458,6 +462,7 @@ class Tab5Bridge:
       all_lights.extend(list(data.get(CONF_LIGHTS, [])))
       all_switches.extend(list(data.get(CONF_SWITCHES, [])))
       all_media_players.extend(list(data.get(CONF_MEDIA_PLAYERS, [])))
+      all_climates.extend(list(data.get(CONF_CLIMATES, [])))
       all_weathers.extend(weathers)
       for alias, entity in (data.get(CONF_SCENE_MAP, {}) or {}).items():
         if alias and entity:
@@ -467,6 +472,7 @@ class Tab5Bridge:
       "lights": _unique_entities(all_lights),
       "switches": _unique_entities(all_switches),
       "media_players": _unique_entities(all_media_players),
+      "climates": _unique_entities(all_climates),
       "weathers": _unique_entities(all_weathers),
       "scene_map": all_scene_map,
     }
@@ -480,10 +486,11 @@ class Tab5Bridge:
     self.lights = merged["lights"]
     self.switches = merged["switches"]
     self.media_players = merged["media_players"]
+    self.climates = merged["climates"]
     self.weathers = merged["weathers"]
     self.scene_map.update(merged["scene_map"])
     self.tracked_entities = _unique_entities(
-      self.sensors + self.lights + self.switches + self.media_players + self.weathers
+      self.sensors + self.lights + self.switches + self.media_players + self.climates + self.weathers
     )
 
   async def async_setup(self) -> None:
@@ -523,6 +530,12 @@ class Tab5Bridge:
       self._async_handle_media_command,
     )
 
+    self._unsub_climate = await mqtt.async_subscribe(
+      self.hass,
+      f"{self.base_topic}/cmnd/climate",
+      self._async_handle_climate_command,
+    )
+
     if self.tracked_entities:
       self._unsub_state = async_track_state_change_event(
         self.hass,
@@ -533,7 +546,7 @@ class Tab5Bridge:
     self._prime_icon_cache()
 
     _LOGGER.info(
-      "Tab5 MQTT bridge ready (device=%s, base=%s, ha_prefix=%s, sensors=%d, lights=%d, switches=%d, media=%d)",
+      "Tab5 MQTT bridge ready (device=%s, base=%s, ha_prefix=%s, sensors=%d, lights=%d, switches=%d, media=%d, climate=%d)",
       self.device_id or "n/a",
       self.base_topic,
       self.ha_prefix,
@@ -541,6 +554,7 @@ class Tab5Bridge:
       len(self.lights),
       len(self.switches),
       len(self.media_players),
+      len(self.climates),
     )
     if self.config_topic:
       request_topic = f"{CONFIG_TOPIC_ROOT}/{self.device_id}/bridge/request"
@@ -601,6 +615,9 @@ class Tab5Bridge:
     if self._unsub_media:
       self._unsub_media()
       self._unsub_media = None
+    if self._unsub_climate:
+      self._unsub_climate()
+      self._unsub_climate = None
     if hasattr(self, "_unsub_request") and self._unsub_request:
       self._unsub_request()
       self._unsub_request = None
@@ -640,6 +657,8 @@ class Tab5Bridge:
         "switch_meta": self._build_entity_meta(self.switches),
         CONF_MEDIA_PLAYERS: self.media_players,
         "media_player_meta": self._build_entity_meta(self.media_players),
+        CONF_CLIMATES: self.climates,
+        "climate_meta": self._build_entity_meta(self.climates),
         "scene_meta": self._build_scene_meta(),
         "scene_map": self.scene_map,
     }
@@ -1735,6 +1754,71 @@ class Tab5Bridge:
       blocking=False,
     )
 
+  async def _async_handle_climate_command(self, msg: ReceiveMessage) -> None:
+    """Execute climate commands originating from a HomeTiles popup."""
+    parsed = _try_parse_json(msg.payload.strip())
+    if not isinstance(parsed, dict):
+      _LOGGER.warning("Unhandled climate command from HomeTiles: %s", msg.payload)
+      return
+
+    raw_entity = parsed.get("entity_id") or parsed.get("entity")
+    entity_id = str(raw_entity).strip() if raw_entity is not None else None
+    entity_id = self._resolve_target_entity(entity_id, self.climates)
+    if not entity_id:
+      _LOGGER.warning(
+        "Unhandled climate command from HomeTiles (unknown entity): %s",
+        msg.payload,
+      )
+      return
+
+    command = str(parsed.get("command") or parsed.get("service") or "").strip().lower()
+    service = ""
+    service_data: Dict[str, Any] = {"entity_id": entity_id}
+
+    hvac_mode = str(parsed.get("hvac_mode") or "").strip().lower()
+    if command == "set_hvac_mode" or hvac_mode:
+      if not hvac_mode:
+        _LOGGER.warning("Climate HVAC command is missing hvac_mode: %s", msg.payload)
+        return
+      service = "set_hvac_mode"
+      service_data["hvac_mode"] = hvac_mode
+    elif command in ("turn_on", "turn_off", "toggle"):
+      service = command
+    elif command == "set_fan_mode" or parsed.get("fan_mode") is not None:
+      fan_mode = str(parsed.get("fan_mode") or "").strip()
+      if not fan_mode:
+        _LOGGER.warning("Climate fan command is missing fan_mode: %s", msg.payload)
+        return
+      service = "set_fan_mode"
+      service_data["fan_mode"] = fan_mode
+    elif command == "set_preset_mode" or parsed.get("preset_mode") is not None:
+      preset_mode = str(parsed.get("preset_mode") or "").strip()
+      if not preset_mode:
+        _LOGGER.warning("Climate preset command is missing preset_mode: %s", msg.payload)
+        return
+      service = "set_preset_mode"
+      service_data["preset_mode"] = preset_mode
+    else:
+      for key in ("temperature", "target_temp_low", "target_temp_high"):
+        if parsed.get(key) is None:
+          continue
+        value = _coerce_float(parsed.get(key))
+        if value is None:
+          _LOGGER.warning("Climate temperature command has invalid %s: %s", key, msg.payload)
+          return
+        service_data[key] = value
+      if len(service_data) == 1:
+        _LOGGER.warning("Climate command is missing a supported action: %s", msg.payload)
+        return
+      service = "set_temperature"
+
+    await self.hass.services.async_call(
+      "climate",
+      service,
+      service_data,
+      blocking=False,
+    )
+
   async def _async_handle_media_command(self, msg: ReceiveMessage) -> None:
     """Execute media player commands originating from the Tab5."""
     payload = msg.payload.strip()
@@ -2052,6 +2136,39 @@ class Tab5Bridge:
       if isinstance(hs, (list, tuple)) and len(hs) >= 2:
         payload["hs_color"] = [float(hs[0]), float(hs[1])]
       return json.dumps(payload)
+    if entity_id.startswith("climate."):
+      attrs = state.attributes or {}
+      payload: Dict[str, Any] = {
+        "state": state.state,
+        "hvac_mode": state.state,
+      }
+      for key in (
+        "hvac_action",
+        "current_temperature",
+        "temperature",
+        "target_temp_low",
+        "target_temp_high",
+        "min_temp",
+        "max_temp",
+        "target_temp_step",
+        "precision",
+        "hvac_modes",
+        "fan_mode",
+        "fan_modes",
+        "preset_mode",
+        "preset_modes",
+        "swing_mode",
+        "swing_modes",
+      ):
+        value = attrs.get(key)
+        if value is not None:
+          payload[key] = value
+      unit = attrs.get("temperature_unit") or attrs.get("unit_of_measurement")
+      if not unit:
+        unit = getattr(self.hass.config.units, "temperature_unit", None)
+      if unit:
+        payload["temperature_unit"] = str(unit)
+      return json.dumps(payload, default=str)
     if entity_id.startswith("media_player."):
       return json.dumps(_extract_media_player_payload(state, self.hass), default=str)
     return state.state.replace(",", ".")
@@ -3187,7 +3304,10 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     # haben kann. Ohne dieses Nachtragen wuerde genau dieser Fall die bereits
     # gemachte Konfiguration beim ersten echten Connect stillschweigend
     # verwerfen, weil sonst nur der SOURCE_IMPORT-Erstell-Pfad sie uebernimmt.
-    for key in (CONF_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES, CONF_MEDIA_PLAYERS, CONF_SCENE_MAP):
+    for key in (
+      CONF_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES,
+      CONF_MEDIA_PLAYERS, CONF_CLIMATES, CONF_SCENE_MAP,
+    ):
       if not existing.get(key) and data.get(key):
         existing[key] = data[key]
         changed = True
@@ -3261,6 +3381,11 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     raise ValueError("invalid_media_players")
   media_players = [str(item).strip() for item in media_players_raw if str(item).strip()]
 
+  climates_raw = payload.get("climates") or []
+  if not isinstance(climates_raw, list):
+    raise ValueError("invalid_climates")
+  climates = [str(item).strip() for item in climates_raw if str(item).strip()]
+
   scene_map_raw = payload.get("scene_map") or {}
   if not isinstance(scene_map_raw, dict):
     raise ValueError("invalid_scene_map")
@@ -3283,6 +3408,7 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     CONF_LIGHTS: lights,
     CONF_SWITCHES: switches,
     CONF_MEDIA_PLAYERS: media_players,
+    CONF_CLIMATES: climates,
     CONF_SCENE_MAP: scene_map,
   }
   if manufacturer:

@@ -12,7 +12,7 @@ This integration is the Home Assistant companion for the **HomeTiles** firmware.
 - Sensor history for popup charts (24h / 5min buckets)
 - Weather forecasts (daily + hourly)
 - Energy dashboard data (consumption, solar, grid, battery, gas, water)
-- Light, switch, media player and scene control from the display
+- Light, switch, climate, media player and scene control from the display
 - Auto-discovery of integration-owned sensors (battery, temperature)
 
 **Firmware repository:** [HomeTiles](https://github.com/GalusPeres/HomeTiles)
@@ -52,7 +52,7 @@ Detailed instructions: [bridge documentation](https://galusperes.github.io/HomeT
 Configure via the Home Assistant UI:
 
 - **Panel Settings** - MQTT base topic, HA prefix, device metadata
-- **Entity Configuration** - Sensors, weather, lights, switches, media players, scenes
+- **Entity Configuration** - Sensors, weather, lights, switches, climate devices, media players, scenes
 - **Energy Dashboard** - Electricity, gas and water from the HA Energy Dashboard
 
 ## MQTT Topics
@@ -70,6 +70,7 @@ The integration communicates with the display firmware via MQTT:
 | `base_topic/cmnd/light` | Display > HA | Light control commands |
 | `base_topic/cmnd/switch` | Display > HA | Switch control commands |
 | `base_topic/cmnd/media` | Display > HA | Media player commands |
+| `base_topic/cmnd/climate` | Display > HA | Climate temperature and HVAC mode commands |
 | `base_topic/cmnd/scene` | Display > HA | Scene activation |
 
 ## Requirements

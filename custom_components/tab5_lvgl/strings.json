@@ -67,6 +67,7 @@
           "lights": "Lichter",
           "switches": "Schalter",
           "media_players": "Media Player",
+          "climates": "Klima / Heizung",
           "scene_entities": "Szenen / Scripts",
           "scene_map_text": "Szenen- / Script-Alias"
         }

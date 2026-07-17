@@ -21,6 +21,7 @@ from homeassistant.helpers.network import get_url
 
 from .const import (
   CONF_BASE_TOPIC,
+  CONF_CLIMATES,
   CONF_DEVICE_ID,
   CONF_DEVICE_NAME,
   CONF_ENERGY_ELECTRICITY,
@@ -311,7 +312,7 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
         # einem device_id-Wechsel), war die gesamte Auswahl ersatzlos weg.
         # Auf allen Eintraegen spiegeln, wie es async_step_energy schon tut.
         shared_keys = (
-          CONF_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES,
+          CONF_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES, CONF_CLIMATES,
           CONF_MEDIA_PLAYERS, CONF_SCENE_MAP, CONF_SCENE_MAP_TEXT,
         )
         for entry in self.hass.config_entries.async_entries(DOMAIN):
@@ -341,6 +342,9 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
         ),
         vol.Optional(CONF_MEDIA_PLAYERS, default=merged.get(CONF_MEDIA_PLAYERS, [])): selector.EntitySelector(
           selector.EntitySelectorConfig(domain=["media_player"], multiple=True)
+        ),
+        vol.Optional(CONF_CLIMATES, default=merged.get(CONF_CLIMATES, [])): selector.EntitySelector(
+          selector.EntitySelectorConfig(domain=["climate"], multiple=True)
         ),
         vol.Optional(CONF_SCENE_ENTITIES, default=merged.get(CONF_SCENE_ENTITIES, [])): selector.EntitySelector(
           selector.EntitySelectorConfig(domain=["scene", "script"], multiple=True)
@@ -414,6 +418,7 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
   all_lights = list(current.get(CONF_LIGHTS, []))
   all_switches = list(current.get(CONF_SWITCHES, []))
   all_media_players = list(current.get(CONF_MEDIA_PLAYERS, []))
+  all_climates = list(current.get(CONF_CLIMATES, []))
   all_scene_ids = list((current.get(CONF_SCENE_MAP) or {}).values())
   scene_map_text = current.get(CONF_SCENE_MAP_TEXT, "")
 
@@ -430,6 +435,7 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
     all_lights.extend(list(data.get(CONF_LIGHTS, [])))
     all_switches.extend(list(data.get(CONF_SWITCHES, [])))
     all_media_players.extend(list(data.get(CONF_MEDIA_PLAYERS, [])))
+    all_climates.extend(list(data.get(CONF_CLIMATES, [])))
     all_scene_ids.extend(list((data.get(CONF_SCENE_MAP) or {}).values()))
 
   return {
@@ -438,6 +444,7 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
     CONF_LIGHTS: _unique(all_lights),
     CONF_SWITCHES: _unique(all_switches),
     CONF_MEDIA_PLAYERS: _unique(all_media_players),
+    CONF_CLIMATES: _unique(all_climates),
     CONF_SCENE_ENTITIES: _unique(all_scene_ids),
     CONF_SCENE_MAP_TEXT: scene_map_text,
   }
@@ -451,6 +458,7 @@ def _convert_entity_data(user_input: Dict[str, Any], current: Dict[str, Any]) ->
   lights = _normalise_entity_list(user_input.get(CONF_LIGHTS, []))
   switches = _normalise_entity_list(user_input.get(CONF_SWITCHES, []))
   media_players = _normalise_entity_list(user_input.get(CONF_MEDIA_PLAYERS, []))
+  climates = _normalise_entity_list(user_input.get(CONF_CLIMATES, []))
 
   scene_map = {}
   selected_scenes = _normalise_entity_list(user_input.get(CONF_SCENE_ENTITIES, []))
@@ -478,6 +486,7 @@ def _convert_entity_data(user_input: Dict[str, Any], current: Dict[str, Any]) ->
   updated[CONF_LIGHTS] = lights
   updated[CONF_SWITCHES] = switches
   updated[CONF_MEDIA_PLAYERS] = media_players
+  updated[CONF_CLIMATES] = climates
   updated[CONF_SCENE_MAP] = scene_map
   updated[CONF_SCENE_MAP_TEXT] = scene_map_text
   return updated
