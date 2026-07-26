@@ -228,6 +228,31 @@ class CameraStreamView(HomeAssistantView):
         with suppress(BrokenPipeError, ConnectionResetError):
           await process.stdin.wait_closed()
 
+  async def _async_log_ffmpeg_stderr(
+    self,
+    session: CameraStreamSession,
+    process: asyncio.subprocess.Process,
+    image_mode: bool,
+  ) -> None:
+    """Drain FFmpeg stderr and expose useful diagnostics for still cameras."""
+    if process.stderr is None:
+      return
+    while line := await process.stderr.readline():
+      message = line.decode(errors="replace").strip()
+      if not message:
+        continue
+      if image_mode:
+        _LOGGER.warning(
+          "HomeTiles camera FFmpeg (%s): %s",
+          session.entity_id,
+          message,
+        )
+      else:
+        _LOGGER.debug(
+          "HomeTiles camera FFmpeg warning (%s)",
+          session.entity_id,
+        )
+
   async def get(self, request: web.Request, token: str) -> web.StreamResponse:
     """Start FFmpeg after validating the single-use session token."""
     session = await self._manager.async_take_session(token)
@@ -282,14 +307,6 @@ class CameraStreamView(HomeAssistantView):
       "pipe:1",
     ])
 
-    process = await asyncio.create_subprocess_exec(
-      *command,
-      stdin=asyncio.subprocess.PIPE if image_mode else asyncio.subprocess.DEVNULL,
-      stdout=asyncio.subprocess.PIPE,
-      stderr=asyncio.subprocess.DEVNULL,
-    )
-    await self._manager.async_register_process(session.device_id, process)
-
     response = web.StreamResponse(
       status=200,
       headers={
@@ -304,8 +321,32 @@ class CameraStreamView(HomeAssistantView):
 
     sent = 0
     feeder: asyncio.Task[None] | None = None
+    stderr_task: asyncio.Task[None] | None = None
+    process: asyncio.subprocess.Process | None = None
     try:
+      # Send the HTTP response immediately. On slower HA hosts, waiting for
+      # FFmpeg to spawn before prepare() made the ESP32-P4 time out while it
+      # was still waiting for the status line and headers.
       await response.prepare(request)
+      _LOGGER.info(
+        "HomeTiles camera HTTP client connected (%s, mode=%s, fps=%d)",
+        session.entity_id,
+        "image" if image_mode else "stream",
+        session.fps,
+      )
+      process = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE
+        if image_mode
+        else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+      )
+      await self._manager.async_register_process(session.device_id, process)
+      stderr_task = self._manager.hass.async_create_task(
+        self._async_log_ffmpeg_stderr(session, process, image_mode),
+        f"HomeTiles camera FFmpeg log {session.entity_id}",
+      )
       if image_mode:
         feeder = self._manager.hass.async_create_task(
           self._async_feed_camera_images(session, process),
@@ -314,10 +355,22 @@ class CameraStreamView(HomeAssistantView):
       assert process.stdout is not None
       while chunk := await process.stdout.read(16 * 1024):
         await response.write(chunk)
+        if sent == 0:
+          _LOGGER.info(
+            "HomeTiles camera first H.264 bytes sent (%s, %d bytes)",
+            session.entity_id,
+            len(chunk),
+          )
         sent += len(chunk)
     except (ConnectionResetError, asyncio.CancelledError):
       _LOGGER.debug(
         "HomeTiles camera client disconnected (%s, %d bytes)",
+        session.entity_id,
+        sent,
+      )
+    except Exception:
+      _LOGGER.exception(
+        "HomeTiles camera HTTP/FFmpeg pipeline failed (%s, %d bytes)",
         session.entity_id,
         sent,
       )
@@ -326,13 +379,17 @@ class CameraStreamView(HomeAssistantView):
         feeder.cancel()
         with suppress(asyncio.CancelledError):
           await feeder
-      if process.returncode is None:
+      if process and process.returncode is None:
         process.terminate()
         try:
           await asyncio.wait_for(process.wait(), timeout=2.0)
         except TimeoutError:
           process.kill()
           await process.wait()
-      await self._manager.async_forget_process(session.device_id, process)
+      if stderr_task:
+        with suppress(asyncio.CancelledError):
+          await stderr_task
+      if process:
+        await self._manager.async_forget_process(session.device_id, process)
 
     return response

@@ -1922,6 +1922,12 @@ class Tab5Bridge:
 
     try:
       session = await manager.async_create_session(self.device_id, entity_id)
+      _LOGGER.info(
+        "HomeTiles camera session ready (%s, mode=%s, fps=%d)",
+        entity_id,
+        "image" if session.source is None else "stream",
+        session.fps,
+      )
       if get_url is None:
         raise ValueError("home_assistant_url_unavailable")
       base_url = get_url(
