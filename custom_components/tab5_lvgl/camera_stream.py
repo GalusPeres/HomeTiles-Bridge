@@ -1,4 +1,4 @@
-"""Short-lived H.264 camera streams for the HomeTiles camera popup."""
+"""Short-lived JPEG-frame video streams for the HomeTiles camera popup."""
 
 from __future__ import annotations
 
@@ -24,89 +24,53 @@ CAMERA_STREAM_HTTP_PORT_FIRST: Final = 8124
 CAMERA_STREAM_HTTP_PORT_LAST: Final = 8131
 CAMERA_STREAM_WIDTH: Final = 640
 CAMERA_STREAM_HEIGHT: Final = 480
-CAMERA_STREAM_FPS: Final = 1
-CAMERA_STILL_FPS: Final = 1
-CAMERA_STREAM_BITRATE_KBIT: Final = 350
+CAMERA_STREAM_FPS: Final = 5
+CAMERA_STILL_FPS: Final = 2
+CAMERA_JPEG_QUALITY: Final = 5
 CAMERA_HTTP_WRITE_BYTES: Final = 2 * 1024
-CAMERA_HTTP_WRITE_PAUSE_SECONDS: Final = 0.004
+CAMERA_HTTP_WRITE_PAUSE_SECONDS: Final = 0.002
 CAMERA_SESSION_TTL_SECONDS: Final = 30.0
 CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
-CAMERA_MAX_ACCESS_UNIT_BYTES: Final = 512 * 1024
-CAMERA_STREAM_FRAMING: Final = "be32-access-unit"
-# A zero-length protocol record flushes the HTTP response without presenting a
-# fake H.264 NAL unit to the decoder.
+CAMERA_MAX_JPEG_BYTES: Final = 256 * 1024
+CAMERA_STREAM_FRAMING: Final = "be32-jpeg"
+# A zero-length protocol record flushes the HTTP response without presenting
+# a fake JPEG frame to the decoder.
 CAMERA_STREAM_FLUSH_RECORD: Final = b"\x00\x00\x00\x00"
 
 
-def _annex_b_aud_offsets(data: bytearray) -> list[int]:
-  """Return Annex-B offsets whose NAL unit is an access-unit delimiter."""
-  offsets: list[int] = []
-  index = 0
-  end = len(data)
-  while index + 4 <= end:
-    start_len = 0
-    if (
-      index + 5 <= end
-      and data[index] == 0
-      and data[index + 1] == 0
-      and data[index + 2] == 0
-      and data[index + 3] == 1
-    ):
-      start_len = 4
-    elif (
-      data[index] == 0
-      and data[index + 1] == 0
-      and data[index + 2] == 1
-    ):
-      start_len = 3
-    if not start_len:
-      index += 1
-      continue
-    nal_header = index + start_len
-    if nal_header < end and data[nal_header] & 0x1F == 9:
-      offsets.append(index)
-    index = nal_header + 1
-  return offsets
-
-
-class H264AccessUnitFramer:
-  """Reassemble FFmpeg's arbitrary stdout chunks into complete H.264 pictures."""
+class JpegFrameParser:
+  """Reassemble FFmpeg's arbitrary stdout chunks into complete JPEG frames."""
 
   def __init__(self) -> None:
     self._buffer = bytearray()
 
   def feed(self, data: bytes) -> list[bytes]:
-    """Return every complete AUD-delimited access unit in *data*."""
+    """Return every complete SOI/EOI-delimited JPEG frame in *data*."""
     if data:
       self._buffer.extend(data)
 
-    aud_offsets = _annex_b_aud_offsets(self._buffer)
-    if not aud_offsets:
-      if len(self._buffer) > CAMERA_MAX_ACCESS_UNIT_BYTES:
-        raise ValueError("h264_access_unit_missing")
-      return []
-
-    # FFmpeg should start with AUD, but discard any diagnostic/prefix bytes
-    # before the first valid delimiter instead of sending them to the P4.
-    if aud_offsets[0] > 0:
-      del self._buffer[:aud_offsets[0]]
-      aud_offsets = _annex_b_aud_offsets(self._buffer)
-
-    if len(aud_offsets) < 2:
-      if len(self._buffer) > CAMERA_MAX_ACCESS_UNIT_BYTES:
-        raise ValueError("h264_access_unit_too_large")
-      return []
-
-    access_units: list[bytes] = []
-    for start, finish in zip(aud_offsets, aud_offsets[1:]):
-      size = finish - start
-      if size > CAMERA_MAX_ACCESS_UNIT_BYTES:
-        raise ValueError("h264_access_unit_too_large")
-      if size > 6:
-        access_units.append(bytes(self._buffer[start:finish]))
-
-    del self._buffer[:aud_offsets[-1]]
-    return access_units
+    frames: list[bytes] = []
+    while self._buffer:
+      start = self._buffer.find(b"\xff\xd8")
+      if start < 0:
+        if len(self._buffer) > CAMERA_MAX_JPEG_BYTES:
+          raise ValueError("jpeg_start_missing")
+        if len(self._buffer) > 1:
+          del self._buffer[:-1]
+        break
+      if start:
+        del self._buffer[:start]
+      finish = self._buffer.find(b"\xff\xd9", 2)
+      if finish < 0:
+        if len(self._buffer) > CAMERA_MAX_JPEG_BYTES:
+          raise ValueError("jpeg_frame_too_large")
+        break
+      finish += 2
+      if finish > CAMERA_MAX_JPEG_BYTES:
+        raise ValueError("jpeg_frame_too_large")
+      frames.append(bytes(self._buffer[:finish]))
+      del self._buffer[:finish]
+    return frames
 
 
 @dataclass(slots=True)
@@ -202,7 +166,7 @@ class CameraStreamManager:
   async def async_create_session(
     self, device_id: str, entity_id: str
   ) -> CameraStreamSession:
-    """Resolve a direct stream or a still-image camera into an H.264 session."""
+    """Resolve a direct stream or a still-image camera into a video session."""
     source: str | None = None
     try:
       async with asyncio.timeout(10):
@@ -310,7 +274,7 @@ class CameraStreamManager:
 
 
 class CameraStreamView:
-  """Serve length-framed constrained-baseline H.264 access units."""
+  """Serve length-framed JPEG video frames."""
 
   def __init__(self, manager: CameraStreamManager) -> None:
     self._manager = manager
@@ -340,7 +304,7 @@ class CameraStreamView:
         # BambuLab snapshot retrieval can take several seconds. Keep feeding
         # the latest good JPEG at the requested cadence while the next image
         # is fetched in parallel; otherwise FFmpeg receives only one frame and
-        # cannot emit H.264 before the ESP's HTTP timeout.
+        # cannot emit a JPEG video frame before the ESP's HTTP timeout.
         if image_task is None:
           image_task = self._manager.hass.async_create_task(
             async_get_image(
@@ -429,7 +393,7 @@ class CameraStreamView:
     if image_mode:
       command.extend([
         # image2pipe otherwise probes roughly twelve JPEGs before producing
-        # output. At 2 fps that leaves the P4 waiting for about six seconds.
+        # output. At low fps that otherwise leaves the P4 waiting for seconds.
         "-probesize", "32",
         "-analyzeduration", "0",
         "-f", "image2pipe",
@@ -449,7 +413,7 @@ class CameraStreamView:
       (
         f"scale={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
         "force_original_aspect_ratio=decrease:"
-        "out_color_matrix=bt601:out_range=tv"
+        "out_color_matrix=bt601:out_range=full"
       ),
       (
         f"pad={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
@@ -461,46 +425,26 @@ class CameraStreamView:
       "-map", "0:v:0",
       "-an",
       "-vf", ",".join(video_filters),
-      "-pix_fmt", "yuv420p",
-      "-color_range", "tv",
+      "-pix_fmt", "yuvj420p",
+      "-color_range", "pc",
       "-colorspace", "smpte170m",
       "-color_primaries", "smpte170m",
       "-color_trc", "smpte170m",
-      "-c:v", "libx264",
-      "-preset", "ultrafast",
-      # TinyH264 on the ESP32-P4 fails inside pictures produced by x264's
-      # zerolatency sliced-thread mode. Keep every picture in exactly one
-      # slice and use one encoder thread; this is the format Espressif's
-      # decoder is known to accept.
-      "-tune", "fastdecode",
-      "-threads", "1",
-      "-profile:v", "baseline",
-      "-level", "3.0",
-      "-bf", "0",
-      "-g", str(session.fps),
-      "-keyint_min", str(session.fps),
-      "-sc_threshold", "0",
-      "-b:v", f"{CAMERA_STREAM_BITRATE_KBIT}k",
-      "-maxrate", f"{CAMERA_STREAM_BITRATE_KBIT}k",
-      "-bufsize", f"{CAMERA_STREAM_BITRATE_KBIT}k",
-      "-x264-params",
-      (
-        "repeat-headers=1:aud=1:sliced-threads=0:slices=1:"
-        "ref=1:weightp=0:vbv-init=0.25"
-      ),
-      "-f", "h264",
+      "-c:v", "mjpeg",
+      "-q:v", str(CAMERA_JPEG_QUALITY),
+      "-f", "image2pipe",
       "pipe:1",
     ])
 
     response = web.StreamResponse(
       status=200,
       headers={
-        "Content-Type": "video/h264",
+        "Content-Type": "application/x-hometiles-jpeg-stream",
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
         "X-HomeTiles-Framing": CAMERA_STREAM_FRAMING,
         "X-HomeTiles-Video": (
-          f"h264-baseline; width={CAMERA_STREAM_WIDTH}; "
+          f"jpeg; width={CAMERA_STREAM_WIDTH}; "
           f"height={CAMERA_STREAM_HEIGHT}; fps={session.fps}"
         ),
       },
@@ -542,13 +486,13 @@ class CameraStreamView:
           f"HomeTiles camera images {session.entity_id}",
         )
       assert process.stdout is not None
-      framer = H264AccessUnitFramer()
+      parser = JpegFrameParser()
       encoder_started = False
       while chunk := await process.stdout.read(16 * 1024):
-        for access_unit in framer.feed(chunk):
-          record = struct.pack(">I", len(access_unit)) + access_unit
+        for jpeg in parser.feed(chunk):
+          record = struct.pack(">I", len(jpeg)) + jpeg
           # ESP-Hosted receives through the C6 into scarce internal DMA RAM.
-          # Do not hand a complete IDR picture to the socket in one burst:
+          # Do not hand a complete JPEG picture to the socket in one burst:
           # pace small writes so the P4 can drain them into its PSRAM buffer
           # while MQTT continues using the same SDIO transport.
           for offset in range(0, len(record), CAMERA_HTTP_WRITE_BYTES):
@@ -559,9 +503,9 @@ class CameraStreamView:
           if not encoder_started:
             encoder_started = True
             _LOGGER.info(
-              "HomeTiles camera first H.264 access unit sent (%s, %d bytes)",
+              "HomeTiles camera first JPEG frame sent (%s, %d bytes)",
               session.entity_id,
-              len(access_unit),
+              len(jpeg),
             )
           sent += len(record)
     except (ConnectionResetError, asyncio.CancelledError):
