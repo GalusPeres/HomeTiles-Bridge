@@ -88,6 +88,7 @@ from .const import (
   WEATHER_REQUEST_SUFFIX,
 )
 from .camera_stream import (
+  CAMERA_STREAM_FPS,
   CAMERA_STREAM_FRAMING,
   CAMERA_STREAM_HEIGHT,
   CAMERA_STREAM_WIDTH,
@@ -1902,7 +1903,7 @@ class Tab5Bridge:
     )
 
   async def _async_handle_camera_command(self, msg: ReceiveMessage) -> None:
-    """Create or stop the short-lived H.264 stream used by the popup."""
+    """Create or stop the short-lived JPEG-frame stream used by the popup."""
     parsed = _try_parse_json(msg.payload.strip())
     if not isinstance(parsed, dict):
       _LOGGER.warning("Unhandled camera command from HomeTiles: %s", msg.payload)
@@ -1942,11 +1943,19 @@ class Tab5Bridge:
       return
 
     try:
-      session = await manager.async_create_session(self.device_id, entity_id)
+      session = await manager.async_create_session(
+        self.device_id,
+        entity_id,
+        parsed.get("width", CAMERA_STREAM_WIDTH),
+        parsed.get("height", CAMERA_STREAM_HEIGHT),
+        parsed.get("fps", CAMERA_STREAM_FPS),
+      )
       _LOGGER.info(
-        "HomeTiles camera session ready (%s, mode=%s, fps=%d)",
+        "HomeTiles camera session ready (%s, mode=%s, %dx%d@%d)",
         entity_id,
         "image" if session.source is None else "stream",
+        session.width,
+        session.height,
         session.fps,
       )
       if self._device_ip:
@@ -1967,11 +1976,10 @@ class Tab5Bridge:
         "status": "ready",
         "entity_id": entity_id,
         "url": stream_url,
-        "codec": "h264",
-        "profile": "constrained_baseline",
+        "codec": "jpeg",
         "framing": CAMERA_STREAM_FRAMING,
-        "width": CAMERA_STREAM_WIDTH,
-        "height": CAMERA_STREAM_HEIGHT,
+        "width": session.width,
+        "height": session.height,
         "fps": session.fps,
       }
     except Exception as err:
@@ -1981,6 +1989,7 @@ class Tab5Bridge:
         "camera_has_no_stream_source",
         "camera_image_unavailable",
         "home_assistant_url_unavailable",
+        "camera_invalid_stream_request",
       }:
         error_code = "camera_setup_failed"
       response_payload = {

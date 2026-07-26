@@ -24,7 +24,10 @@ CAMERA_STREAM_HTTP_PORT_FIRST: Final = 8124
 CAMERA_STREAM_HTTP_PORT_LAST: Final = 8131
 CAMERA_STREAM_WIDTH: Final = 752
 CAMERA_STREAM_HEIGHT: Final = 424
-CAMERA_STREAM_FPS: Final = 10
+CAMERA_STREAM_FPS: Final = 15
+CAMERA_STREAM_MIN_WIDTH: Final = 320
+CAMERA_STREAM_MIN_HEIGHT: Final = 180
+CAMERA_STREAM_MAX_PIXELS: Final = CAMERA_STREAM_WIDTH * CAMERA_STREAM_HEIGHT
 CAMERA_STILL_FPS: Final = 2
 CAMERA_JPEG_QUALITY: Final = 5
 CAMERA_HTTP_WRITE_BYTES: Final = 2 * 1024
@@ -82,6 +85,8 @@ class CameraStreamSession:
   entity_id: str
   source: str | None
   first_image: bytes | None
+  width: int
+  height: int
   fps: int
   expires_at: float
   stop_event: asyncio.Event
@@ -170,9 +175,15 @@ class CameraStreamManager:
       self._http_port = None
 
   async def async_create_session(
-    self, device_id: str, entity_id: str
+    self,
+    device_id: str,
+    entity_id: str,
+    width: int = CAMERA_STREAM_WIDTH,
+    height: int = CAMERA_STREAM_HEIGHT,
+    fps: int = CAMERA_STREAM_FPS,
   ) -> CameraStreamSession:
     """Resolve a direct stream or a still-image camera into a video session."""
+    width, height, fps = self._validate_stream_request(width, height, fps)
     source: str | None = None
     try:
       async with asyncio.timeout(10):
@@ -185,15 +196,14 @@ class CameraStreamManager:
       )
 
     first_image: bytes | None = None
-    fps = CAMERA_STREAM_FPS
     if not source:
       try:
         image = await async_get_image(
           self.hass,
           entity_id,
           timeout=10,
-          width=CAMERA_STREAM_WIDTH,
-          height=CAMERA_STREAM_HEIGHT,
+          width=width,
+          height=height,
         )
         first_image = bytes(image.content) if image.content else None
       except Exception as err:
@@ -204,7 +214,7 @@ class CameraStreamManager:
         )
       if not first_image:
         raise ValueError("camera_image_unavailable")
-      fps = CAMERA_STILL_FPS
+      fps = min(fps, CAMERA_STILL_FPS)
 
     await self.async_stop_device(device_id)
     token = secrets.token_urlsafe(24)
@@ -215,6 +225,8 @@ class CameraStreamManager:
       entity_id=entity_id,
       source=source,
       first_image=first_image,
+      width=width,
+      height=height,
       fps=fps,
       expires_at=time.monotonic() + CAMERA_SESSION_TTL_SECONDS,
       stop_event=stop_event,
@@ -225,6 +237,33 @@ class CameraStreamManager:
       self._device_tokens[device_id] = token
       self._stop_events[device_id] = stop_event
     return session
+
+  @staticmethod
+  def _validate_stream_request(
+    width: int, height: int, fps: int
+  ) -> tuple[int, int, int]:
+    """Validate a P4 popup format without relying on a device model name."""
+    try:
+      width = int(width)
+      height = int(height)
+      fps = int(fps)
+    except (TypeError, ValueError) as err:
+      raise ValueError("camera_invalid_stream_request") from err
+
+    if (
+      width < CAMERA_STREAM_MIN_WIDTH
+      or width > CAMERA_STREAM_WIDTH
+      or height < CAMERA_STREAM_MIN_HEIGHT
+      or height > CAMERA_STREAM_HEIGHT
+      or width % 2
+      or height % 2
+      or width * height > CAMERA_STREAM_MAX_PIXELS
+      or abs(width * 9 - height * 16) > 16
+      or fps < 1
+      or fps > CAMERA_STREAM_FPS
+    ):
+      raise ValueError("camera_invalid_stream_request")
+    return width, height, fps
 
   async def async_stop_device(self, device_id: str) -> None:
     """Revoke a pending session and terminate its active FFmpeg process."""
@@ -335,8 +374,8 @@ class CameraStreamView:
               self._manager.hass,
               session.entity_id,
               timeout=5,
-              width=CAMERA_STREAM_WIDTH,
-              height=CAMERA_STREAM_HEIGHT,
+              width=session.width,
+              height=session.height,
             ),
             f"HomeTiles camera refresh {session.entity_id}",
           )
@@ -443,11 +482,11 @@ class CameraStreamView:
       video_filters.append(f"fps={session.fps}")
     video_filters.extend([
       (
-        f"scale={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
+        f"scale={session.width}:{session.height}:"
         "force_original_aspect_ratio=increase:"
         "out_color_matrix=bt601:out_range=full"
       ),
-      f"crop={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}",
+      f"crop={session.width}:{session.height}",
       "setsar=1",
     ])
     command.extend([
@@ -475,8 +514,8 @@ class CameraStreamView:
         "X-Accel-Buffering": "no",
         "X-HomeTiles-Framing": CAMERA_STREAM_FRAMING,
         "X-HomeTiles-Video": (
-          f"jpeg; width={CAMERA_STREAM_WIDTH}; "
-          f"height={CAMERA_STREAM_HEIGHT}; fps={session.fps}"
+          f"jpeg; width={session.width}; "
+          f"height={session.height}; fps={session.fps}"
         ),
       },
     )
