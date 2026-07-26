@@ -24,9 +24,11 @@ CAMERA_STREAM_HTTP_PORT_FIRST: Final = 8124
 CAMERA_STREAM_HTTP_PORT_LAST: Final = 8131
 CAMERA_STREAM_WIDTH: Final = 640
 CAMERA_STREAM_HEIGHT: Final = 480
-CAMERA_STREAM_FPS: Final = 8
-CAMERA_STILL_FPS: Final = 2
-CAMERA_STREAM_BITRATE_KBIT: Final = 700
+CAMERA_STREAM_FPS: Final = 1
+CAMERA_STILL_FPS: Final = 1
+CAMERA_STREAM_BITRATE_KBIT: Final = 350
+CAMERA_HTTP_WRITE_BYTES: Final = 2 * 1024
+CAMERA_HTTP_WRITE_PAUSE_SECONDS: Final = 0.004
 CAMERA_SESSION_TTL_SECONDS: Final = 30.0
 CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
 CAMERA_MAX_ACCESS_UNIT_BYTES: Final = 512 * 1024
@@ -480,9 +482,12 @@ class CameraStreamView:
       "-sc_threshold", "0",
       "-b:v", f"{CAMERA_STREAM_BITRATE_KBIT}k",
       "-maxrate", f"{CAMERA_STREAM_BITRATE_KBIT}k",
-      "-bufsize", f"{CAMERA_STREAM_BITRATE_KBIT * 2}k",
+      "-bufsize", f"{CAMERA_STREAM_BITRATE_KBIT}k",
       "-x264-params",
-      "repeat-headers=1:aud=1:sliced-threads=0:slices=1:ref=1:weightp=0",
+      (
+        "repeat-headers=1:aud=1:sliced-threads=0:slices=1:"
+        "ref=1:weightp=0:vbv-init=0.25"
+      ),
       "-f", "h264",
       "pipe:1",
     ])
@@ -542,7 +547,15 @@ class CameraStreamView:
       while chunk := await process.stdout.read(16 * 1024):
         for access_unit in framer.feed(chunk):
           record = struct.pack(">I", len(access_unit)) + access_unit
-          await response.write(record)
+          # ESP-Hosted receives through the C6 into scarce internal DMA RAM.
+          # Do not hand a complete IDR picture to the socket in one burst:
+          # pace small writes so the P4 can drain them into its PSRAM buffer
+          # while MQTT continues using the same SDIO transport.
+          for offset in range(0, len(record), CAMERA_HTTP_WRITE_BYTES):
+            await response.write(
+              record[offset : offset + CAMERA_HTTP_WRITE_BYTES]
+            )
+            await asyncio.sleep(CAMERA_HTTP_WRITE_PAUSE_SECONDS)
           if not encoder_started:
             encoder_started = True
             _LOGGER.info(
