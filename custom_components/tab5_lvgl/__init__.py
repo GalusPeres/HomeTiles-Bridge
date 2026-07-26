@@ -56,6 +56,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
   CONF_BASE_TOPIC,
+  CONF_CAMERAS,
   CONF_CLIMATES,
   CONF_DEVICE_ID,
   CONF_DEVICE_NAME,
@@ -82,6 +83,14 @@ from .const import (
   HISTORY_RESPONSE_SUFFIX,
   SERVICE_PUBLISH_SNAPSHOT,
   WEATHER_REQUEST_SUFFIX,
+)
+from .camera_stream import (
+  CAMERA_STREAM_FPS,
+  CAMERA_STREAM_HEIGHT,
+  CAMERA_STREAM_ROUTE,
+  CAMERA_STREAM_WIDTH,
+  CameraStreamManager,
+  CameraStreamView,
 )
 from .device_helpers import entry_device_id, entry_device_info, entry_device_name
 
@@ -220,6 +229,11 @@ FORECAST_CACHE_TTL = timedelta(minutes=10)
 async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
   """Set up the integration namespace and service."""
   domain_data = hass.data.setdefault(DOMAIN, {"entries": {}})
+
+  if "camera_stream_manager" not in domain_data:
+    camera_stream_manager = CameraStreamManager(hass)
+    domain_data["camera_stream_manager"] = camera_stream_manager
+    hass.http.register_view(CameraStreamView(camera_stream_manager))
 
   if not hass.services.has_service(DOMAIN, SERVICE_PUBLISH_SNAPSHOT):
     async def handle_service(call: ServiceCall) -> None:
@@ -383,6 +397,7 @@ class Tab5Bridge:
     self.switches: List[str] = _unique_entities(list(data.get(CONF_SWITCHES, [])))
     self.media_players: List[str] = _unique_entities(list(data.get(CONF_MEDIA_PLAYERS, [])))
     self.climates: List[str] = _unique_entities(list(data.get(CONF_CLIMATES, [])))
+    self.cameras: List[str] = _unique_entities(list(data.get(CONF_CAMERAS, [])))
     self.tracked_entities: List[str] = []
     self._media_cover_cache: Dict[str, Dict[str, Any]] = {}
     self._media_publish_generation: Dict[str, int] = {}
@@ -415,6 +430,7 @@ class Tab5Bridge:
     self._unsub_switch = None
     self._unsub_media = None
     self._unsub_climate = None
+    self._unsub_camera = None
     self._unsub_request = None
     self._unsub_history = None
     self._unsub_weather = None
@@ -448,6 +464,7 @@ class Tab5Bridge:
     all_switches: List[str] = []
     all_media_players: List[str] = []
     all_climates: List[str] = []
+    all_cameras: List[str] = []
     all_weathers: List[str] = []
     all_scene_map: Dict[str, str] = {}
     for entry in self.hass.config_entries.async_entries(DOMAIN):
@@ -463,6 +480,7 @@ class Tab5Bridge:
       all_switches.extend(list(data.get(CONF_SWITCHES, [])))
       all_media_players.extend(list(data.get(CONF_MEDIA_PLAYERS, [])))
       all_climates.extend(list(data.get(CONF_CLIMATES, [])))
+      all_cameras.extend(list(data.get(CONF_CAMERAS, [])))
       all_weathers.extend(weathers)
       for alias, entity in (data.get(CONF_SCENE_MAP, {}) or {}).items():
         if alias and entity:
@@ -473,6 +491,7 @@ class Tab5Bridge:
       "switches": _unique_entities(all_switches),
       "media_players": _unique_entities(all_media_players),
       "climates": _unique_entities(all_climates),
+      "cameras": _unique_entities(all_cameras),
       "weathers": _unique_entities(all_weathers),
       "scene_map": all_scene_map,
     }
@@ -487,6 +506,7 @@ class Tab5Bridge:
     self.switches = merged["switches"]
     self.media_players = merged["media_players"]
     self.climates = merged["climates"]
+    self.cameras = merged["cameras"]
     self.weathers = merged["weathers"]
     self.scene_map.update(merged["scene_map"])
     self.tracked_entities = _unique_entities(
@@ -536,6 +556,12 @@ class Tab5Bridge:
       self._async_handle_climate_command,
     )
 
+    self._unsub_camera = await mqtt.async_subscribe(
+      self.hass,
+      f"{self.base_topic}/cmnd/camera",
+      self._async_handle_camera_command,
+    )
+
     if self.tracked_entities:
       self._unsub_state = async_track_state_change_event(
         self.hass,
@@ -546,7 +572,7 @@ class Tab5Bridge:
     self._prime_icon_cache()
 
     _LOGGER.info(
-      "Tab5 MQTT bridge ready (device=%s, base=%s, ha_prefix=%s, sensors=%d, lights=%d, switches=%d, media=%d, climate=%d)",
+      "Tab5 MQTT bridge ready (device=%s, base=%s, ha_prefix=%s, sensors=%d, lights=%d, switches=%d, media=%d, climate=%d, cameras=%d)",
       self.device_id or "n/a",
       self.base_topic,
       self.ha_prefix,
@@ -555,6 +581,7 @@ class Tab5Bridge:
       len(self.switches),
       len(self.media_players),
       len(self.climates),
+      len(self.cameras),
     )
     if self.config_topic:
       request_topic = f"{CONFIG_TOPIC_ROOT}/{self.device_id}/bridge/request"
@@ -618,6 +645,12 @@ class Tab5Bridge:
     if self._unsub_climate:
       self._unsub_climate()
       self._unsub_climate = None
+    if self._unsub_camera:
+      self._unsub_camera()
+      self._unsub_camera = None
+    camera_stream_manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
+    if camera_stream_manager and self.device_id:
+      await camera_stream_manager.async_stop_device(self.device_id)
     if hasattr(self, "_unsub_request") and self._unsub_request:
       self._unsub_request()
       self._unsub_request = None
@@ -659,6 +692,8 @@ class Tab5Bridge:
         "media_player_meta": self._build_entity_meta(self.media_players),
         CONF_CLIMATES: self.climates,
         "climate_meta": self._build_entity_meta(self.climates),
+        CONF_CAMERAS: self.cameras,
+        "camera_meta": self._build_entity_meta(self.cameras),
         "scene_meta": self._build_scene_meta(),
         "scene_map": self.scene_map,
     }
@@ -1844,6 +1879,83 @@ class Tab5Bridge:
       service,
       service_data,
       blocking=False,
+    )
+
+  async def _async_handle_camera_command(self, msg: ReceiveMessage) -> None:
+    """Create or stop the short-lived H.264 stream used by the popup."""
+    parsed = _try_parse_json(msg.payload.strip())
+    if not isinstance(parsed, dict):
+      _LOGGER.warning("Unhandled camera command from HomeTiles: %s", msg.payload)
+      return
+
+    command = str(parsed.get("command") or "open").strip().lower()
+    raw_entity = parsed.get("entity_id") or parsed.get("entity")
+    requested_entity = str(raw_entity).strip() if raw_entity is not None else None
+    entity_id = self._resolve_target_entity(requested_entity, self.cameras)
+    status_topic = f"{self.base_topic}/stat/camera"
+    manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
+
+    if command in ("close", "stop"):
+      if manager and self.device_id:
+        await manager.async_stop_device(self.device_id)
+      await mqtt.async_publish(
+        self.hass,
+        status_topic,
+        json.dumps({"status": "stopped", "entity_id": entity_id or requested_entity or ""}),
+        qos=0,
+        retain=False,
+      )
+      return
+
+    if command != "open" or not entity_id or manager is None or not self.device_id:
+      await mqtt.async_publish(
+        self.hass,
+        status_topic,
+        json.dumps({
+          "status": "error",
+          "entity_id": requested_entity or "",
+          "error": "unknown_camera",
+        }),
+        qos=0,
+        retain=False,
+      )
+      return
+
+    try:
+      session = await manager.async_create_session(self.device_id, entity_id)
+      if get_url is None:
+        raise ValueError("home_assistant_url_unavailable")
+      base_url = get_url(
+        self.hass,
+        allow_internal=True,
+        allow_external=False,
+        require_standard_port=False,
+      ).rstrip("/")
+      stream_path = CAMERA_STREAM_ROUTE.replace("{token}", session.token)
+      response_payload = {
+        "status": "ready",
+        "entity_id": entity_id,
+        "url": f"{base_url}{stream_path}",
+        "codec": "h264",
+        "profile": "constrained_baseline",
+        "width": CAMERA_STREAM_WIDTH,
+        "height": CAMERA_STREAM_HEIGHT,
+        "fps": CAMERA_STREAM_FPS,
+      }
+    except Exception as err:
+      _LOGGER.warning("HomeTiles camera stream setup failed for %s: %s", entity_id, err)
+      response_payload = {
+        "status": "error",
+        "entity_id": entity_id,
+        "error": str(err) or type(err).__name__,
+      }
+
+    await mqtt.async_publish(
+      self.hass,
+      status_topic,
+      json.dumps(response_payload),
+      qos=0,
+      retain=False,
     )
 
   async def _async_handle_media_command(self, msg: ReceiveMessage) -> None:

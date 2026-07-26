@@ -22,6 +22,7 @@ CONF_LIGHTS = "lights"
 CONF_SWITCHES = "switches"
 CONF_MEDIA_PLAYERS = "media_players"
 CONF_CLIMATES = "climates"
+CONF_CAMERAS = "cameras"
 
 DEFAULT_BASE = "hometiles"
 DEFAULT_PREFIX = "ha/statestream"
