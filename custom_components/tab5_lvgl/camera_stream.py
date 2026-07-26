@@ -28,6 +28,10 @@ CAMERA_STILL_FPS: Final = 2
 CAMERA_STREAM_BITRATE_KBIT: Final = 700
 CAMERA_SESSION_TTL_SECONDS: Final = 30.0
 CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
+# A valid Annex-B access-unit delimiter. Sending it immediately after the
+# response headers forces HTTPS reverse proxies to flush the streaming response
+# before the first encoded camera frame is available.
+CAMERA_H264_STREAM_PREAMBLE: Final = b"\x00\x00\x00\x01\x09\xf0"
 
 
 @dataclass(slots=True)
@@ -185,35 +189,49 @@ class CameraStreamView(HomeAssistantView):
     frame = session.first_image
     failures = 0
     interval = 1.0 / max(1, session.fps)
+    image_task: asyncio.Task | None = None
     try:
       while process.returncode is None:
         process.stdin.write(frame)
         await process.stdin.drain()
+
+        # BambuLab snapshot retrieval can take several seconds. Keep feeding
+        # the latest good JPEG at the requested cadence while the next image
+        # is fetched in parallel; otherwise FFmpeg receives only one frame and
+        # cannot emit H.264 before the ESP's HTTP timeout.
+        if image_task is None:
+          image_task = self._manager.hass.async_create_task(
+            async_get_image(
+              self._manager.hass,
+              session.entity_id,
+              timeout=5,
+              width=CAMERA_STREAM_WIDTH,
+              height=CAMERA_STREAM_HEIGHT,
+            ),
+            f"HomeTiles camera refresh {session.entity_id}",
+          )
         await asyncio.sleep(interval)
-        try:
-          image = await async_get_image(
-            self._manager.hass,
-            session.entity_id,
-            timeout=5,
-            width=CAMERA_STREAM_WIDTH,
-            height=CAMERA_STREAM_HEIGHT,
-          )
-          if image.content:
-            frame = bytes(image.content)
-            failures = 0
-          else:
+        if image_task.done():
+          try:
+            image = image_task.result()
+            if image.content:
+              frame = bytes(image.content)
+              failures = 0
+            else:
+              failures += 1
+          except asyncio.CancelledError:
+            raise
+          except Exception as err:
             failures += 1
-        except asyncio.CancelledError:
-          raise
-        except Exception as err:
-          failures += 1
-          _LOGGER.debug(
-            "HomeTiles camera image refresh failed for %s (%d/%d): %s",
-            session.entity_id,
-            failures,
-            CAMERA_IMAGE_FAILURE_LIMIT,
-            err,
-          )
+            _LOGGER.debug(
+              "HomeTiles camera image refresh failed for %s (%d/%d): %s",
+              session.entity_id,
+              failures,
+              CAMERA_IMAGE_FAILURE_LIMIT,
+              err,
+            )
+          finally:
+            image_task = None
         if failures >= CAMERA_IMAGE_FAILURE_LIMIT:
           _LOGGER.warning(
             "HomeTiles camera image source stopped responding: %s",
@@ -223,6 +241,10 @@ class CameraStreamView(HomeAssistantView):
     except (BrokenPipeError, ConnectionResetError):
       pass
     finally:
+      if image_task:
+        image_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+          await image_task
       if process.stdin and not process.stdin.is_closing():
         process.stdin.close()
         with suppress(BrokenPipeError, ConnectionResetError):
@@ -312,6 +334,7 @@ class CameraStreamView(HomeAssistantView):
       headers={
         "Content-Type": "video/h264",
         "Cache-Control": "no-store",
+        "X-Accel-Buffering": "no",
         "X-HomeTiles-Video": (
           f"h264-baseline; width={CAMERA_STREAM_WIDTH}; "
           f"height={CAMERA_STREAM_HEIGHT}; fps={session.fps}"
@@ -334,6 +357,8 @@ class CameraStreamView(HomeAssistantView):
         "image" if image_mode else "stream",
         session.fps,
       )
+      await response.write(CAMERA_H264_STREAM_PREAMBLE)
+      sent += len(CAMERA_H264_STREAM_PREAMBLE)
       process = await asyncio.create_subprocess_exec(
         *command,
         stdin=asyncio.subprocess.PIPE
@@ -353,9 +378,11 @@ class CameraStreamView(HomeAssistantView):
           f"HomeTiles camera images {session.entity_id}",
         )
       assert process.stdout is not None
+      encoder_started = False
       while chunk := await process.stdout.read(16 * 1024):
         await response.write(chunk)
-        if sent == 0:
+        if not encoder_started:
+          encoder_started = True
           _LOGGER.info(
             "HomeTiles camera first H.264 bytes sent (%s, %d bytes)",
             session.entity_id,
