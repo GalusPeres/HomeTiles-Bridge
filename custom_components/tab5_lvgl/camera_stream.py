@@ -359,8 +359,13 @@ class CameraStreamView(HomeAssistantView):
     image_mode = session.source is None
     if image_mode:
       command.extend([
+        # image2pipe otherwise probes roughly twelve JPEGs before producing
+        # output. At 2 fps that leaves the P4 waiting for about six seconds.
+        "-probesize", "32",
+        "-analyzeduration", "0",
         "-f", "image2pipe",
         "-framerate", str(session.fps),
+        "-vcodec", "mjpeg",
         "-i", "pipe:0",
       ])
     else:
@@ -368,18 +373,25 @@ class CameraStreamView(HomeAssistantView):
       if session.source.lower().startswith("rtsp"):
         command.extend(["-rtsp_transport", "tcp"])
       command.extend(["-i", session.source])
+    video_filters: list[str] = []
+    if not image_mode:
+      video_filters.append(f"fps={session.fps}")
+    video_filters.extend([
+      (
+        f"scale={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
+        "force_original_aspect_ratio=decrease:"
+        "out_color_matrix=bt601:out_range=tv"
+      ),
+      (
+        f"pad={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
+        "(ow-iw)/2:(oh-ih)/2:black"
+      ),
+      "setsar=1",
+    ])
     command.extend([
       "-map", "0:v:0",
       "-an",
-      "-vf",
-      (
-        f"fps={session.fps},"
-        f"scale={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
-        "force_original_aspect_ratio=decrease:"
-        "out_color_matrix=bt601:out_range=tv,"
-        f"pad={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
-        "(ow-iw)/2:(oh-ih)/2:black,setsar=1"
-      ),
+      "-vf", ",".join(video_filters),
       "-pix_fmt", "yuv420p",
       "-color_range", "tv",
       "-colorspace", "smpte170m",
