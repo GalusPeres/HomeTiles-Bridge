@@ -22,9 +22,9 @@ _LOGGER = logging.getLogger(__name__)
 CAMERA_STREAM_ROUTE: Final = "/api/hometiles/camera/{token}"
 CAMERA_STREAM_HTTP_PORT_FIRST: Final = 8124
 CAMERA_STREAM_HTTP_PORT_LAST: Final = 8131
-CAMERA_STREAM_WIDTH: Final = 640
-CAMERA_STREAM_HEIGHT: Final = 480
-CAMERA_STREAM_FPS: Final = 5
+CAMERA_STREAM_WIDTH: Final = 752
+CAMERA_STREAM_HEIGHT: Final = 424
+CAMERA_STREAM_FPS: Final = 10
 CAMERA_STILL_FPS: Final = 2
 CAMERA_JPEG_QUALITY: Final = 5
 CAMERA_HTTP_WRITE_BYTES: Final = 2 * 1024
@@ -84,6 +84,7 @@ class CameraStreamSession:
   first_image: bytes | None
   fps: int
   expires_at: float
+  stop_event: asyncio.Event
 
 
 class CameraStreamManager:
@@ -94,6 +95,7 @@ class CameraStreamManager:
     self._sessions: dict[str, CameraStreamSession] = {}
     self._device_tokens: dict[str, str] = {}
     self._processes: dict[str, asyncio.subprocess.Process] = {}
+    self._stop_events: dict[str, asyncio.Event] = {}
     self._lock = asyncio.Lock()
     self._http_runner: web.AppRunner | None = None
     self._http_port: int | None = None
@@ -155,7 +157,11 @@ class CameraStreamManager:
   async def async_shutdown(self) -> None:
     """Stop all camera work and close the auxiliary HTTP listener."""
     async with self._lock:
-      device_ids = set(self._device_tokens) | set(self._processes)
+      device_ids = (
+        set(self._device_tokens)
+        | set(self._processes)
+        | set(self._stop_events)
+      )
     for device_id in device_ids:
       await self.async_stop_device(device_id)
     if self._http_runner is not None:
@@ -202,6 +208,7 @@ class CameraStreamManager:
 
     await self.async_stop_device(device_id)
     token = secrets.token_urlsafe(24)
+    stop_event = asyncio.Event()
     session = CameraStreamSession(
       token=token,
       device_id=device_id,
@@ -210,21 +217,27 @@ class CameraStreamManager:
       first_image=first_image,
       fps=fps,
       expires_at=time.monotonic() + CAMERA_SESSION_TTL_SECONDS,
+      stop_event=stop_event,
     )
     async with self._lock:
       self._drop_expired_sessions_locked()
       self._sessions[token] = session
       self._device_tokens[device_id] = token
+      self._stop_events[device_id] = stop_event
     return session
 
   async def async_stop_device(self, device_id: str) -> None:
     """Revoke a pending session and terminate its active FFmpeg process."""
     process: asyncio.subprocess.Process | None = None
+    stop_event: asyncio.Event | None = None
     async with self._lock:
       token = self._device_tokens.pop(device_id, None)
       if token:
         self._sessions.pop(token, None)
       process = self._processes.pop(device_id, None)
+      stop_event = self._stop_events.pop(device_id, None)
+    if stop_event:
+      stop_event.set()
     if process and process.returncode is None:
       process.terminate()
       try:
@@ -261,6 +274,14 @@ class CameraStreamManager:
       if self._processes.get(device_id) is process:
         self._processes.pop(device_id, None)
 
+  async def async_forget_stop_event(
+    self, device_id: str, stop_event: asyncio.Event
+  ) -> None:
+    """Forget a completed HTTP client without touching a newer session."""
+    async with self._lock:
+      if self._stop_events.get(device_id) is stop_event:
+        self._stop_events.pop(device_id, None)
+
   def _drop_expired_sessions_locked(self) -> None:
     now = time.monotonic()
     expired = [
@@ -271,6 +292,9 @@ class CameraStreamManager:
       session = self._sessions.pop(token)
       if self._device_tokens.get(session.device_id) == token:
         self._device_tokens.pop(session.device_id, None)
+      if self._stop_events.get(session.device_id) is session.stop_event:
+        self._stop_events.pop(session.device_id, None)
+      session.stop_event.set()
 
 
 class CameraStreamView:
@@ -404,7 +428,15 @@ class CameraStreamView:
     else:
       assert session.source is not None
       if session.source.lower().startswith("rtsp"):
-        command.extend(["-rtsp_transport", "tcp"])
+        command.extend([
+          "-rtsp_transport", "tcp",
+          "-fflags", "nobuffer",
+          "-flags", "low_delay",
+          "-probesize", "32",
+          "-analyzeduration", "0",
+          "-max_delay", "0",
+          "-timeout", "5000000",
+        ])
       command.extend(["-i", session.source])
     video_filters: list[str] = []
     if not image_mode:
@@ -412,13 +444,10 @@ class CameraStreamView:
     video_filters.extend([
       (
         f"scale={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
-        "force_original_aspect_ratio=decrease:"
+        "force_original_aspect_ratio=increase:"
         "out_color_matrix=bt601:out_range=full"
       ),
-      (
-        f"pad={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
-        "(ow-iw)/2:(oh-ih)/2:black"
-      ),
+      f"crop={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}",
       "setsar=1",
     ])
     command.extend([
@@ -431,7 +460,9 @@ class CameraStreamView:
       "-color_primaries", "smpte170m",
       "-color_trc", "smpte170m",
       "-c:v", "mjpeg",
+      "-threads:v", "1",
       "-q:v", str(CAMERA_JPEG_QUALITY),
+      "-flush_packets", "1",
       "-f", "image2pipe",
       "pipe:1",
     ])
@@ -451,9 +482,7 @@ class CameraStreamView:
     )
 
     sent = 0
-    feeder: asyncio.Task[None] | None = None
-    stderr_task: asyncio.Task[None] | None = None
-    process: asyncio.subprocess.Process | None = None
+    sent_frame_once = False
     try:
       # Send the HTTP response immediately. On slower HA hosts, waiting for
       # FFmpeg to spawn before prepare() made the ESP32-P4 time out while it
@@ -467,48 +496,111 @@ class CameraStreamView:
       )
       await response.write(CAMERA_STREAM_FLUSH_RECORD)
       sent += len(CAMERA_STREAM_FLUSH_RECORD)
-      process = await asyncio.create_subprocess_exec(
-        *command,
-        stdin=asyncio.subprocess.PIPE
-        if image_mode
-        else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-      )
-      await self._manager.async_register_process(session.device_id, process)
-      stderr_task = self._manager.hass.async_create_task(
-        self._async_log_ffmpeg_stderr(session, process, image_mode),
-        f"HomeTiles camera FFmpeg log {session.entity_id}",
-      )
-      if image_mode:
-        feeder = self._manager.hass.async_create_task(
-          self._async_feed_camera_images(session, process),
-          f"HomeTiles camera images {session.entity_id}",
+      reconnect_attempt = 0
+      while not session.stop_event.is_set():
+        feeder: asyncio.Task[None] | None = None
+        stderr_task: asyncio.Task[None] | None = None
+        process: asyncio.subprocess.Process | None = None
+        frames_this_process = 0
+        try:
+          process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.PIPE
+            if image_mode
+            else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+          )
+          if session.stop_event.is_set():
+            process.terminate()
+            await process.wait()
+            break
+          await self._manager.async_register_process(
+            session.device_id, process
+          )
+          stderr_task = self._manager.hass.async_create_task(
+            self._async_log_ffmpeg_stderr(session, process, image_mode),
+            f"HomeTiles camera FFmpeg log {session.entity_id}",
+          )
+          if image_mode:
+            feeder = self._manager.hass.async_create_task(
+              self._async_feed_camera_images(session, process),
+              f"HomeTiles camera images {session.entity_id}",
+            )
+          assert process.stdout is not None
+          parser = JpegFrameParser()
+          while (
+            not session.stop_event.is_set()
+            and (chunk := await process.stdout.read(16 * 1024))
+          ):
+            for jpeg in parser.feed(chunk):
+              record = struct.pack(">I", len(jpeg)) + jpeg
+              # ESP-Hosted receives through the C6 into scarce internal DMA
+              # RAM. Pace small writes so the P4 drains them into PSRAM while
+              # MQTT continues using the same SDIO transport.
+              for offset in range(0, len(record), CAMERA_HTTP_WRITE_BYTES):
+                await response.write(
+                  record[offset : offset + CAMERA_HTTP_WRITE_BYTES]
+                )
+                await asyncio.sleep(CAMERA_HTTP_WRITE_PAUSE_SECONDS)
+              if not sent_frame_once:
+                sent_frame_once = True
+                _LOGGER.info(
+                  "HomeTiles camera first JPEG frame sent (%s, %d bytes)",
+                  session.entity_id,
+                  len(jpeg),
+                )
+              frames_this_process += 1
+              sent += len(record)
+        except (ConnectionResetError, BrokenPipeError):
+          raise
+        except asyncio.CancelledError:
+          raise
+        except Exception:
+          _LOGGER.exception(
+            "HomeTiles camera source process failed (%s)",
+            session.entity_id,
+          )
+        finally:
+          if feeder:
+            feeder.cancel()
+            with suppress(asyncio.CancelledError):
+              await feeder
+          if process and process.returncode is None:
+            process.terminate()
+            try:
+              await asyncio.wait_for(process.wait(), timeout=2.0)
+            except TimeoutError:
+              process.kill()
+              await process.wait()
+          if stderr_task:
+            with suppress(asyncio.CancelledError):
+              await stderr_task
+          if process:
+            await self._manager.async_forget_process(
+              session.device_id, process
+            )
+
+        if session.stop_event.is_set():
+          break
+        reconnect_attempt = (
+          0 if frames_this_process else min(reconnect_attempt + 1, 4)
         )
-      assert process.stdout is not None
-      parser = JpegFrameParser()
-      encoder_started = False
-      while chunk := await process.stdout.read(16 * 1024):
-        for jpeg in parser.feed(chunk):
-          record = struct.pack(">I", len(jpeg)) + jpeg
-          # ESP-Hosted receives through the C6 into scarce internal DMA RAM.
-          # Do not hand a complete JPEG picture to the socket in one burst:
-          # pace small writes so the P4 can drain them into its PSRAM buffer
-          # while MQTT continues using the same SDIO transport.
-          for offset in range(0, len(record), CAMERA_HTTP_WRITE_BYTES):
-            await response.write(
-              record[offset : offset + CAMERA_HTTP_WRITE_BYTES]
-            )
-            await asyncio.sleep(CAMERA_HTTP_WRITE_PAUSE_SECONDS)
-          if not encoder_started:
-            encoder_started = True
-            _LOGGER.info(
-              "HomeTiles camera first JPEG frame sent (%s, %d bytes)",
-              session.entity_id,
-              len(jpeg),
-            )
-          sent += len(record)
-    except (ConnectionResetError, asyncio.CancelledError):
+        retry_delay = min(2.0, 0.25 * (2 ** reconnect_attempt))
+        _LOGGER.warning(
+          "HomeTiles camera source ended; reconnecting %s in %.2fs",
+          session.entity_id,
+          retry_delay,
+        )
+        await response.write(CAMERA_STREAM_FLUSH_RECORD)
+        sent += len(CAMERA_STREAM_FLUSH_RECORD)
+        try:
+          await asyncio.wait_for(
+            session.stop_event.wait(), timeout=retry_delay
+          )
+        except TimeoutError:
+          pass
+    except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
       _LOGGER.debug(
         "HomeTiles camera client disconnected (%s, %d bytes)",
         session.entity_id,
@@ -521,21 +613,9 @@ class CameraStreamView:
         sent,
       )
     finally:
-      if feeder:
-        feeder.cancel()
-        with suppress(asyncio.CancelledError):
-          await feeder
-      if process and process.returncode is None:
-        process.terminate()
-        try:
-          await asyncio.wait_for(process.wait(), timeout=2.0)
-        except TimeoutError:
-          process.kill()
-          await process.wait()
-      if stderr_task:
-        with suppress(asyncio.CancelledError):
-          await stderr_task
-      if process:
-        await self._manager.async_forget_process(session.device_id, process)
+      session.stop_event.set()
+      await self._manager.async_forget_stop_event(
+        session.device_id, session.stop_event
+      )
 
     return response
