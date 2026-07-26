@@ -7,6 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 import logging
 import secrets
+import struct
 import time
 from typing import Final
 
@@ -28,10 +29,82 @@ CAMERA_STILL_FPS: Final = 2
 CAMERA_STREAM_BITRATE_KBIT: Final = 700
 CAMERA_SESSION_TTL_SECONDS: Final = 30.0
 CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
-# A valid Annex-B access-unit delimiter. Sending it immediately after the
-# response headers forces HTTPS reverse proxies to flush the streaming response
-# before the first encoded camera frame is available.
-CAMERA_H264_STREAM_PREAMBLE: Final = b"\x00\x00\x00\x01\x09\xf0"
+CAMERA_MAX_ACCESS_UNIT_BYTES: Final = 512 * 1024
+CAMERA_STREAM_FRAMING: Final = "be32-access-unit"
+# A zero-length protocol record flushes the HTTP response without presenting a
+# fake H.264 NAL unit to the decoder.
+CAMERA_STREAM_FLUSH_RECORD: Final = b"\x00\x00\x00\x00"
+
+
+def _annex_b_aud_offsets(data: bytearray) -> list[int]:
+  """Return Annex-B offsets whose NAL unit is an access-unit delimiter."""
+  offsets: list[int] = []
+  index = 0
+  end = len(data)
+  while index + 4 <= end:
+    start_len = 0
+    if (
+      index + 5 <= end
+      and data[index] == 0
+      and data[index + 1] == 0
+      and data[index + 2] == 0
+      and data[index + 3] == 1
+    ):
+      start_len = 4
+    elif (
+      data[index] == 0
+      and data[index + 1] == 0
+      and data[index + 2] == 1
+    ):
+      start_len = 3
+    if not start_len:
+      index += 1
+      continue
+    nal_header = index + start_len
+    if nal_header < end and data[nal_header] & 0x1F == 9:
+      offsets.append(index)
+    index = nal_header + 1
+  return offsets
+
+
+class H264AccessUnitFramer:
+  """Reassemble FFmpeg's arbitrary stdout chunks into complete H.264 pictures."""
+
+  def __init__(self) -> None:
+    self._buffer = bytearray()
+
+  def feed(self, data: bytes) -> list[bytes]:
+    """Return every complete AUD-delimited access unit in *data*."""
+    if data:
+      self._buffer.extend(data)
+
+    aud_offsets = _annex_b_aud_offsets(self._buffer)
+    if not aud_offsets:
+      if len(self._buffer) > CAMERA_MAX_ACCESS_UNIT_BYTES:
+        raise ValueError("h264_access_unit_missing")
+      return []
+
+    # FFmpeg should start with AUD, but discard any diagnostic/prefix bytes
+    # before the first valid delimiter instead of sending them to the P4.
+    if aud_offsets[0] > 0:
+      del self._buffer[:aud_offsets[0]]
+      aud_offsets = _annex_b_aud_offsets(self._buffer)
+
+    if len(aud_offsets) < 2:
+      if len(self._buffer) > CAMERA_MAX_ACCESS_UNIT_BYTES:
+        raise ValueError("h264_access_unit_too_large")
+      return []
+
+    access_units: list[bytes] = []
+    for start, finish in zip(aud_offsets, aud_offsets[1:]):
+      size = finish - start
+      if size > CAMERA_MAX_ACCESS_UNIT_BYTES:
+        raise ValueError("h264_access_unit_too_large")
+      if size > 6:
+        access_units.append(bytes(self._buffer[start:finish]))
+
+    del self._buffer[:aud_offsets[-1]]
+    return access_units
 
 
 @dataclass(slots=True)
@@ -168,7 +241,7 @@ class CameraStreamManager:
 
 
 class CameraStreamView(HomeAssistantView):
-  """Serve a transcoded constrained-baseline Annex-B H.264 stream."""
+  """Serve length-framed constrained-baseline H.264 access units."""
 
   url = CAMERA_STREAM_ROUTE
   name = CAMERA_STREAM_NAME
@@ -335,6 +408,7 @@ class CameraStreamView(HomeAssistantView):
         "Content-Type": "video/h264",
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
+        "X-HomeTiles-Framing": CAMERA_STREAM_FRAMING,
         "X-HomeTiles-Video": (
           f"h264-baseline; width={CAMERA_STREAM_WIDTH}; "
           f"height={CAMERA_STREAM_HEIGHT}; fps={session.fps}"
@@ -357,8 +431,8 @@ class CameraStreamView(HomeAssistantView):
         "image" if image_mode else "stream",
         session.fps,
       )
-      await response.write(CAMERA_H264_STREAM_PREAMBLE)
-      sent += len(CAMERA_H264_STREAM_PREAMBLE)
+      await response.write(CAMERA_STREAM_FLUSH_RECORD)
+      sent += len(CAMERA_STREAM_FLUSH_RECORD)
       process = await asyncio.create_subprocess_exec(
         *command,
         stdin=asyncio.subprocess.PIPE
@@ -378,17 +452,20 @@ class CameraStreamView(HomeAssistantView):
           f"HomeTiles camera images {session.entity_id}",
         )
       assert process.stdout is not None
+      framer = H264AccessUnitFramer()
       encoder_started = False
       while chunk := await process.stdout.read(16 * 1024):
-        await response.write(chunk)
-        if not encoder_started:
-          encoder_started = True
-          _LOGGER.info(
-            "HomeTiles camera first H.264 bytes sent (%s, %d bytes)",
-            session.entity_id,
-            len(chunk),
-          )
-        sent += len(chunk)
+        for access_unit in framer.feed(chunk):
+          record = struct.pack(">I", len(access_unit)) + access_unit
+          await response.write(record)
+          if not encoder_started:
+            encoder_started = True
+            _LOGGER.info(
+              "HomeTiles camera first H.264 access unit sent (%s, %d bytes)",
+              session.entity_id,
+              len(access_unit),
+            )
+          sent += len(record)
     except (ConnectionResetError, asyncio.CancelledError):
       _LOGGER.debug(
         "HomeTiles camera client disconnected (%s, %d bytes)",

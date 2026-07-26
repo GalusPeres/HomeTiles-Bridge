@@ -85,6 +85,7 @@ from .const import (
   WEATHER_REQUEST_SUFFIX,
 )
 from .camera_stream import (
+  CAMERA_STREAM_FRAMING,
   CAMERA_STREAM_HEIGHT,
   CAMERA_STREAM_ROUTE,
   CAMERA_STREAM_WIDTH,
@@ -1943,6 +1944,7 @@ class Tab5Bridge:
         "url": f"{base_url}{stream_path}",
         "codec": "h264",
         "profile": "constrained_baseline",
+        "framing": CAMERA_STREAM_FRAMING,
         "width": CAMERA_STREAM_WIDTH,
         "height": CAMERA_STREAM_HEIGHT,
         "fps": session.fps,
