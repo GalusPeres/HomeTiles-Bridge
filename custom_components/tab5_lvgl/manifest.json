@@ -1,11 +1,11 @@
 {
   "domain": "tab5_lvgl",
   "name": "HomeTiles Bridge",
-  "version": "0.6.28b7",
+  "version": "0.6.28b8",
   "documentation": "https://github.com/GalusPeres/HomeTiles-Bridge",
   "issue_tracker": "https://github.com/GalusPeres/HomeTiles-Bridge/issues",
   "requirements": [],
-  "dependencies": ["mqtt", "camera", "ffmpeg"],
+  "dependencies": ["mqtt", "camera", "ffmpeg", "network"],
   "after_dependencies": ["recorder"],
   "codeowners": ["@GalusPeres"],
   "integration_type": "device",

@@ -10,7 +10,6 @@ import secrets
 import struct
 import time
 from typing import Final
-from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -171,11 +170,15 @@ class CameraStreamManager:
       f"{CAMERA_STREAM_HTTP_PORT_FIRST}-{CAMERA_STREAM_HTTP_PORT_LAST}"
     ) from last_error
 
-  def stream_url(self, home_assistant_url: str, token: str) -> str:
-    """Build a plain-HTTP URL using the host from HA's internal URL."""
+  @property
+  def http_port(self) -> int | None:
+    """Return the active LAN HTTP listener port."""
+    return self._http_port
+
+  def stream_url(self, host: str, token: str) -> str:
+    """Build a plain-HTTP URL using Home Assistant's actual LAN address."""
     if self._http_port is None:
       raise ValueError("camera_http_server_unavailable")
-    host = urlsplit(home_assistant_url).hostname
     if not host:
       raise ValueError("home_assistant_url_unavailable")
     if ":" in host:

@@ -6,6 +6,7 @@ import asyncio
 import base64
 from datetime import date, datetime, timedelta
 from io import BytesIO
+from ipaddress import ip_address
 import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,6 +15,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.components import mqtt
+from homeassistant.components import network as ha_network
 from homeassistant.components.mqtt.models import ReceiveMessage
 from homeassistant.components.recorder import get_instance
 try:
@@ -435,6 +437,7 @@ class Tab5Bridge:
       f"{CONFIG_TOPIC_ROOT}/{self.device_id}/{ENERGY_RESPONSE_SUFFIX}" if self.device_id else None
     )
     self._unsub_state = None
+    self._device_ip: str | None = None
     self._unsub_connected = None
     self._unsub_ip = None
     self._unsub_scene = None
@@ -1011,6 +1014,11 @@ class Tab5Bridge:
     subscribe with whatever IP the panel last connected from."""
     ip = msg.payload.strip()
     if not ip or not self.device_id:
+      return
+    try:
+      self._device_ip = str(ip_address(ip))
+    except ValueError:
+      _LOGGER.warning("Tab5 reported an invalid LAN IP: %s", ip)
       return
     device_reg = dr.async_get(self.hass)
     device = device_reg.async_get_device(identifiers={(DOMAIN, self.device_id)})
@@ -1941,18 +1949,24 @@ class Tab5Bridge:
         "image" if session.source is None else "stream",
         session.fps,
       )
-      if get_url is None:
-        raise ValueError("home_assistant_url_unavailable")
-      base_url = get_url(
-        self.hass,
-        allow_internal=True,
-        allow_external=False,
-        require_standard_port=False,
-      ).rstrip("/")
+      if self._device_ip:
+        source_ip = await ha_network.async_get_source_ip(
+          self.hass,
+          target_ip=self._device_ip,
+        )
+      else:
+        source_ip = await ha_network.async_get_source_ip(self.hass)
+      stream_url = manager.stream_url(source_ip, session.token)
+      _LOGGER.info(
+        "HomeTiles camera LAN endpoint ready (host=%s, port=%d, panel=%s)",
+        source_ip,
+        manager.http_port,
+        self._device_ip or "unknown",
+      )
       response_payload = {
         "status": "ready",
         "entity_id": entity_id,
-        "url": manager.stream_url(base_url, session.token),
+        "url": stream_url,
         "codec": "h264",
         "profile": "constrained_baseline",
         "framing": CAMERA_STREAM_FRAMING,
