@@ -466,7 +466,12 @@ class CameraStreamView:
       "-color_trc", "smpte170m",
       "-c:v", "libx264",
       "-preset", "ultrafast",
-      "-tune", "zerolatency",
+      # TinyH264 on the ESP32-P4 fails inside pictures produced by x264's
+      # zerolatency sliced-thread mode. Keep every picture in exactly one
+      # slice and use one encoder thread; this is the format Espressif's
+      # decoder is known to accept.
+      "-tune", "fastdecode",
+      "-threads", "1",
       "-profile:v", "baseline",
       "-level", "3.0",
       "-bf", "0",
@@ -476,7 +481,8 @@ class CameraStreamView:
       "-b:v", f"{CAMERA_STREAM_BITRATE_KBIT}k",
       "-maxrate", f"{CAMERA_STREAM_BITRATE_KBIT}k",
       "-bufsize", f"{CAMERA_STREAM_BITRATE_KBIT * 2}k",
-      "-x264-params", "repeat-headers=1:aud=1",
+      "-x264-params",
+      "repeat-headers=1:aud=1:sliced-threads=0:slices=1:ref=1:weightp=0",
       "-f", "h264",
       "pipe:1",
     ])
