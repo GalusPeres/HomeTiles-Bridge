@@ -10,18 +10,19 @@ import secrets
 import struct
 import time
 from typing import Final
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
 from homeassistant.components.camera import async_get_image, async_get_stream_source
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
-from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
 CAMERA_STREAM_ROUTE: Final = "/api/hometiles/camera/{token}"
-CAMERA_STREAM_NAME: Final = "api:hometiles:camera"
+CAMERA_STREAM_HTTP_PORT_FIRST: Final = 8124
+CAMERA_STREAM_HTTP_PORT_LAST: Final = 8131
 CAMERA_STREAM_WIDTH: Final = 640
 CAMERA_STREAM_HEIGHT: Final = 480
 CAMERA_STREAM_FPS: Final = 8
@@ -129,6 +130,69 @@ class CameraStreamManager:
     self._device_tokens: dict[str, str] = {}
     self._processes: dict[str, asyncio.subprocess.Process] = {}
     self._lock = asyncio.Lock()
+    self._http_runner: web.AppRunner | None = None
+    self._http_port: int | None = None
+    self._http_view = CameraStreamView(self)
+
+  async def async_start_http_server(self) -> None:
+    """Start the LAN-only plain-HTTP endpoint used by the display."""
+    if self._http_runner is not None:
+      return
+
+    last_error: OSError | None = None
+    for port in range(
+      CAMERA_STREAM_HTTP_PORT_FIRST,
+      CAMERA_STREAM_HTTP_PORT_LAST + 1,
+    ):
+      application = web.Application()
+      application.router.add_get(
+        CAMERA_STREAM_ROUTE,
+        self._http_view.async_handle,
+      )
+      runner = web.AppRunner(application, access_log=None)
+      await runner.setup()
+      site = web.TCPSite(runner, "0.0.0.0", port)
+      try:
+        await site.start()
+      except OSError as err:
+        last_error = err
+        await runner.cleanup()
+        continue
+      self._http_runner = runner
+      self._http_port = port
+      _LOGGER.info(
+        "HomeTiles camera LAN HTTP server listening on port %d (TLS disabled)",
+        port,
+      )
+      return
+
+    raise OSError(
+      "No free HomeTiles camera HTTP port in range "
+      f"{CAMERA_STREAM_HTTP_PORT_FIRST}-{CAMERA_STREAM_HTTP_PORT_LAST}"
+    ) from last_error
+
+  def stream_url(self, home_assistant_url: str, token: str) -> str:
+    """Build a plain-HTTP URL using the host from HA's internal URL."""
+    if self._http_port is None:
+      raise ValueError("camera_http_server_unavailable")
+    host = urlsplit(home_assistant_url).hostname
+    if not host:
+      raise ValueError("home_assistant_url_unavailable")
+    if ":" in host:
+      host = f"[{host}]"
+    path = CAMERA_STREAM_ROUTE.replace("{token}", token)
+    return f"http://{host}:{self._http_port}{path}"
+
+  async def async_shutdown(self) -> None:
+    """Stop all camera work and close the auxiliary HTTP listener."""
+    async with self._lock:
+      device_ids = set(self._device_tokens) | set(self._processes)
+    for device_id in device_ids:
+      await self.async_stop_device(device_id)
+    if self._http_runner is not None:
+      await self._http_runner.cleanup()
+      self._http_runner = None
+      self._http_port = None
 
   async def async_create_session(
     self, device_id: str, entity_id: str
@@ -240,15 +304,15 @@ class CameraStreamManager:
         self._device_tokens.pop(session.device_id, None)
 
 
-class CameraStreamView(HomeAssistantView):
+class CameraStreamView:
   """Serve length-framed constrained-baseline H.264 access units."""
-
-  url = CAMERA_STREAM_ROUTE
-  name = CAMERA_STREAM_NAME
-  requires_auth = False
 
   def __init__(self, manager: CameraStreamManager) -> None:
     self._manager = manager
+
+  async def async_handle(self, request: web.Request) -> web.StreamResponse:
+    """Handle a request from the dedicated plain-HTTP LAN listener."""
+    return await self.get(request, request.match_info["token"])
 
   async def _async_feed_camera_images(
     self,

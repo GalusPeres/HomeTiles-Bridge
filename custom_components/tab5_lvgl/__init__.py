@@ -37,7 +37,8 @@ try:
 except Exception:  # pragma: no cover - optional weather helper
   async_get_forecasts = None
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall, State, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant, ServiceCall, State, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -87,10 +88,8 @@ from .const import (
 from .camera_stream import (
   CAMERA_STREAM_FRAMING,
   CAMERA_STREAM_HEIGHT,
-  CAMERA_STREAM_ROUTE,
   CAMERA_STREAM_WIDTH,
   CameraStreamManager,
-  CameraStreamView,
 )
 from .device_helpers import entry_device_id, entry_device_info, entry_device_name
 
@@ -233,7 +232,20 @@ async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
   if "camera_stream_manager" not in domain_data:
     camera_stream_manager = CameraStreamManager(hass)
     domain_data["camera_stream_manager"] = camera_stream_manager
-    hass.http.register_view(CameraStreamView(camera_stream_manager))
+    try:
+      await camera_stream_manager.async_start_http_server()
+    except OSError as err:
+      # Camera video is optional. A listener failure must not prevent state,
+      # cover or control traffic from continuing over MQTT.
+      _LOGGER.error("HomeTiles camera LAN HTTP server could not start: %s", err)
+
+    async def _async_stop_camera_server(_event: Event) -> None:
+      await camera_stream_manager.async_shutdown()
+
+    domain_data["_camera_stream_stop_unsub"] = hass.bus.async_listen_once(
+      EVENT_HOMEASSISTANT_STOP,
+      _async_stop_camera_server,
+    )
 
   if not hass.services.has_service(DOMAIN, SERVICE_PUBLISH_SNAPSHOT):
     async def handle_service(call: ServiceCall) -> None:
@@ -1937,11 +1949,10 @@ class Tab5Bridge:
         allow_external=False,
         require_standard_port=False,
       ).rstrip("/")
-      stream_path = CAMERA_STREAM_ROUTE.replace("{token}", session.token)
       response_payload = {
         "status": "ready",
         "entity_id": entity_id,
-        "url": f"{base_url}{stream_path}",
+        "url": manager.stream_url(base_url, session.token),
         "codec": "h264",
         "profile": "constrained_baseline",
         "framing": CAMERA_STREAM_FRAMING,
