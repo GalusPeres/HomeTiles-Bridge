@@ -24,14 +24,14 @@ CAMERA_STREAM_HTTP_PORT_FIRST: Final = 8124
 CAMERA_STREAM_HTTP_PORT_LAST: Final = 8131
 CAMERA_STREAM_WIDTH: Final = 752
 CAMERA_STREAM_HEIGHT: Final = 424
-CAMERA_STREAM_FPS: Final = 15
+CAMERA_STREAM_FPS: Final = 30
 CAMERA_STREAM_MIN_WIDTH: Final = 320
 CAMERA_STREAM_MIN_HEIGHT: Final = 180
 CAMERA_STREAM_MAX_PIXELS: Final = CAMERA_STREAM_WIDTH * CAMERA_STREAM_HEIGHT
 CAMERA_STILL_FPS: Final = 2
-CAMERA_JPEG_QUALITY: Final = 5
-CAMERA_HTTP_WRITE_BYTES: Final = 2 * 1024
-CAMERA_HTTP_WRITE_PAUSE_SECONDS: Final = 0.002
+CAMERA_JPEG_QUALITY: Final = 7
+CAMERA_HTTP_WRITE_BYTES: Final = 4 * 1024
+CAMERA_HTTP_WRITE_PAUSE_SECONDS: Final = 0.001
 CAMERA_SESSION_TTL_SECONDS: Final = 30.0
 CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
 CAMERA_MAX_JPEG_BYTES: Final = 256 * 1024
@@ -444,6 +444,35 @@ class CameraStreamView:
           session.entity_id,
         )
 
+  async def _async_read_latest_jpeg_frames(
+    self,
+    session: CameraStreamSession,
+    process: asyncio.subprocess.Process,
+    frames: asyncio.Queue[bytes | None],
+  ) -> int:
+    """Drain FFmpeg continuously and retain at most the newest JPEG frame."""
+    assert process.stdout is not None
+    parser = JpegFrameParser()
+    dropped = 0
+    try:
+      while (
+        not session.stop_event.is_set()
+        and (chunk := await process.stdout.read(16 * 1024))
+      ):
+        for jpeg in parser.feed(chunk):
+          if frames.full():
+            with suppress(asyncio.QueueEmpty):
+              frames.get_nowait()
+              dropped += 1
+          frames.put_nowait(jpeg)
+    finally:
+      # Wake the HTTP writer even when FFmpeg exits without another frame.
+      if frames.full():
+        with suppress(asyncio.QueueEmpty):
+          frames.get_nowait()
+      frames.put_nowait(None)
+    return dropped
+
   async def get(self, request: web.Request, token: str) -> web.StreamResponse:
     """Start FFmpeg after validating the single-use session token."""
     session = await self._manager.async_take_session(token)
@@ -539,8 +568,10 @@ class CameraStreamView:
       while not session.stop_event.is_set():
         feeder: asyncio.Task[None] | None = None
         stderr_task: asyncio.Task[None] | None = None
+        frame_reader: asyncio.Task[int] | None = None
         process: asyncio.subprocess.Process | None = None
         frames_this_process = 0
+        dropped_frames = 0
         try:
           process = await asyncio.create_subprocess_exec(
             *command,
@@ -566,31 +597,39 @@ class CameraStreamView:
               self._async_feed_camera_images(session, process),
               f"HomeTiles camera images {session.entity_id}",
             )
-          assert process.stdout is not None
-          parser = JpegFrameParser()
-          while (
-            not session.stop_event.is_set()
-            and (chunk := await process.stdout.read(16 * 1024))
-          ):
-            for jpeg in parser.feed(chunk):
-              record = struct.pack(">I", len(jpeg)) + jpeg
-              # ESP-Hosted receives through the C6 into scarce internal DMA
-              # RAM. Pace small writes so the P4 drains them into PSRAM while
-              # MQTT continues using the same SDIO transport.
-              for offset in range(0, len(record), CAMERA_HTTP_WRITE_BYTES):
-                await response.write(
-                  record[offset : offset + CAMERA_HTTP_WRITE_BYTES]
-                )
-                await asyncio.sleep(CAMERA_HTTP_WRITE_PAUSE_SECONDS)
-              if not sent_frame_once:
-                sent_frame_once = True
-                _LOGGER.info(
-                  "HomeTiles camera first JPEG frame sent (%s, %d bytes)",
-                  session.entity_id,
-                  len(jpeg),
-                )
-              frames_this_process += 1
-              sent += len(record)
+          latest_frames: asyncio.Queue[bytes | None] = asyncio.Queue(
+            maxsize=1
+          )
+          frame_reader = self._manager.hass.async_create_task(
+            self._async_read_latest_jpeg_frames(
+              session, process, latest_frames
+            ),
+            f"HomeTiles camera latest-frame reader {session.entity_id}",
+          )
+          while not session.stop_event.is_set():
+            jpeg = await latest_frames.get()
+            if jpeg is None:
+              break
+            record = struct.pack(">I", len(jpeg)) + jpeg
+            # Keep each burst bounded for the C6/SDIO receive path. FFmpeg is
+            # drained concurrently above, so a slow display replaces an old
+            # queued JPEG instead of accumulating seconds of latency.
+            for offset in range(0, len(record), CAMERA_HTTP_WRITE_BYTES):
+              await response.write(
+                record[offset : offset + CAMERA_HTTP_WRITE_BYTES]
+              )
+              await asyncio.sleep(CAMERA_HTTP_WRITE_PAUSE_SECONDS)
+            if not sent_frame_once:
+              sent_frame_once = True
+              _LOGGER.info(
+                "HomeTiles camera first JPEG frame sent (%s, %d bytes)",
+                session.entity_id,
+                len(jpeg),
+              )
+            frames_this_process += 1
+            sent += len(record)
+          if frame_reader:
+            dropped_frames = await frame_reader
         except (ConnectionResetError, BrokenPipeError):
           raise
         except asyncio.CancelledError:
@@ -605,6 +644,10 @@ class CameraStreamView:
             feeder.cancel()
             with suppress(asyncio.CancelledError):
               await feeder
+          if frame_reader and not frame_reader.done():
+            frame_reader.cancel()
+            with suppress(asyncio.CancelledError):
+              await frame_reader
           if process and process.returncode is None:
             process.terminate()
             try:
@@ -618,6 +661,12 @@ class CameraStreamView:
           if process:
             await self._manager.async_forget_process(
               session.device_id, process
+            )
+          if dropped_frames:
+            _LOGGER.debug(
+              "HomeTiles camera dropped %d superseded JPEG frames (%s)",
+              dropped_frames,
+              session.entity_id,
             )
 
         if session.stop_event.is_set():
