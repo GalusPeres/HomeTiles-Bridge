@@ -85,7 +85,6 @@ from .const import (
   WEATHER_REQUEST_SUFFIX,
 )
 from .camera_stream import (
-  CAMERA_STREAM_FPS,
   CAMERA_STREAM_HEIGHT,
   CAMERA_STREAM_ROUTE,
   CAMERA_STREAM_WIDTH,
@@ -1940,14 +1939,21 @@ class Tab5Bridge:
         "profile": "constrained_baseline",
         "width": CAMERA_STREAM_WIDTH,
         "height": CAMERA_STREAM_HEIGHT,
-        "fps": CAMERA_STREAM_FPS,
+        "fps": session.fps,
       }
     except Exception as err:
       _LOGGER.warning("HomeTiles camera stream setup failed for %s: %s", entity_id, err)
+      error_code = str(err)
+      if error_code not in {
+        "camera_has_no_stream_source",
+        "camera_image_unavailable",
+        "home_assistant_url_unavailable",
+      }:
+        error_code = "camera_setup_failed"
       response_payload = {
         "status": "error",
         "entity_id": entity_id,
-        "error": str(err) or type(err).__name__,
+        "error": error_code,
       }
 
     await mqtt.async_publish(
@@ -3452,7 +3458,7 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     # verwerfen, weil sonst nur der SOURCE_IMPORT-Erstell-Pfad sie uebernimmt.
     for key in (
       CONF_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES,
-      CONF_MEDIA_PLAYERS, CONF_CLIMATES, CONF_SCENE_MAP,
+      CONF_MEDIA_PLAYERS, CONF_CLIMATES, CONF_CAMERAS, CONF_SCENE_MAP,
     ):
       if not existing.get(key) and data.get(key):
         existing[key] = data[key]
@@ -3532,6 +3538,11 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     raise ValueError("invalid_climates")
   climates = [str(item).strip() for item in climates_raw if str(item).strip()]
 
+  cameras_raw = payload.get("cameras") or []
+  if not isinstance(cameras_raw, list):
+    raise ValueError("invalid_cameras")
+  cameras = [str(item).strip() for item in cameras_raw if str(item).strip()]
+
   scene_map_raw = payload.get("scene_map") or {}
   if not isinstance(scene_map_raw, dict):
     raise ValueError("invalid_scene_map")
@@ -3555,6 +3566,7 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     CONF_SWITCHES: switches,
     CONF_MEDIA_PLAYERS: media_players,
     CONF_CLIMATES: climates,
+    CONF_CAMERAS: cameras,
     CONF_SCENE_MAP: scene_map,
   }
   if manufacturer:

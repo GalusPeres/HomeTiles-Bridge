@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass
 import logging
 import secrets
@@ -11,7 +12,7 @@ from typing import Final
 
 from aiohttp import web
 
-from homeassistant.components.camera import async_get_stream_source
+from homeassistant.components.camera import async_get_image, async_get_stream_source
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
@@ -22,9 +23,11 @@ CAMERA_STREAM_ROUTE: Final = "/api/hometiles/camera/{token}"
 CAMERA_STREAM_NAME: Final = "api:hometiles:camera"
 CAMERA_STREAM_WIDTH: Final = 640
 CAMERA_STREAM_HEIGHT: Final = 480
-CAMERA_STREAM_FPS: Final = 12
-CAMERA_STREAM_BITRATE_KBIT: Final = 850
+CAMERA_STREAM_FPS: Final = 8
+CAMERA_STILL_FPS: Final = 2
+CAMERA_STREAM_BITRATE_KBIT: Final = 700
 CAMERA_SESSION_TTL_SECONDS: Final = 30.0
+CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
 
 
 @dataclass(slots=True)
@@ -34,7 +37,9 @@ class CameraStreamSession:
   token: str
   device_id: str
   entity_id: str
-  source: str
+  source: str | None
+  first_image: bytes | None
+  fps: int
   expires_at: float
 
 
@@ -51,11 +56,39 @@ class CameraStreamManager:
   async def async_create_session(
     self, device_id: str, entity_id: str
   ) -> CameraStreamSession:
-    """Resolve a camera source and create a one-time HTTP session."""
-    async with asyncio.timeout(10):
-      source = await async_get_stream_source(self.hass, entity_id)
+    """Resolve a direct stream or a still-image camera into an H.264 session."""
+    source: str | None = None
+    try:
+      async with asyncio.timeout(10):
+        source = await async_get_stream_source(self.hass, entity_id)
+    except Exception as err:  # A still-image camera can legitimately reject this.
+      _LOGGER.debug(
+        "HomeTiles camera %s has no direct stream source: %s",
+        entity_id,
+        err,
+      )
+
+    first_image: bytes | None = None
+    fps = CAMERA_STREAM_FPS
     if not source:
-      raise ValueError("camera_has_no_stream_source")
+      try:
+        image = await async_get_image(
+          self.hass,
+          entity_id,
+          timeout=10,
+          width=CAMERA_STREAM_WIDTH,
+          height=CAMERA_STREAM_HEIGHT,
+        )
+        first_image = bytes(image.content) if image.content else None
+      except Exception as err:
+        _LOGGER.debug(
+          "HomeTiles camera %s did not provide a still image: %s",
+          entity_id,
+          err,
+        )
+      if not first_image:
+        raise ValueError("camera_image_unavailable")
+      fps = CAMERA_STILL_FPS
 
     await self.async_stop_device(device_id)
     token = secrets.token_urlsafe(24)
@@ -64,6 +97,8 @@ class CameraStreamManager:
       device_id=device_id,
       entity_id=entity_id,
       source=source,
+      first_image=first_image,
+      fps=fps,
       expires_at=time.monotonic() + CAMERA_SESSION_TTL_SECONDS,
     )
     async with self._lock:
@@ -138,6 +173,61 @@ class CameraStreamView(HomeAssistantView):
   def __init__(self, manager: CameraStreamManager) -> None:
     self._manager = manager
 
+  async def _async_feed_camera_images(
+    self,
+    session: CameraStreamSession,
+    process: asyncio.subprocess.Process,
+  ) -> None:
+    """Feed HA still images to FFmpeg for cameras without stream_source()."""
+    if process.stdin is None or session.first_image is None:
+      return
+
+    frame = session.first_image
+    failures = 0
+    interval = 1.0 / max(1, session.fps)
+    try:
+      while process.returncode is None:
+        process.stdin.write(frame)
+        await process.stdin.drain()
+        await asyncio.sleep(interval)
+        try:
+          image = await async_get_image(
+            self._manager.hass,
+            session.entity_id,
+            timeout=5,
+            width=CAMERA_STREAM_WIDTH,
+            height=CAMERA_STREAM_HEIGHT,
+          )
+          if image.content:
+            frame = bytes(image.content)
+            failures = 0
+          else:
+            failures += 1
+        except asyncio.CancelledError:
+          raise
+        except Exception as err:
+          failures += 1
+          _LOGGER.debug(
+            "HomeTiles camera image refresh failed for %s (%d/%d): %s",
+            session.entity_id,
+            failures,
+            CAMERA_IMAGE_FAILURE_LIMIT,
+            err,
+          )
+        if failures >= CAMERA_IMAGE_FAILURE_LIMIT:
+          _LOGGER.warning(
+            "HomeTiles camera image source stopped responding: %s",
+            session.entity_id,
+          )
+          break
+    except (BrokenPipeError, ConnectionResetError):
+      pass
+    finally:
+      if process.stdin and not process.stdin.is_closing():
+        process.stdin.close()
+        with suppress(BrokenPipeError, ConnectionResetError):
+          await process.stdin.wait_closed()
+
   async def get(self, request: web.Request, token: str) -> web.StreamResponse:
     """Start FFmpeg after validating the single-use session token."""
     session = await self._manager.async_take_session(token)
@@ -146,29 +236,43 @@ class CameraStreamView(HomeAssistantView):
 
     ffmpeg_binary = get_ffmpeg_manager(self._manager.hass).binary
     command = [ffmpeg_binary, "-hide_banner", "-loglevel", "warning"]
-    if session.source.lower().startswith("rtsp"):
-      command.extend(["-rtsp_transport", "tcp"])
+    image_mode = session.source is None
+    if image_mode:
+      command.extend([
+        "-f", "image2pipe",
+        "-framerate", str(session.fps),
+        "-i", "pipe:0",
+      ])
+    else:
+      assert session.source is not None
+      if session.source.lower().startswith("rtsp"):
+        command.extend(["-rtsp_transport", "tcp"])
+      command.extend(["-i", session.source])
     command.extend([
-      "-i", session.source,
       "-map", "0:v:0",
       "-an",
       "-vf",
       (
-        f"fps={CAMERA_STREAM_FPS},"
+        f"fps={session.fps},"
         f"scale={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
-        "force_original_aspect_ratio=decrease,"
+        "force_original_aspect_ratio=decrease:"
+        "out_color_matrix=bt601:out_range=tv,"
         f"pad={CAMERA_STREAM_WIDTH}:{CAMERA_STREAM_HEIGHT}:"
-        "(ow-iw)/2:(oh-ih)/2:black"
+        "(ow-iw)/2:(oh-ih)/2:black,setsar=1"
       ),
       "-pix_fmt", "yuv420p",
+      "-color_range", "tv",
+      "-colorspace", "smpte170m",
+      "-color_primaries", "smpte170m",
+      "-color_trc", "smpte170m",
       "-c:v", "libx264",
       "-preset", "ultrafast",
       "-tune", "zerolatency",
       "-profile:v", "baseline",
       "-level", "3.0",
       "-bf", "0",
-      "-g", str(CAMERA_STREAM_FPS),
-      "-keyint_min", str(CAMERA_STREAM_FPS),
+      "-g", str(session.fps),
+      "-keyint_min", str(session.fps),
       "-sc_threshold", "0",
       "-b:v", f"{CAMERA_STREAM_BITRATE_KBIT}k",
       "-maxrate", f"{CAMERA_STREAM_BITRATE_KBIT}k",
@@ -180,6 +284,7 @@ class CameraStreamView(HomeAssistantView):
 
     process = await asyncio.create_subprocess_exec(
       *command,
+      stdin=asyncio.subprocess.PIPE if image_mode else asyncio.subprocess.DEVNULL,
       stdout=asyncio.subprocess.PIPE,
       stderr=asyncio.subprocess.DEVNULL,
     )
@@ -192,14 +297,20 @@ class CameraStreamView(HomeAssistantView):
         "Cache-Control": "no-store",
         "X-HomeTiles-Video": (
           f"h264-baseline; width={CAMERA_STREAM_WIDTH}; "
-          f"height={CAMERA_STREAM_HEIGHT}; fps={CAMERA_STREAM_FPS}"
+          f"height={CAMERA_STREAM_HEIGHT}; fps={session.fps}"
         ),
       },
     )
-    await response.prepare(request)
 
     sent = 0
+    feeder: asyncio.Task[None] | None = None
     try:
+      await response.prepare(request)
+      if image_mode:
+        feeder = self._manager.hass.async_create_task(
+          self._async_feed_camera_images(session, process),
+          f"HomeTiles camera images {session.entity_id}",
+        )
       assert process.stdout is not None
       while chunk := await process.stdout.read(16 * 1024):
         await response.write(chunk)
@@ -211,6 +322,10 @@ class CameraStreamView(HomeAssistantView):
         sent,
       )
     finally:
+      if feeder:
+        feeder.cancel()
+        with suppress(asyncio.CancelledError):
+          await feeder
       if process.returncode is None:
         process.terminate()
         try:
