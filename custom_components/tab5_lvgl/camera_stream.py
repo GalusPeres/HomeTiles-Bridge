@@ -22,7 +22,7 @@ CAMERA_STREAM_TCP_PORT_FIRST: Final = 8124
 CAMERA_STREAM_TCP_PORT_LAST: Final = 8131
 CAMERA_STREAM_WIDTH: Final = 752
 CAMERA_STREAM_HEIGHT: Final = 424
-CAMERA_STREAM_FPS: Final = 30
+CAMERA_STREAM_FPS: Final = 24
 CAMERA_STREAM_MIN_WIDTH: Final = 320
 CAMERA_STREAM_MIN_HEIGHT: Final = 180
 CAMERA_STREAM_MAX_PIXELS: Final = CAMERA_STREAM_WIDTH * CAMERA_STREAM_HEIGHT
@@ -33,7 +33,7 @@ CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
 CAMERA_MAX_JPEG_BYTES: Final = 256 * 1024
 CAMERA_STREAM_TRANSPORT: Final = "tcp-ack-v1"
 CAMERA_STREAM_FRAMING: Final = "ack-jpeg-v1"
-CAMERA_STREAM_CHUNK_BYTES: Final = 4 * 1024
+CAMERA_STREAM_CHUNK_BYTES: Final = 8 * 1024
 CAMERA_STREAM_HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
 CAMERA_STREAM_ACK_TIMEOUT_SECONDS: Final = 5.0
 CAMERA_STREAM_REQUEST_PREFIX: Final = "HTCAM/1 "
@@ -340,7 +340,7 @@ class CameraStreamManager:
 
 
 class CameraStreamConnection:
-  """Serve JPEG frames with receiver-controlled 4 KiB flow control."""
+  """Serve JPEG frames with receiver-controlled 8 KiB flow control."""
 
   def __init__(self, manager: CameraStreamManager) -> None:
     self._manager = manager
@@ -647,8 +647,6 @@ class CameraStreamConnection:
         ])
       command.extend(["-i", session.source])
     video_filters: list[str] = []
-    if not image_mode:
-      video_filters.append(f"fps={session.fps}")
     video_filters.extend([
       (
         f"scale={session.width}:{session.height}:"
@@ -670,6 +668,14 @@ class CameraStreamConnection:
       "-c:v", "mjpeg",
       "-threads:v", "1",
       "-q:v", str(CAMERA_JPEG_QUALITY),
+    ])
+    if not image_mode:
+      # A fixed fps filter duplicates frames when the source is slower (for
+      # example 10 FPS from OBS), wasting ESP decode/display time and making
+      # the on-device counter look faster than the real video. fpsmax only
+      # drops excess source frames and never fabricates missing ones.
+      command.extend(["-fpsmax", str(session.fps)])
+    command.extend([
       "-flush_packets", "1",
       "-f", "image2pipe",
       "pipe:1",
