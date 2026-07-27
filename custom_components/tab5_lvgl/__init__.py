@@ -91,6 +91,7 @@ from .camera_stream import (
   CAMERA_STREAM_FPS,
   CAMERA_STREAM_FRAMING,
   CAMERA_STREAM_HEIGHT,
+  CAMERA_STREAM_TRANSPORT,
   CAMERA_STREAM_WIDTH,
   CameraStreamManager,
 )
@@ -236,11 +237,11 @@ async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
     camera_stream_manager = CameraStreamManager(hass)
     domain_data["camera_stream_manager"] = camera_stream_manager
     try:
-      await camera_stream_manager.async_start_http_server()
+      await camera_stream_manager.async_start_tcp_server()
     except OSError as err:
       # Camera video is optional. A listener failure must not prevent state,
       # cover or control traffic from continuing over MQTT.
-      _LOGGER.error("HomeTiles camera LAN HTTP server could not start: %s", err)
+      _LOGGER.error("HomeTiles camera LAN TCP server could not start: %s", err)
 
     async def _async_stop_camera_server(_event: Event) -> None:
       await camera_stream_manager.async_shutdown()
@@ -1943,6 +1944,8 @@ class Tab5Bridge:
       return
 
     try:
+      if str(parsed.get("transport") or "").strip() != CAMERA_STREAM_TRANSPORT:
+        raise ValueError("camera_invalid_stream_request")
       session = await manager.async_create_session(
         self.device_id,
         entity_id,
@@ -1969,7 +1972,7 @@ class Tab5Bridge:
       _LOGGER.info(
         "HomeTiles camera LAN endpoint ready (host=%s, port=%d, panel=%s)",
         source_ip,
-        manager.http_port,
+        manager.tcp_port,
         self._device_ip or "unknown",
       )
       response_payload = {
@@ -1977,6 +1980,7 @@ class Tab5Bridge:
         "entity_id": entity_id,
         "url": stream_url,
         "codec": "jpeg",
+        "transport": CAMERA_STREAM_TRANSPORT,
         "framing": CAMERA_STREAM_FRAMING,
         "width": session.width,
         "height": session.height,
@@ -1989,6 +1993,7 @@ class Tab5Bridge:
         "camera_has_no_stream_source",
         "camera_image_unavailable",
         "home_assistant_url_unavailable",
+        "camera_tcp_server_unavailable",
         "camera_invalid_stream_request",
       }:
         error_code = "camera_setup_failed"

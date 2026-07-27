@@ -7,11 +7,10 @@ from contextlib import suppress
 from dataclasses import dataclass
 import logging
 import secrets
+import socket
 import struct
 import time
 from typing import Final
-
-from aiohttp import web
 
 from homeassistant.components.camera import async_get_image, async_get_stream_source
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
@@ -19,9 +18,8 @@ from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
-CAMERA_STREAM_ROUTE: Final = "/api/hometiles/camera/{token}"
-CAMERA_STREAM_HTTP_PORT_FIRST: Final = 8124
-CAMERA_STREAM_HTTP_PORT_LAST: Final = 8131
+CAMERA_STREAM_TCP_PORT_FIRST: Final = 8124
+CAMERA_STREAM_TCP_PORT_LAST: Final = 8131
 CAMERA_STREAM_WIDTH: Final = 752
 CAMERA_STREAM_HEIGHT: Final = 424
 CAMERA_STREAM_FPS: Final = 30
@@ -30,15 +28,24 @@ CAMERA_STREAM_MIN_HEIGHT: Final = 180
 CAMERA_STREAM_MAX_PIXELS: Final = CAMERA_STREAM_WIDTH * CAMERA_STREAM_HEIGHT
 CAMERA_STILL_FPS: Final = 2
 CAMERA_JPEG_QUALITY: Final = 7
-CAMERA_HTTP_WRITE_BYTES: Final = 4 * 1024
-CAMERA_HTTP_WRITE_PAUSE_SECONDS: Final = 0.001
 CAMERA_SESSION_TTL_SECONDS: Final = 30.0
 CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
 CAMERA_MAX_JPEG_BYTES: Final = 256 * 1024
-CAMERA_STREAM_FRAMING: Final = "be32-jpeg"
-# A zero-length protocol record flushes the HTTP response without presenting
-# a fake JPEG frame to the decoder.
-CAMERA_STREAM_FLUSH_RECORD: Final = b"\x00\x00\x00\x00"
+CAMERA_STREAM_TRANSPORT: Final = "tcp-ack-v1"
+CAMERA_STREAM_FRAMING: Final = "ack-jpeg-v1"
+CAMERA_STREAM_CHUNK_BYTES: Final = 4 * 1024
+CAMERA_STREAM_HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
+CAMERA_STREAM_ACK_TIMEOUT_SECONDS: Final = 5.0
+CAMERA_STREAM_REQUEST_PREFIX: Final = "HTCAM/1 "
+CAMERA_STREAM_HELLO_MAGIC: Final = b"HTC1"
+CAMERA_STREAM_FRAME_MAGIC: Final = b"HTF1"
+CAMERA_STREAM_ACK_MAGIC: Final = b"HTA1"
+CAMERA_STREAM_MESSAGE_FRAME: Final = 1
+CAMERA_STREAM_MESSAGE_FLUSH: Final = 2
+CAMERA_STREAM_MESSAGE_END: Final = 3
+CAMERA_STREAM_HELLO_STRUCT: Final = struct.Struct(">4sHH")
+CAMERA_STREAM_FRAME_STRUCT: Final = struct.Struct(">4sB3xII")
+CAMERA_STREAM_ACK_STRUCT: Final = struct.Struct(">4sII")
 
 
 class JpegFrameParser:
@@ -102,65 +109,60 @@ class CameraStreamManager:
     self._processes: dict[str, asyncio.subprocess.Process] = {}
     self._stop_events: dict[str, asyncio.Event] = {}
     self._lock = asyncio.Lock()
-    self._http_runner: web.AppRunner | None = None
-    self._http_port: int | None = None
-    self._http_view = CameraStreamView(self)
+    self._tcp_server: asyncio.AbstractServer | None = None
+    self._tcp_port: int | None = None
+    self._tcp_connection = CameraStreamConnection(self)
 
-  async def async_start_http_server(self) -> None:
-    """Start the LAN-only plain-HTTP endpoint used by the display."""
-    if self._http_runner is not None:
+  async def async_start_tcp_server(self) -> None:
+    """Start the LAN-only acknowledged TCP endpoint used by the display."""
+    if self._tcp_server is not None:
       return
 
     last_error: OSError | None = None
     for port in range(
-      CAMERA_STREAM_HTTP_PORT_FIRST,
-      CAMERA_STREAM_HTTP_PORT_LAST + 1,
+      CAMERA_STREAM_TCP_PORT_FIRST,
+      CAMERA_STREAM_TCP_PORT_LAST + 1,
     ):
-      application = web.Application()
-      application.router.add_get(
-        CAMERA_STREAM_ROUTE,
-        self._http_view.async_handle,
-      )
-      runner = web.AppRunner(application, access_log=None)
-      await runner.setup()
-      site = web.TCPSite(runner, "0.0.0.0", port)
       try:
-        await site.start()
+        server = await asyncio.start_server(
+          self._tcp_connection.async_handle,
+          "0.0.0.0",
+          port,
+          start_serving=True,
+        )
       except OSError as err:
         last_error = err
-        await runner.cleanup()
         continue
-      self._http_runner = runner
-      self._http_port = port
+      self._tcp_server = server
+      self._tcp_port = port
       _LOGGER.info(
-        "HomeTiles camera LAN HTTP server listening on port %d (TLS disabled)",
+        "HomeTiles camera acknowledged TCP server listening on port %d",
         port,
       )
       return
 
     raise OSError(
-      "No free HomeTiles camera HTTP port in range "
-      f"{CAMERA_STREAM_HTTP_PORT_FIRST}-{CAMERA_STREAM_HTTP_PORT_LAST}"
+      "No free HomeTiles camera TCP port in range "
+      f"{CAMERA_STREAM_TCP_PORT_FIRST}-{CAMERA_STREAM_TCP_PORT_LAST}"
     ) from last_error
 
   @property
-  def http_port(self) -> int | None:
-    """Return the active LAN HTTP listener port."""
-    return self._http_port
+  def tcp_port(self) -> int | None:
+    """Return the active LAN camera listener port."""
+    return self._tcp_port
 
   def stream_url(self, host: str, token: str) -> str:
-    """Build a plain-HTTP URL using Home Assistant's actual LAN address."""
-    if self._http_port is None:
-      raise ValueError("camera_http_server_unavailable")
+    """Build a local acknowledged-TCP URL using HA's actual LAN address."""
+    if self._tcp_port is None:
+      raise ValueError("camera_tcp_server_unavailable")
     if not host:
       raise ValueError("home_assistant_url_unavailable")
     if ":" in host:
       host = f"[{host}]"
-    path = CAMERA_STREAM_ROUTE.replace("{token}", token)
-    return f"http://{host}:{self._http_port}{path}"
+    return f"tcp://{host}:{self._tcp_port}/{token}"
 
   async def async_shutdown(self) -> None:
-    """Stop all camera work and close the auxiliary HTTP listener."""
+    """Stop all camera work and close the auxiliary TCP listener."""
     async with self._lock:
       device_ids = (
         set(self._device_tokens)
@@ -169,10 +171,11 @@ class CameraStreamManager:
       )
     for device_id in device_ids:
       await self.async_stop_device(device_id)
-    if self._http_runner is not None:
-      await self._http_runner.cleanup()
-      self._http_runner = None
-      self._http_port = None
+    if self._tcp_server is not None:
+      self._tcp_server.close()
+      await self._tcp_server.wait_closed()
+      self._tcp_server = None
+      self._tcp_port = None
 
   async def async_create_session(
     self,
@@ -316,7 +319,7 @@ class CameraStreamManager:
   async def async_forget_stop_event(
     self, device_id: str, stop_event: asyncio.Event
   ) -> None:
-    """Forget a completed HTTP client without touching a newer session."""
+    """Forget a completed TCP client without touching a newer session."""
     async with self._lock:
       if self._stop_events.get(device_id) is stop_event:
         self._stop_events.pop(device_id, None)
@@ -336,15 +339,151 @@ class CameraStreamManager:
       session.stop_event.set()
 
 
-class CameraStreamView:
-  """Serve length-framed JPEG video frames."""
+class CameraStreamConnection:
+  """Serve JPEG frames with receiver-controlled 4 KiB flow control."""
 
   def __init__(self, manager: CameraStreamManager) -> None:
     self._manager = manager
 
-  async def async_handle(self, request: web.Request) -> web.StreamResponse:
-    """Handle a request from the dedicated plain-HTTP LAN listener."""
-    return await self.get(request, request.match_info["token"])
+  async def async_handle(
+    self,
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+  ) -> None:
+    """Authenticate one single-use camera connection and run its stream."""
+    peer = writer.get_extra_info("peername")
+    session: CameraStreamSession | None = None
+    try:
+      raw_request = await asyncio.wait_for(
+        reader.readline(),
+        timeout=CAMERA_STREAM_HANDSHAKE_TIMEOUT_SECONDS,
+      )
+      if len(raw_request) > 256 or not raw_request.endswith(b"\n"):
+        raise ValueError("camera_invalid_handshake")
+      request = raw_request.decode("ascii", errors="strict").strip()
+      if not request.startswith(CAMERA_STREAM_REQUEST_PREFIX):
+        raise ValueError("camera_invalid_handshake")
+      token = request[len(CAMERA_STREAM_REQUEST_PREFIX):].strip()
+      if not token or any(char.isspace() for char in token):
+        raise ValueError("camera_invalid_handshake")
+
+      session = await self._manager.async_take_session(token)
+      if session is None:
+        writer.write(CAMERA_STREAM_HELLO_STRUCT.pack(
+          CAMERA_STREAM_HELLO_MAGIC,
+          1,
+          CAMERA_STREAM_CHUNK_BYTES,
+        ))
+        await writer.drain()
+        return
+
+      transport_socket = writer.get_extra_info("socket")
+      if transport_socket is not None:
+        with suppress(OSError):
+          transport_socket.setsockopt(
+            socket.IPPROTO_TCP,
+            socket.TCP_NODELAY,
+            1,
+          )
+        with suppress(OSError):
+          transport_socket.setsockopt(
+            socket.SOL_SOCKET,
+            socket.SO_SNDBUF,
+            CAMERA_STREAM_CHUNK_BYTES,
+          )
+
+      writer.write(CAMERA_STREAM_HELLO_STRUCT.pack(
+        CAMERA_STREAM_HELLO_MAGIC,
+        0,
+        CAMERA_STREAM_CHUNK_BYTES,
+      ))
+      await writer.drain()
+      await self._async_stream(session, reader, writer)
+    except (
+      asyncio.IncompleteReadError,
+      ConnectionResetError,
+      BrokenPipeError,
+      asyncio.TimeoutError,
+    ):
+      _LOGGER.debug(
+        "HomeTiles camera TCP client disconnected during handshake/stream (%s)",
+        peer,
+      )
+    except UnicodeError:
+      _LOGGER.warning("HomeTiles camera invalid TCP handshake from %s", peer)
+    except ValueError as err:
+      _LOGGER.warning(
+        "HomeTiles camera rejected TCP handshake from %s: %s",
+        peer,
+        err,
+      )
+    except asyncio.CancelledError:
+      raise
+    except Exception:
+      _LOGGER.exception("HomeTiles camera TCP connection failed (%s)", peer)
+    finally:
+      if session is not None and not session.stop_event.is_set():
+        session.stop_event.set()
+        await self._manager.async_forget_stop_event(
+          session.device_id,
+          session.stop_event,
+        )
+      writer.close()
+      with suppress(BrokenPipeError, ConnectionResetError):
+        await writer.wait_closed()
+
+  @staticmethod
+  async def _async_send_control(
+    writer: asyncio.StreamWriter,
+    message_type: int,
+    sequence: int,
+  ) -> None:
+    writer.write(CAMERA_STREAM_FRAME_STRUCT.pack(
+      CAMERA_STREAM_FRAME_MAGIC,
+      message_type,
+      sequence,
+      0,
+    ))
+    await writer.drain()
+
+  @staticmethod
+  async def _async_send_frame(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    sequence: int,
+    jpeg: bytes,
+  ) -> None:
+    """Send one JPEG while allowing at most one unacknowledged chunk."""
+    writer.write(CAMERA_STREAM_FRAME_STRUCT.pack(
+      CAMERA_STREAM_FRAME_MAGIC,
+      CAMERA_STREAM_MESSAGE_FRAME,
+      sequence,
+      len(jpeg),
+    ))
+    await writer.drain()
+
+    acknowledged = 0
+    while acknowledged < len(jpeg):
+      chunk_end = min(
+        len(jpeg),
+        acknowledged + CAMERA_STREAM_CHUNK_BYTES,
+      )
+      writer.write(jpeg[acknowledged:chunk_end])
+      await writer.drain()
+      raw_ack = await asyncio.wait_for(
+        reader.readexactly(CAMERA_STREAM_ACK_STRUCT.size),
+        timeout=CAMERA_STREAM_ACK_TIMEOUT_SECONDS,
+      )
+      magic, ack_sequence, ack_bytes = CAMERA_STREAM_ACK_STRUCT.unpack(
+        raw_ack
+      )
+      if (
+        magic != CAMERA_STREAM_ACK_MAGIC
+        or ack_sequence != sequence
+        or ack_bytes != chunk_end
+      ):
+        raise ValueError("camera_invalid_ack")
+      acknowledged = chunk_end
 
   async def _async_feed_camera_images(
     self,
@@ -367,7 +506,7 @@ class CameraStreamView:
         # BambuLab snapshot retrieval can take several seconds. Keep feeding
         # the latest good JPEG at the requested cadence while the next image
         # is fetched in parallel; otherwise FFmpeg receives only one frame and
-        # cannot emit a JPEG video frame before the ESP's HTTP timeout.
+        # cannot emit a JPEG video frame before the display starts waiting.
         if image_task is None:
           image_task = self._manager.hass.async_create_task(
             async_get_image(
@@ -466,19 +605,20 @@ class CameraStreamView:
               dropped += 1
           frames.put_nowait(jpeg)
     finally:
-      # Wake the HTTP writer even when FFmpeg exits without another frame.
+      # Wake the frame writer even when FFmpeg exits without another frame.
       if frames.full():
         with suppress(asyncio.QueueEmpty):
           frames.get_nowait()
       frames.put_nowait(None)
     return dropped
 
-  async def get(self, request: web.Request, token: str) -> web.StreamResponse:
-    """Start FFmpeg after validating the single-use session token."""
-    session = await self._manager.async_take_session(token)
-    if session is None:
-      raise web.HTTPNotFound()
-
+  async def _async_stream(
+    self,
+    session: CameraStreamSession,
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+  ) -> None:
+    """Transcode and send the newest frame using acknowledged chunks."""
     ffmpeg_binary = get_ffmpeg_manager(self._manager.hass).binary
     command = [ffmpeg_binary, "-hide_banner", "-loglevel", "warning"]
     image_mode = session.source is None
@@ -535,35 +675,23 @@ class CameraStreamView:
       "pipe:1",
     ])
 
-    response = web.StreamResponse(
-      status=200,
-      headers={
-        "Content-Type": "application/x-hometiles-jpeg-stream",
-        "Cache-Control": "no-store",
-        "X-Accel-Buffering": "no",
-        "X-HomeTiles-Framing": CAMERA_STREAM_FRAMING,
-        "X-HomeTiles-Video": (
-          f"jpeg; width={session.width}; "
-          f"height={session.height}; fps={session.fps}"
-        ),
-      },
-    )
-
     sent = 0
     sent_frame_once = False
+    sequence = 0
     try:
-      # Send the HTTP response immediately. On slower HA hosts, waiting for
-      # FFmpeg to spawn before prepare() made the ESP32-P4 time out while it
-      # was still waiting for the status line and headers.
-      await response.prepare(request)
       _LOGGER.info(
-        "HomeTiles camera HTTP client connected (%s, mode=%s, fps=%d)",
+        "HomeTiles camera acknowledged TCP client connected "
+        "(%s, mode=%s, fps=%d, chunk=%d)",
         session.entity_id,
         "image" if image_mode else "stream",
         session.fps,
+        CAMERA_STREAM_CHUNK_BYTES,
       )
-      await response.write(CAMERA_STREAM_FLUSH_RECORD)
-      sent += len(CAMERA_STREAM_FLUSH_RECORD)
+      await self._async_send_control(
+        writer,
+        CAMERA_STREAM_MESSAGE_FLUSH,
+        sequence,
+      )
       reconnect_attempt = 0
       while not session.stop_event.is_set():
         feeder: asyncio.Task[None] | None = None
@@ -610,15 +738,13 @@ class CameraStreamView:
             jpeg = await latest_frames.get()
             if jpeg is None:
               break
-            record = struct.pack(">I", len(jpeg)) + jpeg
-            # Keep each burst bounded for the C6/SDIO receive path. FFmpeg is
-            # drained concurrently above, so a slow display replaces an old
-            # queued JPEG instead of accumulating seconds of latency.
-            for offset in range(0, len(record), CAMERA_HTTP_WRITE_BYTES):
-              await response.write(
-                record[offset : offset + CAMERA_HTTP_WRITE_BYTES]
-              )
-              await asyncio.sleep(CAMERA_HTTP_WRITE_PAUSE_SECONDS)
+            sequence = (sequence + 1) & 0xFFFFFFFF
+            await self._async_send_frame(
+              reader,
+              writer,
+              sequence,
+              jpeg,
+            )
             if not sent_frame_once:
               sent_frame_once = True
               _LOGGER.info(
@@ -627,7 +753,7 @@ class CameraStreamView:
                 len(jpeg),
               )
             frames_this_process += 1
-            sent += len(record)
+            sent += len(jpeg)
           if frame_reader:
             dropped_frames = await frame_reader
         except (ConnectionResetError, BrokenPipeError):
@@ -680,23 +806,33 @@ class CameraStreamView:
           session.entity_id,
           retry_delay,
         )
-        await response.write(CAMERA_STREAM_FLUSH_RECORD)
-        sent += len(CAMERA_STREAM_FLUSH_RECORD)
+        await self._async_send_control(
+          writer,
+          CAMERA_STREAM_MESSAGE_FLUSH,
+          sequence,
+        )
         try:
           await asyncio.wait_for(
             session.stop_event.wait(), timeout=retry_delay
           )
         except TimeoutError:
           pass
-    except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+    except (
+      asyncio.IncompleteReadError,
+      ConnectionResetError,
+      BrokenPipeError,
+      asyncio.TimeoutError,
+      asyncio.CancelledError,
+    ):
       _LOGGER.debug(
-        "HomeTiles camera client disconnected (%s, %d bytes)",
+        "HomeTiles camera acknowledged TCP client disconnected "
+        "(%s, %d JPEG bytes)",
         session.entity_id,
         sent,
       )
     except Exception:
       _LOGGER.exception(
-        "HomeTiles camera HTTP/FFmpeg pipeline failed (%s, %d bytes)",
+        "HomeTiles camera TCP/FFmpeg pipeline failed (%s, %d bytes)",
         session.entity_id,
         sent,
       )
@@ -705,5 +841,3 @@ class CameraStreamView:
       await self._manager.async_forget_stop_event(
         session.device_id, session.stop_event
       )
-
-    return response
