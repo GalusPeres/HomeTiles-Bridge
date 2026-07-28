@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import secrets
 import socket
@@ -36,6 +36,7 @@ CAMERA_STREAM_FRAMING: Final = "ack-jpeg-v1"
 CAMERA_STREAM_CHUNK_BYTES: Final = 8 * 1024
 CAMERA_STREAM_HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
 CAMERA_STREAM_ACK_TIMEOUT_SECONDS: Final = 5.0
+CAMERA_STREAM_DIAGNOSTIC_INTERVAL_SECONDS: Final = 5.0
 CAMERA_STREAM_REQUEST_PREFIX: Final = "HTCAM/1 "
 CAMERA_STREAM_HELLO_MAGIC: Final = b"HTC1"
 CAMERA_STREAM_FRAME_MAGIC: Final = b"HTF1"
@@ -97,6 +98,149 @@ class CameraStreamSession:
   fps: int
   expires_at: float
   stop_event: asyncio.Event
+
+
+@dataclass(slots=True)
+class CameraFrameSendMetrics:
+  """Timing collected while one JPEG is sent and acknowledged."""
+
+  chunks: int
+  drain_seconds: float
+  ack_wait_seconds: float
+  max_ack_wait_seconds: float
+  transport_seconds: float
+
+
+@dataclass(slots=True)
+class CameraStreamDiagnostics:
+  """Low-overhead counters that locate the active camera bottleneck."""
+
+  entity_id: str
+  started_at: float = field(default_factory=time.monotonic)
+  last_report_at: float = field(init=False)
+  parsed_frames: int = 0
+  parsed_bytes: int = 0
+  dropped_frames: int = 0
+  sent_frames: int = 0
+  sent_bytes: int = 0
+  ack_chunks: int = 0
+  drain_seconds: float = 0.0
+  ack_wait_seconds: float = 0.0
+  transport_seconds: float = 0.0
+  interval_max_ack_wait_seconds: float = 0.0
+  interval_max_transport_seconds: float = 0.0
+  first_parsed_ms: float | None = None
+  first_sent_ms: float | None = None
+  _reported_parsed_frames: int = 0
+  _reported_parsed_bytes: int = 0
+  _reported_dropped_frames: int = 0
+  _reported_sent_frames: int = 0
+  _reported_sent_bytes: int = 0
+  _reported_ack_chunks: int = 0
+  _reported_drain_seconds: float = 0.0
+  _reported_ack_wait_seconds: float = 0.0
+  _reported_transport_seconds: float = 0.0
+
+  def __post_init__(self) -> None:
+    self.last_report_at = self.started_at
+
+  def note_parsed(self, jpeg: bytes) -> None:
+    """Record one complete JPEG emitted by FFmpeg."""
+    if self.first_parsed_ms is None:
+      self.first_parsed_ms = (
+        time.monotonic() - self.started_at
+      ) * 1000.0
+    self.parsed_frames += 1
+    self.parsed_bytes += len(jpeg)
+
+  def note_dropped(self) -> None:
+    """Record one FFmpeg frame superseded in the latest-frame queue."""
+    self.dropped_frames += 1
+
+  def note_sent(
+    self,
+    jpeg: bytes,
+    metrics: CameraFrameSendMetrics,
+  ) -> None:
+    """Record one complete, receiver-acknowledged JPEG."""
+    if self.first_sent_ms is None:
+      self.first_sent_ms = (
+        time.monotonic() - self.started_at
+      ) * 1000.0
+    self.sent_frames += 1
+    self.sent_bytes += len(jpeg)
+    self.ack_chunks += metrics.chunks
+    self.drain_seconds += metrics.drain_seconds
+    self.ack_wait_seconds += metrics.ack_wait_seconds
+    self.transport_seconds += metrics.transport_seconds
+    self.interval_max_ack_wait_seconds = max(
+      self.interval_max_ack_wait_seconds,
+      metrics.max_ack_wait_seconds,
+    )
+    self.interval_max_transport_seconds = max(
+      self.interval_max_transport_seconds,
+      metrics.transport_seconds,
+    )
+
+  def maybe_log(self, *, force: bool = False) -> None:
+    """Log one interval snapshot without changing stream behaviour."""
+    now = time.monotonic()
+    elapsed = now - self.last_report_at
+    if (
+      not force
+      and elapsed < CAMERA_STREAM_DIAGNOSTIC_INTERVAL_SECONDS
+    ):
+      return
+    if elapsed <= 0:
+      return
+
+    parsed = self.parsed_frames - self._reported_parsed_frames
+    parsed_bytes = self.parsed_bytes - self._reported_parsed_bytes
+    dropped = self.dropped_frames - self._reported_dropped_frames
+    sent = self.sent_frames - self._reported_sent_frames
+    sent_bytes = self.sent_bytes - self._reported_sent_bytes
+    ack_chunks = self.ack_chunks - self._reported_ack_chunks
+    drain_seconds = self.drain_seconds - self._reported_drain_seconds
+    ack_wait_seconds = (
+      self.ack_wait_seconds - self._reported_ack_wait_seconds
+    )
+    transport_seconds = (
+      self.transport_seconds - self._reported_transport_seconds
+    )
+
+    _LOGGER.info(
+      "[CameraDiag] %s interval=%.2fs ffmpeg=%.1f fps "
+      "sent=%.1f fps drop=%d jpeg=%.1f KiB wire=%.2f Mbit/s "
+      "tx=%.1f ms/frame "
+      "drain=%.1f ms/frame ack=%.2f ms/chunk chunks=%.1f/frame "
+      "max_ack=%.1f ms max_tx=%.1f ms",
+      self.entity_id,
+      elapsed,
+      parsed / elapsed,
+      sent / elapsed,
+      dropped,
+      parsed_bytes / parsed / 1024.0 if parsed else 0.0,
+      sent_bytes * 8.0 / elapsed / 1_000_000.0,
+      transport_seconds * 1000.0 / sent if sent else 0.0,
+      drain_seconds * 1000.0 / sent if sent else 0.0,
+      ack_wait_seconds * 1000.0 / ack_chunks if ack_chunks else 0.0,
+      ack_chunks / sent if sent else 0.0,
+      self.interval_max_ack_wait_seconds * 1000.0,
+      self.interval_max_transport_seconds * 1000.0,
+    )
+
+    self.last_report_at = now
+    self._reported_parsed_frames = self.parsed_frames
+    self._reported_parsed_bytes = self.parsed_bytes
+    self._reported_dropped_frames = self.dropped_frames
+    self._reported_sent_frames = self.sent_frames
+    self._reported_sent_bytes = self.sent_bytes
+    self._reported_ack_chunks = self.ack_chunks
+    self._reported_drain_seconds = self.drain_seconds
+    self._reported_ack_wait_seconds = self.ack_wait_seconds
+    self._reported_transport_seconds = self.transport_seconds
+    self.interval_max_ack_wait_seconds = 0.0
+    self.interval_max_transport_seconds = 0.0
 
 
 class CameraStreamManager:
@@ -452,15 +596,22 @@ class CameraStreamConnection:
     writer: asyncio.StreamWriter,
     sequence: int,
     jpeg: bytes,
-  ) -> None:
+  ) -> CameraFrameSendMetrics:
     """Send one JPEG while allowing at most one unacknowledged chunk."""
+    transport_started = time.monotonic()
+    drain_seconds = 0.0
+    ack_wait_seconds = 0.0
+    max_ack_wait_seconds = 0.0
+    chunks = 0
     writer.write(CAMERA_STREAM_FRAME_STRUCT.pack(
       CAMERA_STREAM_FRAME_MAGIC,
       CAMERA_STREAM_MESSAGE_FRAME,
       sequence,
       len(jpeg),
     ))
+    drain_started = time.monotonic()
     await writer.drain()
+    drain_seconds += time.monotonic() - drain_started
 
     acknowledged = 0
     while acknowledged < len(jpeg):
@@ -469,10 +620,19 @@ class CameraStreamConnection:
         acknowledged + CAMERA_STREAM_CHUNK_BYTES,
       )
       writer.write(jpeg[acknowledged:chunk_end])
+      drain_started = time.monotonic()
       await writer.drain()
+      drain_seconds += time.monotonic() - drain_started
+      ack_started = time.monotonic()
       raw_ack = await asyncio.wait_for(
         reader.readexactly(CAMERA_STREAM_ACK_STRUCT.size),
         timeout=CAMERA_STREAM_ACK_TIMEOUT_SECONDS,
+      )
+      ack_elapsed = time.monotonic() - ack_started
+      ack_wait_seconds += ack_elapsed
+      max_ack_wait_seconds = max(
+        max_ack_wait_seconds,
+        ack_elapsed,
       )
       magic, ack_sequence, ack_bytes = CAMERA_STREAM_ACK_STRUCT.unpack(
         raw_ack
@@ -484,6 +644,14 @@ class CameraStreamConnection:
       ):
         raise ValueError("camera_invalid_ack")
       acknowledged = chunk_end
+      chunks += 1
+    return CameraFrameSendMetrics(
+      chunks=chunks,
+      drain_seconds=drain_seconds,
+      ack_wait_seconds=ack_wait_seconds,
+      max_ack_wait_seconds=max_ack_wait_seconds,
+      transport_seconds=time.monotonic() - transport_started,
+    )
 
   async def _async_feed_camera_images(
     self,
@@ -588,6 +756,7 @@ class CameraStreamConnection:
     session: CameraStreamSession,
     process: asyncio.subprocess.Process,
     frames: asyncio.Queue[bytes | None],
+    diagnostics: CameraStreamDiagnostics,
   ) -> int:
     """Drain FFmpeg continuously and retain at most the newest JPEG frame."""
     assert process.stdout is not None
@@ -599,10 +768,12 @@ class CameraStreamConnection:
         and (chunk := await process.stdout.read(16 * 1024))
       ):
         for jpeg in parser.feed(chunk):
+          diagnostics.note_parsed(jpeg)
           if frames.full():
             with suppress(asyncio.QueueEmpty):
               frames.get_nowait()
               dropped += 1
+              diagnostics.note_dropped()
           frames.put_nowait(jpeg)
     finally:
       # Wake the frame writer even when FFmpeg exits without another frame.
@@ -684,6 +855,7 @@ class CameraStreamConnection:
     sent = 0
     sent_frame_once = False
     sequence = 0
+    diagnostics = CameraStreamDiagnostics(session.entity_id)
     try:
       _LOGGER.info(
         "HomeTiles camera acknowledged TCP client connected "
@@ -736,7 +908,10 @@ class CameraStreamConnection:
           )
           frame_reader = self._manager.hass.async_create_task(
             self._async_read_latest_jpeg_frames(
-              session, process, latest_frames
+              session,
+              process,
+              latest_frames,
+              diagnostics,
             ),
             f"HomeTiles camera latest-frame reader {session.entity_id}",
           )
@@ -745,18 +920,23 @@ class CameraStreamConnection:
             if jpeg is None:
               break
             sequence = (sequence + 1) & 0xFFFFFFFF
-            await self._async_send_frame(
+            send_metrics = await self._async_send_frame(
               reader,
               writer,
               sequence,
               jpeg,
             )
+            diagnostics.note_sent(jpeg, send_metrics)
+            diagnostics.maybe_log()
             if not sent_frame_once:
               sent_frame_once = True
               _LOGGER.info(
-                "HomeTiles camera first JPEG frame sent (%s, %d bytes)",
+                "HomeTiles camera first JPEG frame sent "
+                "(%s, %d bytes, first_parsed=%.1f ms, first_sent=%.1f ms)",
                 session.entity_id,
                 len(jpeg),
+                diagnostics.first_parsed_ms or 0.0,
+                diagnostics.first_sent_ms or 0.0,
               )
             frames_this_process += 1
             sent += len(jpeg)
@@ -843,6 +1023,7 @@ class CameraStreamConnection:
         sent,
       )
     finally:
+      diagnostics.maybe_log(force=True)
       session.stop_event.set()
       await self._manager.async_forget_stop_event(
         session.device_id, session.stop_event
