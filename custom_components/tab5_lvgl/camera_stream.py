@@ -27,7 +27,11 @@ CAMERA_STREAM_MIN_WIDTH: Final = 320
 CAMERA_STREAM_MIN_HEIGHT: Final = 180
 CAMERA_STREAM_MAX_PIXELS: Final = CAMERA_STREAM_WIDTH * CAMERA_STREAM_HEIGHT
 CAMERA_STILL_FPS: Final = 2
-CAMERA_JPEG_QUALITY: Final = 7
+# FFmpeg's MJPEG scale is inverse: a larger value produces smaller frames.
+# Direct streams must stay below roughly five acknowledged 8 KiB blocks at
+# 24 FPS; still-image cameras retain the previous higher JPEG quality.
+CAMERA_STREAM_JPEG_QUALITY: Final = 11
+CAMERA_STILL_JPEG_QUALITY: Final = 7
 CAMERA_SESSION_TTL_SECONDS: Final = 30.0
 CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
 CAMERA_MAX_JPEG_BYTES: Final = 256 * 1024
@@ -793,6 +797,11 @@ class CameraStreamConnection:
     ffmpeg_binary = get_ffmpeg_manager(self._manager.hass).binary
     command = [ffmpeg_binary, "-hide_banner", "-loglevel", "warning"]
     image_mode = session.source is None
+    jpeg_quality = (
+      CAMERA_STILL_JPEG_QUALITY
+      if image_mode
+      else CAMERA_STREAM_JPEG_QUALITY
+    )
     if image_mode:
       command.extend([
         # image2pipe otherwise probes roughly twelve JPEGs before producing
@@ -838,7 +847,7 @@ class CameraStreamConnection:
       "-color_trc", "smpte170m",
       "-c:v", "mjpeg",
       "-threads:v", "1",
-      "-q:v", str(CAMERA_JPEG_QUALITY),
+      "-q:v", str(jpeg_quality),
     ])
     if not image_mode:
       # A fixed fps filter duplicates frames when the source is slower (for
@@ -859,11 +868,12 @@ class CameraStreamConnection:
     try:
       _LOGGER.info(
         "HomeTiles camera acknowledged TCP client connected "
-        "(%s, mode=%s, fps=%d, chunk=%d)",
+        "(%s, mode=%s, fps=%d, chunk=%d, jpeg_q=%d)",
         session.entity_id,
         "image" if image_mode else "stream",
         session.fps,
         CAMERA_STREAM_CHUNK_BYTES,
+        jpeg_quality,
       )
       await self._async_send_control(
         writer,
