@@ -88,6 +88,7 @@ from .const import (
   WEATHER_REQUEST_SUFFIX,
 )
 from .camera_stream import (
+  CAMERA_BRIDGE_PROTOCOL_VERSION,
   CAMERA_STREAM_FPS,
   CAMERA_STREAM_FRAMING,
   CAMERA_STREAM_HEIGHT,
@@ -1923,7 +1924,11 @@ class Tab5Bridge:
       await mqtt.async_publish(
         self.hass,
         status_topic,
-        json.dumps({"status": "stopped", "entity_id": entity_id or requested_entity or ""}),
+        json.dumps({
+          "status": "stopped",
+          "entity_id": entity_id or requested_entity or "",
+          "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
+        }),
         qos=0,
         retain=False,
       )
@@ -1937,6 +1942,7 @@ class Tab5Bridge:
           "status": "error",
           "entity_id": requested_entity or "",
           "error": "unknown_camera",
+          "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
         }),
         qos=0,
         retain=False,
@@ -1982,6 +1988,7 @@ class Tab5Bridge:
         "codec": "jpeg",
         "transport": CAMERA_STREAM_TRANSPORT,
         "framing": CAMERA_STREAM_FRAMING,
+        "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
         "width": session.width,
         "height": session.height,
         "fps": session.fps,
@@ -2001,6 +2008,7 @@ class Tab5Bridge:
         "status": "error",
         "entity_id": entity_id,
         "error": error_code,
+        "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
       }
 
     await mqtt.async_publish(

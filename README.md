@@ -13,6 +13,7 @@ This integration is the Home Assistant companion for the **HomeTiles** firmware.
 - Weather forecasts (daily + hourly)
 - Energy dashboard data (consumption, solar, grid, battery, gas, water)
 - Light, switch, climate, media player and scene control from the display
+- Experimental camera popups with local, receiver-paced JPEG video transport
 - Auto-discovery of integration-owned sensors (battery, temperature)
 
 **Firmware repository:** [HomeTiles](https://github.com/GalusPeres/HomeTiles)
@@ -72,12 +73,19 @@ The integration communicates with the display firmware via MQTT:
 | `base_topic/cmnd/media` | Display > HA | Media player commands |
 | `base_topic/cmnd/climate` | Display > HA | Climate temperature and HVAC mode commands |
 | `base_topic/cmnd/scene` | Display > HA | Scene activation |
+| `base_topic/cmnd/camera` | Display > HA | Open or close an experimental camera stream |
+| `base_topic/stat/camera` | HA > Display | Camera stream endpoint, protocol and status |
 
 ## Requirements
 
 - Home Assistant 2025.11 or newer
 - MQTT broker configured in Home Assistant
 - [HomeTiles](https://github.com/GalusPeres/HomeTiles) firmware
+
+Camera popups require HomeTiles firmware v0.6.3 or newer. Camera support is
+experimental: the bridge transcodes the selected Home Assistant camera into
+display-sized JPEG frames, so CPU usage depends on the source stream, resolution,
+frame rate and number of simultaneously open panels.
 
 ## Release Process
 
