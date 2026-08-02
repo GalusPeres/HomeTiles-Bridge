@@ -229,6 +229,33 @@ FORECAST_DAILY_LIMIT = 8
 FORECAST_HOURLY_PAYLOAD_LIMIT = 168
 FORECAST_CACHE_TTL = timedelta(minutes=10)
 
+_CONFIG_META_RUNTIME_FIELDS = frozenset({"icon", "state", "value"})
+
+
+def _config_signature(config_data: Dict[str, Any]) -> str:
+  """Return a stable signature that excludes separately published runtime data."""
+  stable_data: Dict[str, Any] = {}
+  for section, value in config_data.items():
+    if not section.endswith("_meta") or not isinstance(value, list):
+      stable_data[section] = value
+      continue
+    stable_data[section] = [
+      {
+        key: item_value
+        for key, item_value in item.items()
+        if key not in _CONFIG_META_RUNTIME_FIELDS
+      }
+      if isinstance(item, dict)
+      else item
+      for item in value
+    ]
+  return json.dumps(
+    stable_data,
+    sort_keys=True,
+    separators=(",", ":"),
+    default=str,
+  )
+
 
 async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
   """Set up the integration namespace and service."""
@@ -456,7 +483,7 @@ class Tab5Bridge:
     self._config_refresh_handles: List = []
     self._config_refresh_pending = 0
     self._config_publish_lock = asyncio.Lock()
-    self._last_config_payload: Optional[str] = None
+    self._last_config_signature: Optional[str] = None
     self._icon_cache: Dict[str, str] = {}
     self._icon_refresh_handle = None
     self._forecast_cache: Dict[Tuple[str, str], Tuple[datetime, List[Dict[str, Any]]]] = {}
@@ -693,11 +720,12 @@ class Tab5Bridge:
       self._icon_refresh_handle = None
 
   async def async_publish_config_to_device(self, *, force: bool = False) -> None:
-    """Publish retained config when its serialized contents changed.
+    """Publish retained config when its stable metadata changed.
 
     Startup retries still rebuild the payload so entities registered a little
-    later are picked up. Identical retries are skipped; an explicit firmware
-    request can force a resend to recover from externally cleared broker state.
+    later are picked up. Runtime values, states and icons are delivered through
+    their lightweight topics and do not invalidate the config signature. An
+    explicit firmware request can force a full resend when needed.
     """
     if not self.config_topic or not self.device_id:
       return
@@ -735,13 +763,14 @@ class Tab5Bridge:
         energy_entries = await self._build_energy_meta(energy_cats)
         if energy_entries:
           config_data["energy"] = energy_entries
-      payload = json.dumps(config_data)
-      if not force and payload == self._last_config_payload:
+      signature = _config_signature(config_data)
+      if not force and signature == self._last_config_signature:
         _LOGGER.debug(
           "Tab5 config unchanged; skipping duplicate publish to %s",
           self.config_topic,
         )
         return
+      payload = json.dumps(config_data)
       _LOGGER.debug(
         "Publishing Tab5 config to %s (%d bytes, forced=%s)",
         self.config_topic,
@@ -755,7 +784,7 @@ class Tab5Bridge:
         qos=1,
         retain=True,
       )
-      self._last_config_payload = payload
+      self._last_config_signature = signature
       await self._async_publish_icon_update()
 
   async def async_publish_snapshot(self) -> None:
@@ -1058,6 +1087,7 @@ class Tab5Bridge:
       force,
     )
     await self.async_publish_config_to_device(force=force)
+    await self.async_publish_snapshot()
 
   async def _async_handle_history_request(self, msg: ReceiveMessage) -> None:
     """Handle history requests from the Tab5 popup."""
