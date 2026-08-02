@@ -455,6 +455,8 @@ class Tab5Bridge:
     self._unsub_energy = None
     self._config_refresh_handles: List = []
     self._config_refresh_pending = 0
+    self._config_publish_lock = asyncio.Lock()
+    self._last_config_payload: Optional[str] = None
     self._icon_cache: Dict[str, str] = {}
     self._icon_refresh_handle = None
     self._forecast_cache: Dict[Tuple[str, str], Tuple[datetime, List[Dict[str, Any]]]] = {}
@@ -690,56 +692,71 @@ class Tab5Bridge:
       self._icon_refresh_handle()
       self._icon_refresh_handle = None
 
-  async def async_publish_config_to_device(self) -> None:
+  async def async_publish_config_to_device(self, *, force: bool = False) -> None:
+    """Publish retained config when its serialized contents changed.
+
+    Startup retries still rebuild the payload so entities registered a little
+    later are picked up. Identical retries are skipped; an explicit firmware
+    request can force a resend to recover from externally cleared broker state.
+    """
     if not self.config_topic or not self.device_id:
       return
-    self._refresh_runtime_entity_lists()
-    config_data: dict[str, Any] = {
-        "device_id": self.device_id,
-        "base_topic": self.base_topic,
-        "ha_prefix": self.ha_prefix,
-        "sensors": self.sensors,
-        "sensor_meta": self._build_sensor_meta(),
-        CONF_WEATHERS: self.weathers,
-        "weather_meta": self._build_weather_meta(),
-        "lights": self.lights,
-        "light_meta": self._build_entity_meta(self.lights),
-        "switches": self.switches,
-        "switch_meta": self._build_entity_meta(self.switches),
-        CONF_MEDIA_PLAYERS: self.media_players,
-        "media_player_meta": self._build_entity_meta(self.media_players),
-        CONF_CLIMATES: self.climates,
-        "climate_meta": self._build_entity_meta(self.climates),
-        CONF_CAMERAS: self.cameras,
-        "camera_meta": self._build_entity_meta(self.cameras),
-        "scene_meta": self._build_scene_meta(),
-        "scene_map": self.scene_map,
-    }
-    energy_cats = set()
-    if self.entry.data.get(CONF_ENERGY_ELECTRICITY):
-      energy_cats.update({"solar", "grid", "battery", "device"})
-    if self.entry.data.get(CONF_ENERGY_GAS):
-      energy_cats.add("gas")
-    if self.entry.data.get(CONF_ENERGY_WATER):
-      energy_cats.update({"water", "device_water"})
-    if energy_cats:
-      energy_entries = await self._build_energy_meta(energy_cats)
-      if energy_entries:
-        config_data["energy"] = energy_entries
-    payload = json.dumps(config_data)
-    _LOGGER.warning(
-      "Tab5 LVGL DEBUG: Publishing config to topic '%s':\n%s",
-      self.config_topic,
-      payload
-    )
-    await mqtt.async_publish(
-      self.hass,
-      self.config_topic,
-      payload,
-      qos=1,
-      retain=True,
-    )
-    await self._async_publish_icon_update()
+    async with self._config_publish_lock:
+      self._refresh_runtime_entity_lists()
+      config_data: dict[str, Any] = {
+          "device_id": self.device_id,
+          "base_topic": self.base_topic,
+          "ha_prefix": self.ha_prefix,
+          "sensors": self.sensors,
+          "sensor_meta": self._build_sensor_meta(),
+          CONF_WEATHERS: self.weathers,
+          "weather_meta": self._build_weather_meta(),
+          "lights": self.lights,
+          "light_meta": self._build_entity_meta(self.lights),
+          "switches": self.switches,
+          "switch_meta": self._build_entity_meta(self.switches),
+          CONF_MEDIA_PLAYERS: self.media_players,
+          "media_player_meta": self._build_entity_meta(self.media_players),
+          CONF_CLIMATES: self.climates,
+          "climate_meta": self._build_entity_meta(self.climates),
+          CONF_CAMERAS: self.cameras,
+          "camera_meta": self._build_entity_meta(self.cameras),
+          "scene_meta": self._build_scene_meta(),
+          "scene_map": self.scene_map,
+      }
+      energy_cats = set()
+      if self.entry.data.get(CONF_ENERGY_ELECTRICITY):
+        energy_cats.update({"solar", "grid", "battery", "device"})
+      if self.entry.data.get(CONF_ENERGY_GAS):
+        energy_cats.add("gas")
+      if self.entry.data.get(CONF_ENERGY_WATER):
+        energy_cats.update({"water", "device_water"})
+      if energy_cats:
+        energy_entries = await self._build_energy_meta(energy_cats)
+        if energy_entries:
+          config_data["energy"] = energy_entries
+      payload = json.dumps(config_data)
+      if not force and payload == self._last_config_payload:
+        _LOGGER.debug(
+          "Tab5 config unchanged; skipping duplicate publish to %s",
+          self.config_topic,
+        )
+        return
+      _LOGGER.debug(
+        "Publishing Tab5 config to %s (%d bytes, forced=%s)",
+        self.config_topic,
+        len(payload),
+        force,
+      )
+      await mqtt.async_publish(
+        self.hass,
+        self.config_topic,
+        payload,
+        qos=1,
+        retain=True,
+      )
+      self._last_config_payload = payload
+      await self._async_publish_icon_update()
 
   async def async_publish_snapshot(self) -> None:
     """Push all configured entities to MQTT."""
@@ -1006,7 +1023,7 @@ class Tab5Bridge:
     """Handle Tab5 connection event."""
     if msg.payload == "1":
       _LOGGER.debug("Tab5 connected -> push config + snapshot")
-      await self.async_publish_config_to_device()
+      await self.async_publish_config_to_device(force=True)
       await self.async_publish_snapshot()
       self._schedule_config_refresh()
 
@@ -1033,8 +1050,14 @@ class Tab5Bridge:
 
   async def _async_handle_request(self, msg: ReceiveMessage) -> None:
     """Handle explicit bridge refresh requests."""
-    _LOGGER.debug("Tab5 requested bridge refresh via %s", msg.topic)
-    await self.async_publish_config_to_device()
+    request = msg.payload.strip().lower()
+    force = request in {"force", "1", "full"}
+    _LOGGER.debug(
+      "Tab5 requested bridge refresh via %s (forced=%s)",
+      msg.topic,
+      force,
+    )
+    await self.async_publish_config_to_device(force=force)
 
   async def _async_handle_history_request(self, msg: ReceiveMessage) -> None:
     """Handle history requests from the Tab5 popup."""

@@ -33,7 +33,7 @@ class Tab5BrightnessNumber(NumberEntity):
     _attr_has_entity_name = True
     _attr_name = "Display Helligkeit"
     _attr_icon = "mdi:brightness-6"
-    _attr_native_min_value = 75
+    _attr_native_min_value = 121
     _attr_native_max_value = 255
     _attr_native_step = 1
     _attr_mode = NumberMode.SLIDER
@@ -60,8 +60,8 @@ class Tab5BrightnessNumber(NumberEntity):
                 value = int(float(raw))
             except (TypeError, ValueError):
                 return
-            if value < 75:
-                value = 75
+            if value < 121:
+                value = 121
             if value > 255:
                 value = 255
             self._attr_native_value = value
@@ -79,8 +79,8 @@ class Tab5BrightnessNumber(NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         value_int = int(round(value))
-        if value_int < 75:
-            value_int = 75
+        if value_int < 121:
+            value_int = 121
         if value_int > 255:
             value_int = 255
         await mqtt.async_publish(self.hass, self._topic_cmd, str(value_int), qos=0, retain=False)

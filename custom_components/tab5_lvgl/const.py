@@ -29,6 +29,7 @@ DEFAULT_PREFIX = "ha/statestream"
 SERVICE_PUBLISH_SNAPSHOT = "publish_snapshot"
 
 TOPIC_DISPLAY_BRIGHTNESS = "display_brightness"
+TOPIC_SCREENSAVER_BRIGHTNESS = "screensaver_brightness"
 TOPIC_DISPLAY_ROTATE = "display_rotate"
 TOPIC_DISPLAY_SLEEP = "display_sleep"
 TOPIC_SLEEP_MAINS = "sleep_mains"
