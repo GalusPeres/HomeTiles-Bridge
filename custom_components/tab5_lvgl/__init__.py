@@ -68,6 +68,7 @@ from .const import (
   CONF_ENERGY_WATER,
   CONF_HA_PREFIX,
   CONF_LIGHTS,
+  CONF_LOCAL_IO,
   CONF_MANUFACTURER,
   CONF_MEDIA_PLAYERS,
   CONF_MODEL,
@@ -97,6 +98,13 @@ from .camera_stream import (
   CameraStreamManager,
 )
 from .device_helpers import entry_device_id, entry_device_info, entry_device_name
+from .local_io import (
+  LOCAL_IO_RELAY,
+  LOCAL_IO_TEMPERATURE,
+  entry_local_io,
+  local_io_unique_id,
+  normalise_local_io,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -332,6 +340,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   # sobald sich am Default-/Fallback-Namen mal etwas aendert.
   if entry.title != dev_info["name"]:
     hass.config_entries.async_update_entry(entry, title=dev_info["name"])
+  _remove_stale_local_io_entities(hass, entry)
   _migrate_internal_sensor_entity_ids(hass, entry)
   bridge = Tab5Bridge(hass, entry)
   await bridge.async_setup()
@@ -388,6 +397,39 @@ def _migrate_internal_sensor_entity_ids(hass: HomeAssistant, entry: ConfigEntry)
         target_entity_id,
         err,
       )
+
+
+def _remove_stale_local_io_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+  """Remove registry entries for channels no longer announced by firmware."""
+  device_id = entry_device_id(entry)
+  merged = dict(entry.data or {})
+  if entry.options:
+    merged.update(entry.options)
+  local_io_announced = CONF_LOCAL_IO in merged
+  legacy_temperature_id = f"{device_id}_external_temperature"
+  expected = {
+    local_io_unique_id(device_id, descriptor)
+    for descriptor in entry_local_io(entry)
+  }
+  registry = er.async_get(hass)
+  stale: List[str] = []
+  for entity in registry.entities.values():
+    if entity.config_entry_id != entry.entry_id:
+      continue
+    unique_id = entity.unique_id or ""
+    # Match by the integration-owned delimiter rather than only the current
+    # device ID. The fallback adoption path may replace a provisional device
+    # ID; entities created under that old ID must not remain as registry orphans.
+    if "_local_io_" in unique_id and unique_id not in expected:
+      stale.append(entity.entity_id)
+    elif local_io_announced and (
+      unique_id == legacy_temperature_id
+      or unique_id.endswith("_external_temperature")
+    ):
+      stale.append(entity.entity_id)
+  for entity_id in stale:
+    registry.async_remove(entity_id)
+    _LOGGER.info("HomeTiles local I/O entity removed: %s", entity_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -480,6 +522,7 @@ class Tab5Bridge:
     self._unsub_history = None
     self._unsub_weather = None
     self._unsub_energy = None
+    self._runtime_setup_complete = False
     self._config_refresh_handles: List = []
     self._config_refresh_pending = 0
     self._config_publish_lock = asyncio.Lock()
@@ -503,6 +546,27 @@ class Tab5Bridge:
       if entry.entity_id:
         result.append(entry.entity_id)
     return _unique_entities(result)
+
+  def _resolve_local_io_entities(self, domain: str, channel_type: str) -> List[str]:
+    """Resolve integration-owned local I/O entity IDs in descriptor order."""
+    expected = [
+      local_io_unique_id(entry_device_id(self.entry), descriptor)
+      for descriptor in entry_local_io(self.entry)
+      if descriptor["type"] == channel_type
+    ]
+    if not expected:
+      return []
+
+    registry = er.async_get(self.hass)
+    by_unique_id: Dict[str, str] = {}
+    for entity in registry.entities.values():
+      if entity.config_entry_id != self.entry.entry_id:
+        continue
+      if entity.domain != domain or entity.disabled_by is not None:
+        continue
+      if entity.unique_id and entity.entity_id:
+        by_unique_id[entity.unique_id] = entity.entity_id
+    return [by_unique_id[item] for item in expected if item in by_unique_id]
 
   def _collect_all_entries_entities(self) -> Dict[str, Any]:
     """Merge entity lists from all config entries in this integration."""
@@ -545,12 +609,19 @@ class Tab5Bridge:
 
   def _refresh_runtime_entity_lists(self) -> None:
     """Keep runtime sensor/tracked lists in sync — merges from all entries."""
+    previous_tracked = tuple(self.tracked_entities)
     merged = self._collect_all_entries_entities()
     internal_sensors = self._resolve_internal_sensor_entities()
+    local_temperatures = self._resolve_local_io_entities(
+      "sensor", LOCAL_IO_TEMPERATURE
+    )
+    local_relays = self._resolve_local_io_entities("switch", LOCAL_IO_RELAY)
     self._configured_sensors = merged["sensors"]
-    self.sensors = _unique_entities(merged["sensors"] + internal_sensors)
+    self.sensors = _unique_entities(
+      merged["sensors"] + internal_sensors + local_temperatures
+    )
     self.lights = merged["lights"]
-    self.switches = merged["switches"]
+    self.switches = _unique_entities(merged["switches"] + local_relays)
     self.media_players = merged["media_players"]
     self.climates = merged["climates"]
     self.cameras = merged["cameras"]
@@ -559,6 +630,16 @@ class Tab5Bridge:
     self.tracked_entities = _unique_entities(
       self.sensors + self.lights + self.switches + self.media_players + self.climates + self.weathers
     )
+    if self._runtime_setup_complete and tuple(self.tracked_entities) != previous_tracked:
+      if self._unsub_state:
+        self._unsub_state()
+        self._unsub_state = None
+      if self.tracked_entities:
+        self._unsub_state = async_track_state_change_event(
+          self.hass,
+          self.tracked_entities,
+          self._handle_state_event,
+        )
 
   async def async_setup(self) -> None:
     """Subscribe to MQTT topics and start observers."""
@@ -615,6 +696,7 @@ class Tab5Bridge:
         self.tracked_entities,
         self._handle_state_event,
       )
+    self._runtime_setup_complete = True
 
     self._prime_icon_cache()
 
@@ -663,6 +745,7 @@ class Tab5Bridge:
 
   async def async_unload(self) -> None:
     """Cleanup subscriptions."""
+    self._runtime_setup_complete = False
     # Release any state-publish ownership so a surviving entry can reclaim it.
     owners = self.hass.data.get(DOMAIN, {}).get("state_owners")
     if owners:
@@ -3571,6 +3654,13 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
       if not existing.get(key) and data.get(key):
         existing[key] = data[key]
         changed = True
+    # Local hardware belongs to this one panel and is device-announced rather
+    # than user-selected. Unlike the shared entity lists above, an explicit
+    # empty list must therefore remove channels that disappeared from firmware.
+    # If the field is absent (older firmware), keep the last known list.
+    if CONF_LOCAL_IO in data and existing.get(CONF_LOCAL_IO) != data[CONF_LOCAL_IO]:
+      existing[CONF_LOCAL_IO] = data[CONF_LOCAL_IO]
+      changed = True
     if changed:
       _LOGGER.info("Tab5 LVGL: Geraeteinfo fuer bestehende Bridge %s nachgetragen", device_id)
       hass.config_entries.async_update_entry(entry, data=existing)
@@ -3582,6 +3672,9 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     changed = False
     if device_id and new_data.get(CONF_DEVICE_ID) != device_id:
       new_data[CONF_DEVICE_ID] = device_id
+      changed = True
+    if CONF_LOCAL_IO in data and new_data.get(CONF_LOCAL_IO) != data[CONF_LOCAL_IO]:
+      new_data[CONF_LOCAL_IO] = data[CONF_LOCAL_IO]
       changed = True
     if not changed:
       return
@@ -3683,6 +3776,11 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     data[CONF_MODEL] = model
   if device_name:
     data[CONF_DEVICE_NAME] = device_name
+  if CONF_LOCAL_IO in payload:
+    local_io_raw = payload.get(CONF_LOCAL_IO)
+    if local_io_raw is None:
+      raise ValueError("invalid_local_io")
+    data[CONF_LOCAL_IO] = normalise_local_io(local_io_raw)
   return data
 
 

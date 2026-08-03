@@ -11,6 +11,7 @@ CONF_DEVICE_ID = "device_id"
 CONF_MANUFACTURER = "manufacturer"
 CONF_MODEL = "model"
 CONF_DEVICE_NAME = "device_name"
+CONF_LOCAL_IO = "local_io"
 
 CONF_ENERGY_ELECTRICITY = "energy_electricity"
 CONF_ENERGY_GAS = "energy_gas"

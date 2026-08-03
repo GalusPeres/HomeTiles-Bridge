@@ -14,7 +14,7 @@ This integration is the Home Assistant companion for the **HomeTiles** firmware.
 - Energy dashboard data (consumption, solar, grid, battery, gas, water)
 - Light, switch, climate, media player and scene control from the display
 - Experimental camera popups with local, receiver-paced JPEG video transport
-- Auto-discovery of integration-owned sensors (battery, temperature)
+- Auto-discovery of integration-owned sensors and device-announced local I/O
 
 **Firmware repository:** [HomeTiles](https://github.com/GalusPeres/HomeTiles)
 
@@ -63,6 +63,7 @@ The integration communicates with the display firmware via MQTT:
 | Topic | Direction | Description |
 |---|---|---|
 | `base_topic/stat/connected` | Display > HA | Connection status |
+| `tab5_lvgl/config/{id}/bridge` | Display > HA | Device announcement and local I/O discovery |
 | `tab5_lvgl/config/{id}/bridge/apply` | HA > Display | Full configuration push |
 | `tab5_lvgl/config/{id}/bridge/icons` | HA > Display | Lightweight icon updates |
 | `tab5_lvgl/config/{id}/history/*` | Bidirectional | Sensor history request/response |
@@ -77,6 +78,22 @@ The integration communicates with the display firmware via MQTT:
 | `base_topic/stat/camera` | HA > Display | Camera stream endpoint, protocol and status |
 | `base_topic/cmnd/screensaver_brightness` | HA > Display | Set screensaver brightness (1-100%) |
 | `base_topic/stat/screensaver_brightness` | Display > HA | Current screensaver brightness (1-100%) |
+| `base_topic/cmnd/io/{channel_id}` | HA > Display | Local relay command (`ON`/`OFF`, not retained) |
+| `base_topic/stat/io/{channel_id}` | Display > HA | Retained local relay or temperature state |
+
+Firmware may advertise local relays and temperature inputs in its device
+announcement. IDs must be unique per panel and stay stable across firmware
+updates. Omitting `local_io` keeps the last known configuration for compatibility
+with older firmware; sending an empty list removes all local I/O entities.
+
+```json
+{
+  "local_io": [
+    {"id": "relay_1", "type": "relay", "name": "Relay 1"},
+    {"id": "temperature_1", "type": "temperature", "name": "Temperature 1", "unit": "°C", "precision": 1}
+  ]
+}
+```
 
 ## Requirements
 
