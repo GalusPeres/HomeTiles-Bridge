@@ -55,7 +55,7 @@ try:
   from homeassistant.helpers.network import get_url
 except Exception:  # pragma: no cover - older HA fallback
   get_url = None
-from homeassistant.util import dt as dt_util
+from homeassistant.util import dt as dt_util, slugify
 
 from .const import (
   CONF_BASE_TOPIC,
@@ -102,6 +102,8 @@ from .local_io import (
   LOCAL_IO_RELAY,
   LOCAL_IO_TEMPERATURE,
   entry_local_io,
+  local_io_announced_entity_id,
+  local_io_domain,
   local_io_unique_id,
   normalise_local_io,
 )
@@ -341,6 +343,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   if entry.title != dev_info["name"]:
     hass.config_entries.async_update_entry(entry, title=dev_info["name"])
   _remove_stale_local_io_entities(hass, entry)
+  _migrate_local_io_entity_ids(hass, entry)
   _migrate_internal_sensor_entity_ids(hass, entry)
   bridge = Tab5Bridge(hass, entry)
   await bridge.async_setup()
@@ -430,6 +433,106 @@ def _remove_stale_local_io_entities(hass: HomeAssistant, entry: ConfigEntry) -> 
   for entity_id in stale:
     registry.async_remove(entity_id)
     _LOGGER.info("HomeTiles local I/O entity removed: %s", entity_id)
+
+
+def _migrate_local_io_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
+  """Apply firmware-announced IDs to unmodified local I/O registry entries.
+
+  An entity ID is only moved when its current value is one of the deterministic
+  IDs Home Assistant generated from the device and original entity names. This
+  deliberately leaves user-renamed IDs alone. New registry entities get the
+  same target from the entity ID suggestion made before platform registration.
+  """
+  registry = er.async_get(hass)
+  by_unique_id = {
+    entity.unique_id: entity
+    for entity in registry.entities.values()
+    if entity.config_entry_id == entry.entry_id
+    and entity.platform == DOMAIN
+    and entity.unique_id
+  }
+  for descriptor in entry_local_io(entry):
+    target_entity_id = local_io_announced_entity_id(descriptor)
+    if target_entity_id is None:
+      continue
+    unique_id = local_io_unique_id(entry_device_id(entry), descriptor)
+    reg_entry = by_unique_id.get(unique_id)
+    if reg_entry is None or reg_entry.domain != local_io_domain(descriptor["type"]):
+      continue
+    if reg_entry.entity_id == target_entity_id:
+      continue
+    if registry.async_get(target_entity_id) is not None:
+      _LOGGER.warning(
+        "HomeTiles local I/O entity ID %s is already in use; keeping %s",
+        target_entity_id,
+        reg_entry.entity_id,
+      )
+      continue
+    if not _is_default_local_io_entity_id(registry, entry, reg_entry, descriptor):
+      _LOGGER.info(
+        "HomeTiles local I/O entity %s was renamed by the user; keeping it",
+        reg_entry.entity_id,
+      )
+      continue
+    try:
+      registry.async_update_entity(
+        reg_entry.entity_id,
+        new_entity_id=target_entity_id,
+      )
+      _LOGGER.info(
+        "HomeTiles local I/O entity migration: %s -> %s",
+        reg_entry.entity_id,
+        target_entity_id,
+      )
+    except (ValueError, TypeError) as err:
+      _LOGGER.warning(
+        "HomeTiles local I/O entity migration failed for %s -> %s: %s",
+        reg_entry.entity_id,
+        target_entity_id,
+        err,
+      )
+
+
+def _is_default_local_io_entity_id(
+  registry: Any,
+  entry: ConfigEntry,
+  reg_entry: Any,
+  descriptor: Dict[str, Any],
+) -> bool:
+  """Return whether an existing ID matches a known integration default."""
+  # Current HA can regenerate the integration-provided ID from registry
+  # metadata while accounting for custom area/device/entity naming settings.
+  # If an older supported HA does not expose that helper, use the legacy
+  # deterministic forms below.
+  regenerate = getattr(registry, "async_regenerate_entity_id", None)
+  if callable(regenerate):
+    try:
+      if regenerate(reg_entry) == reg_entry.entity_id:
+        return True
+    except (AttributeError, TypeError, ValueError):
+      pass
+
+  domain = local_io_domain(descriptor["type"])
+  entity_name = (reg_entry.original_name or descriptor["name"] or "").strip()
+  if not entity_name:
+    return False
+
+  # With has_entity_name=True Home Assistant combines the device and entity
+  # names. The name-only form covers registry entries created by older HA
+  # versions or before the device registry entry was available.
+  device_names = {
+    str(entry_device_name(entry) or "").strip(),
+    str(entry.title or "").strip(),
+  }
+  object_ids = {slugify(entity_name)}
+  object_ids.update(
+    slugify(f"{device_name} {entity_name}")
+    for device_name in device_names
+    if device_name
+  )
+  return reg_entry.entity_id in {
+    f"{domain}.{object_id}" for object_id in object_ids if object_id
+  }
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -3663,6 +3766,8 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
       changed = True
     if changed:
       _LOGGER.info("Tab5 LVGL: Geraeteinfo fuer bestehende Bridge %s nachgetragen", device_id)
+      # The integration's regular update listener reloads the entry, so new or
+      # removed local-I/O platform entities appear without a manual restart.
       hass.config_entries.async_update_entry(entry, data=existing)
     return
 

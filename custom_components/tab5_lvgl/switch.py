@@ -19,6 +19,7 @@ from .device_helpers import (
 from .local_io import (
     LOCAL_IO_RELAY,
     entry_local_io,
+    local_io_announced_entity_id,
     local_io_command_topic,
     local_io_state_topic,
     local_io_unique_id,
@@ -54,6 +55,11 @@ class HomeTilesLocalRelay(SwitchEntity):
     ) -> None:
         self._device_info = entry_device_info(entry)
         self._attr_unique_id = local_io_unique_id(entry_device_id(entry), descriptor)
+        if announced_entity_id := local_io_announced_entity_id(descriptor):
+            # Home Assistant treats an entity_id set before platform addition as
+            # the integration's suggested object ID. The registry still owns the
+            # final ID and adds a suffix if another entity already uses it.
+            self.entity_id = announced_entity_id
         self._attr_name = descriptor["name"]
         self._topic_cmd = local_io_command_topic(base_topic, descriptor["id"])
         self._topic_state = local_io_state_topic(base_topic, descriptor["id"])

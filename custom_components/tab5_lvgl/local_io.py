@@ -19,8 +19,14 @@ LOCAL_IO_RELAY = "relay"
 LOCAL_IO_TEMPERATURE = "temperature"
 LOCAL_IO_TYPES = {LOCAL_IO_RELAY, LOCAL_IO_TEMPERATURE}
 
+_LOCAL_IO_DOMAINS = {
+    LOCAL_IO_RELAY: "switch",
+    LOCAL_IO_TEMPERATURE: "sensor",
+}
+
 MAX_LOCAL_IO_CHANNELS = 64
 _CHANNEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_ENTITY_ID_RE = re.compile(r"^(sensor|switch)\.([a-z0-9][a-z0-9_]{0,254})$")
 _TYPE_ALIASES = {
     "relay": LOCAL_IO_RELAY,
     "switch": LOCAL_IO_RELAY,
@@ -56,6 +62,7 @@ def normalise_local_io(raw: Any) -> list[dict[str, Any]]:
 
     result: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    seen_entity_ids: set[str] = set()
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise ValueError(f"invalid_local_io_item_{index}")
@@ -74,6 +81,20 @@ def normalise_local_io(raw: Any) -> list[dict[str, Any]]:
             "type": channel_type,
             "name": name[:100] if name else _default_channel_name(channel_id, channel_type),
         }
+        raw_entity_id = item.get("entity_id")
+        if raw_entity_id is not None:
+            entity_id = str(raw_entity_id).strip()
+            match = _ENTITY_ID_RE.fullmatch(entity_id)
+            if (
+                match is None
+                or len(entity_id) > 255
+                or match.group(1) != local_io_domain(channel_type)
+            ):
+                raise ValueError(f"invalid_local_io_entity_id_{index}")
+            if entity_id in seen_entity_ids:
+                raise ValueError(f"duplicate_local_io_entity_id_{entity_id}")
+            seen_entity_ids.add(entity_id)
+            descriptor["entity_id"] = entity_id
         if channel_type == LOCAL_IO_TEMPERATURE:
             raw_unit = str(item.get("unit") or "°C").strip().lower()
             descriptor["unit"] = _TEMPERATURE_UNITS.get(raw_unit, "°C")
@@ -98,6 +119,20 @@ def entry_local_io(entry: ConfigEntry) -> list[dict[str, Any]]:
 def local_io_unique_id(device_id: str, descriptor: dict[str, Any]) -> str:
     """Build the stable Home Assistant unique ID for a local I/O entity."""
     return f"{device_id}_local_io_{descriptor['type']}_{descriptor['id']}"
+
+
+def local_io_domain(channel_type: str) -> str:
+    """Return the Home Assistant platform domain for a local channel type."""
+    try:
+        return _LOCAL_IO_DOMAINS[channel_type]
+    except KeyError as err:
+        raise ValueError(f"invalid_local_io_type_{channel_type}") from err
+
+
+def local_io_announced_entity_id(descriptor: dict[str, Any]) -> str | None:
+    """Return the validated full entity ID announced by firmware, if present."""
+    entity_id = descriptor.get("entity_id")
+    return entity_id if isinstance(entity_id, str) and entity_id else None
 
 
 def local_io_state_topic(base_topic: str, channel_id: str) -> str:

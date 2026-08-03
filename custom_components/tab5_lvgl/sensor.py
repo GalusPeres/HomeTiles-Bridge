@@ -21,6 +21,7 @@ from .device_helpers import (
 from .local_io import (
     LOCAL_IO_TEMPERATURE,
     entry_local_io,
+    local_io_announced_entity_id,
     local_io_state_topic,
     local_io_unique_id,
     parse_on_off_payload,
@@ -64,6 +65,10 @@ class HomeTilesLocalTemperatureSensor(SensorEntity):
     ) -> None:
         self._device_info = entry_device_info(entry)
         self._attr_unique_id = local_io_unique_id(entry_device_id(entry), descriptor)
+        if announced_entity_id := local_io_announced_entity_id(descriptor):
+            # See HomeTilesLocalRelay: this is a registry suggestion, not a
+            # forced runtime ID, so Home Assistant still resolves collisions.
+            self.entity_id = announced_entity_id
         self._attr_name = descriptor["name"]
         self._attr_native_unit_of_measurement = descriptor["unit"]
         self._precision = descriptor["precision"]
