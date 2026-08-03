@@ -25,6 +25,7 @@ _LOCAL_IO_DOMAINS = {
 }
 
 MAX_LOCAL_IO_CHANNELS = 64
+MAX_LOCAL_IO_LEGACY_ENTITY_IDS = 8
 _CHANNEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _ENTITY_ID_RE = re.compile(r"^(sensor|switch)\.([a-z0-9][a-z0-9_]{0,254})$")
 _TYPE_ALIASES = {
@@ -95,11 +96,71 @@ def normalise_local_io(raw: Any) -> list[dict[str, Any]]:
                 raise ValueError(f"duplicate_local_io_entity_id_{entity_id}")
             seen_entity_ids.add(entity_id)
             descriptor["entity_id"] = entity_id
+        raw_legacy_entity_ids = item.get("legacy_entity_ids")
+        if raw_legacy_entity_ids is not None:
+            if not isinstance(raw_legacy_entity_ids, list):
+                raise ValueError(f"invalid_local_io_legacy_entity_ids_{index}")
+            if len(raw_legacy_entity_ids) > MAX_LOCAL_IO_LEGACY_ENTITY_IDS:
+                raise ValueError(f"too_many_local_io_legacy_entity_ids_{index}")
+            legacy_entity_ids: list[str] = []
+            channel_legacy_ids: set[str] = set()
+            for legacy_index, raw_legacy_entity_id in enumerate(raw_legacy_entity_ids):
+                if not isinstance(raw_legacy_entity_id, str):
+                    raise ValueError(
+                        f"invalid_local_io_legacy_entity_id_{index}_{legacy_index}"
+                    )
+                legacy_entity_id = raw_legacy_entity_id.strip()
+                match = _ENTITY_ID_RE.fullmatch(legacy_entity_id)
+                if (
+                    match is None
+                    or len(legacy_entity_id) > 255
+                    or match.group(1) != local_io_domain(channel_type)
+                ):
+                    raise ValueError(
+                        f"invalid_local_io_legacy_entity_id_{index}_{legacy_index}"
+                    )
+                if legacy_entity_id in channel_legacy_ids:
+                    continue
+                channel_legacy_ids.add(legacy_entity_id)
+                legacy_entity_ids.append(legacy_entity_id)
+            if legacy_entity_ids:
+                descriptor["legacy_entity_ids"] = legacy_entity_ids
         if channel_type == LOCAL_IO_TEMPERATURE:
             raw_unit = str(item.get("unit") or "°C").strip().lower()
             descriptor["unit"] = _TEMPERATURE_UNITS.get(raw_unit, "°C")
             descriptor["precision"] = _normalise_precision(item.get("precision"))
         result.append(descriptor)
+
+    # A legacy ID can identify only one channel and must not collide with any
+    # current announced ID. Silently accepting either case could migrate the
+    # wrong Home Assistant registry entity.
+    current_entity_ids = {
+        descriptor["entity_id"]
+        for descriptor in result
+        if descriptor.get("entity_id")
+    }
+    legacy_entity_owners: dict[str, str] = {}
+    for descriptor in result:
+        current_entity_id = descriptor.get("entity_id")
+        normalised_legacy_ids: list[str] = []
+        for legacy_entity_id in descriptor.get("legacy_entity_ids", []):
+            if legacy_entity_id == current_entity_id:
+                continue
+            if legacy_entity_id in current_entity_ids:
+                raise ValueError(
+                    f"conflicting_local_io_legacy_entity_id_{legacy_entity_id}"
+                )
+            previous_owner = legacy_entity_owners.get(legacy_entity_id)
+            if previous_owner is not None and previous_owner != descriptor["id"]:
+                raise ValueError(
+                    f"duplicate_local_io_legacy_entity_id_{legacy_entity_id}"
+                )
+            legacy_entity_owners[legacy_entity_id] = descriptor["id"]
+            normalised_legacy_ids.append(legacy_entity_id)
+        if normalised_legacy_ids:
+            descriptor["legacy_entity_ids"] = normalised_legacy_ids
+        else:
+            descriptor.pop("legacy_entity_ids", None)
 
     return result
 

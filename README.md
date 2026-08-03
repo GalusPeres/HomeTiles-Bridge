@@ -89,16 +89,19 @@ with older firmware; sending an empty list removes all local I/O entities.
 ```json
 {
   "local_io": [
-    {"id": "relay_1", "type": "relay", "name": "Relay 1", "entity_id": "switch.waveshare_touch_lcd_8_relay_1"},
-    {"id": "temperature_1", "type": "temperature", "name": "Temperature 1", "entity_id": "sensor.waveshare_touch_lcd_8_temperature_1", "unit": "°C", "precision": 1}
+    {"id": "relay_1", "type": "relay", "name": "Desk Lamp", "entity_id": "switch.waveshare_touch_lcd_8_desk_lamp", "legacy_entity_ids": ["switch.waveshare_touch_lcd_8_relay_1"]},
+    {"id": "temperature_1", "type": "temperature", "name": "Case Temperature", "entity_id": "sensor.waveshare_touch_lcd_8_case_temperature", "legacy_entity_ids": ["sensor.waveshare_touch_lcd_8_temperature_1"], "unit": "°C", "precision": 1}
   ]
 }
 ```
 
 `entity_id` is optional for backwards compatibility. When present, it must use
 the `switch` domain for relays or the `sensor` domain for temperature inputs.
-The Bridge uses its object ID for new Home Assistant registry entities and
-sends the actual registry ID back to the panel.
+The internal `id` stays stable for MQTT topics and Home Assistant's `unique_id`,
+while the visible `entity_id` may follow the channel name. The Bridge migrates
+known automatically generated IDs and leaves user-renamed registry IDs intact.
+Firmware may provide `legacy_entity_ids` for explicit old IDs. The Bridge
+validates and deduplicates these IDs and requires the same entity domain.
 
 ## Requirements
 

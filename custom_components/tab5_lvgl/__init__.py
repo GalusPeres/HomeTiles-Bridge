@@ -468,7 +468,9 @@ def _migrate_local_io_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> Non
         reg_entry.entity_id,
       )
       continue
-    if not _is_default_local_io_entity_id(registry, entry, reg_entry, descriptor):
+    if not _is_default_local_io_entity_id(
+      hass, registry, entry, reg_entry, descriptor
+    ):
       _LOGGER.info(
         "HomeTiles local I/O entity %s was renamed by the user; keeping it",
         reg_entry.entity_id,
@@ -494,25 +496,52 @@ def _migrate_local_io_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 
 def _is_default_local_io_entity_id(
+  hass: HomeAssistant,
   registry: Any,
   entry: ConfigEntry,
   reg_entry: Any,
   descriptor: Dict[str, Any],
 ) -> bool:
   """Return whether an existing ID matches a known integration default."""
+  if not _local_io_registry_metadata_matches(entry, reg_entry, descriptor):
+    return False
+
   # Current HA can regenerate the integration-provided ID from registry
   # metadata while accounting for custom area/device/entity naming settings.
   # If an older supported HA does not expose that helper, use the legacy
   # deterministic forms below.
   regenerate = getattr(registry, "async_regenerate_entity_id", None)
-  if callable(regenerate):
+  if callable(regenerate) and getattr(reg_entry, "name", None) is None:
     try:
       if regenerate(reg_entry) == reg_entry.entity_id:
-        return True
+        # Numeric suffixes of explicit legacy suggestions need the stable
+        # multi-entry proof below. Otherwise the result changes when the first
+        # colliding entry is migrated and frees the unsuffixed base ID.
+        if not any(
+          _legacy_local_io_collision_index(
+            reg_entry.entity_id, legacy_entity_id
+          ) is not None
+          for legacy_entity_id in descriptor.get("legacy_entity_ids", [])
+        ):
+          return True
     except (AttributeError, TypeError, ValueError):
       pass
 
   domain = local_io_domain(descriptor["type"])
+  for legacy_entity_id in descriptor.get("legacy_entity_ids", []):
+    if (
+      reg_entry.entity_id == legacy_entity_id
+      and _local_io_registry_suggestion_matches(
+        reg_entry, descriptor, legacy_entity_id
+      )
+    ):
+      return True
+
+  if _is_legacy_local_io_collision_id(
+    hass, registry, entry, reg_entry, descriptor
+  ):
+    return True
+
   entity_name = (reg_entry.original_name or descriptor["name"] or "").strip()
   if not entity_name:
     return False
@@ -530,9 +559,187 @@ def _is_default_local_io_entity_id(
     for device_name in device_names
     if device_name
   )
+
+  # Firmware versions that first announced explicit local-I/O entity IDs used
+  # the hidden channel ID as the visible suffix, for example
+  # switch.m5stacks_tab5_relay_1. The channel ID remains the stable MQTT and
+  # Home Assistant unique-ID key, but newer firmware derives the visible suffix
+  # from the user-facing name instead. Recognise only deterministic legacy
+  # forms so genuinely user-renamed registry IDs remain untouched.
+  channel_object_id = slugify(str(descriptor.get("id") or ""))
+  if channel_object_id:
+    announced_entity_id = local_io_announced_entity_id(descriptor)
+    if announced_entity_id:
+      announced_domain, announced_object_id = announced_entity_id.split(".", 1)
+      announced_name_slug = _firmware_entity_slug(descriptor.get("name"))
+      name_suffix = f"_{announced_name_slug}" if announced_name_slug else ""
+      if (
+        announced_domain == domain
+        and name_suffix
+        and announced_object_id.endswith(name_suffix)
+      ):
+        device_object_id = announced_object_id[:-len(name_suffix)]
+        if device_object_id:
+          object_ids.add(f"{device_object_id}_{channel_object_id}")
+
   return reg_entry.entity_id in {
     f"{domain}.{object_id}" for object_id in object_ids if object_id
   }
+
+
+def _is_legacy_local_io_collision_id(
+  hass: HomeAssistant,
+  registry: Any,
+  entry: ConfigEntry,
+  reg_entry: Any,
+  descriptor: Dict[str, Any],
+) -> bool:
+  """Return whether HA added a numeric collision suffix to a legacy ID."""
+  if not _local_io_registry_metadata_matches(entry, reg_entry, descriptor):
+    return False
+
+  for legacy_entity_id in descriptor.get("legacy_entity_ids", []):
+    collision_index = _legacy_local_io_collision_index(
+      reg_entry.entity_id, legacy_entity_id
+    )
+    if collision_index is None:
+      continue
+
+    # Home Assistant stores the integration-provided suggestion separately
+    # from the final entity ID. A prior failed migration may already have
+    # refreshed it to the new target, so both integration-owned values are
+    # accepted; an unrelated user-selected base is not.
+    if not _local_io_registry_suggestion_matches(
+      reg_entry, descriptor, legacy_entity_id
+    ):
+      continue
+
+    owner_count = _legacy_local_io_alias_owner_count(
+      hass, registry, entry, descriptor, legacy_entity_id
+    )
+    if collision_index <= owner_count:
+      return True
+  return False
+
+
+def _legacy_local_io_collision_index(
+  entity_id: str,
+  legacy_entity_id: str,
+) -> int | None:
+  """Return a canonical HA collision suffix index, if present."""
+  prefix = f"{legacy_entity_id}_"
+  if not entity_id.startswith(prefix):
+    return None
+  suffix = entity_id[len(prefix):]
+  if not suffix.isdigit():
+    return None
+  collision_index = int(suffix)
+  if collision_index < 2 or suffix != str(collision_index):
+    return None
+  return collision_index
+
+
+def _local_io_registry_suggestion_matches(
+  reg_entry: Any,
+  descriptor: Dict[str, Any],
+  legacy_entity_id: str,
+) -> bool:
+  """Verify that HA stored an integration-owned object-ID suggestion."""
+  target_entity_id = local_io_announced_entity_id(descriptor)
+  if target_entity_id is None:
+    return False
+  target_object_id = target_entity_id.split(".", 1)[1]
+  legacy_object_id = legacy_entity_id.split(".", 1)[1]
+  return getattr(reg_entry, "suggested_object_id", None) in {
+    legacy_object_id,
+    target_object_id,
+  }
+
+
+def _legacy_local_io_alias_owner_count(
+  hass: HomeAssistant,
+  registry: Any,
+  entry: ConfigEntry,
+  descriptor: Dict[str, Any],
+  legacy_entity_id: str,
+) -> int:
+  """Count verified HomeTiles entries which announced the same legacy ID."""
+  owners = {entry.entry_id}
+  for candidate_entry in hass.config_entries.async_entries(DOMAIN):
+    if candidate_entry.entry_id in owners:
+      continue
+    for candidate_descriptor in entry_local_io(candidate_entry):
+      if (
+        candidate_descriptor["type"] != descriptor["type"]
+        or candidate_descriptor["id"] != descriptor["id"]
+      ):
+        continue
+      candidate_legacy_ids = candidate_descriptor.get("legacy_entity_ids", [])
+      if (
+        legacy_entity_id not in candidate_legacy_ids
+        and local_io_announced_entity_id(candidate_descriptor) != legacy_entity_id
+      ):
+        continue
+      candidate_unique_id = local_io_unique_id(
+        entry_device_id(candidate_entry), candidate_descriptor
+      )
+      candidate_registry_entry = next(
+        (
+          item
+          for item in registry.entities.values()
+          if item.config_entry_id == candidate_entry.entry_id
+          and item.platform == DOMAIN
+          and item.unique_id == candidate_unique_id
+          and item.domain == local_io_domain(candidate_descriptor["type"])
+        ),
+        None,
+      )
+      if candidate_registry_entry is None or not _local_io_registry_metadata_matches(
+        candidate_entry, candidate_registry_entry, candidate_descriptor
+      ):
+        continue
+      owners.add(candidate_entry.entry_id)
+      break
+  return len(owners)
+
+
+def _local_io_registry_metadata_matches(
+  entry: ConfigEntry,
+  reg_entry: Any,
+  descriptor: Dict[str, Any],
+) -> bool:
+  """Verify registry ownership and immutable local-I/O identity metadata."""
+  expected_unique_id = local_io_unique_id(entry_device_id(entry), descriptor)
+  expected_name = str(descriptor.get("name") or "").strip()
+  original_name = str(getattr(reg_entry, "original_name", None) or "").strip()
+  return (
+    reg_entry.config_entry_id == entry.entry_id
+    and reg_entry.platform == DOMAIN
+    and reg_entry.unique_id == expected_unique_id
+    and reg_entry.domain == local_io_domain(descriptor["type"])
+    and bool(getattr(reg_entry, "device_id", None))
+    and getattr(reg_entry, "has_entity_name", False) is True
+    and getattr(reg_entry, "name", None) is None
+    and bool(expected_name)
+    and original_name == expected_name
+  )
+
+
+def _firmware_entity_slug(value: Any) -> str:
+  """Return the ASCII slug used by firmware for announced entity IDs."""
+  result = []
+  separator_pending = False
+  for character in str(value or ""):
+    if "A" <= character <= "Z":
+      character = chr(ord(character) + (ord("a") - ord("A")))
+    if "a" <= character <= "z" or "0" <= character <= "9":
+      if separator_pending and result:
+        result.append("_")
+      result.append(character)
+      separator_pending = False
+    elif result:
+      separator_pending = True
+  return "".join(result)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
