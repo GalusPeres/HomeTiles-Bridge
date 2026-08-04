@@ -101,7 +101,9 @@ The internal `id` stays stable for MQTT topics and Home Assistant's `unique_id`,
 while the visible `entity_id` may follow the channel name. The Bridge migrates
 known automatically generated IDs and leaves user-renamed registry IDs intact.
 Firmware may provide `legacy_entity_ids` for explicit old IDs. The Bridge
-validates and deduplicates these IDs and requires the same entity domain.
+validates and deduplicates these IDs and requires the same entity domain. When
+multiple identical panels use the same suggested ID, Home Assistant adds a
+numeric suffix such as `_2`; migrations preserve that suffix deterministically.
 
 ## Requirements
 
@@ -116,9 +118,13 @@ frame rate and number of simultaneously open panels.
 
 ## Release Process
 
+- Run `python -m unittest discover -s tests -v`
+- Run `python -m compileall -q custom_components/tab5_lvgl tests`
 - Bump `custom_components/tab5_lvgl/manifest.json` version
 - Commit and push to `main`
-- Create a GitHub release with a `v*` tag (e.g. `v0.5.18`)
+- Push the matching `v*` tag (for example `v0.6.32`); GitHub Actions creates
+  the release
+- Replace the generated release text with the matching checked-in release notes
 
 ## License
 

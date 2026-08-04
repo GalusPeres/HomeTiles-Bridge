@@ -196,6 +196,40 @@ def local_io_announced_entity_id(descriptor: dict[str, Any]) -> str | None:
     return entity_id if isinstance(entity_id, str) and entity_id else None
 
 
+def local_io_legacy_collision_index(
+    entity_id: str,
+    legacy_entity_id: str,
+) -> int | None:
+    """Return a canonical Home Assistant collision suffix index, if present."""
+    prefix = f"{legacy_entity_id}_"
+    if not entity_id.startswith(prefix):
+        return None
+    suffix = entity_id[len(prefix):]
+    if not suffix.isdigit():
+        return None
+    collision_index = int(suffix)
+    if collision_index < 2 or suffix != str(collision_index):
+        return None
+    return collision_index
+
+
+def local_io_migration_target_entity_id(
+    current_entity_id: str,
+    announced_entity_id: str,
+    legacy_entity_ids: list[str],
+) -> str:
+    """Preserve Home Assistant's numeric suffix while replacing a legacy base."""
+    for legacy_entity_id in legacy_entity_ids:
+        if current_entity_id == legacy_entity_id:
+            return announced_entity_id
+        collision_index = local_io_legacy_collision_index(
+            current_entity_id, legacy_entity_id
+        )
+        if collision_index is not None:
+            return f"{announced_entity_id}_{collision_index}"
+    return announced_entity_id
+
+
 def local_io_state_topic(base_topic: str, channel_id: str) -> str:
     """Return the retained state topic used by a local hardware channel."""
     return state_topic(base_topic, f"io/{channel_id}")

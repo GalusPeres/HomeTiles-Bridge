@@ -104,6 +104,8 @@ from .local_io import (
   entry_local_io,
   local_io_announced_entity_id,
   local_io_domain,
+  local_io_legacy_collision_index,
+  local_io_migration_target_entity_id,
   local_io_unique_id,
   normalise_local_io,
 )
@@ -461,13 +463,6 @@ def _migrate_local_io_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> Non
       continue
     if reg_entry.entity_id == target_entity_id:
       continue
-    if registry.async_get(target_entity_id) is not None:
-      _LOGGER.warning(
-        "HomeTiles local I/O entity ID %s is already in use; keeping %s",
-        target_entity_id,
-        reg_entry.entity_id,
-      )
-      continue
     if not _is_default_local_io_entity_id(
       hass, registry, entry, reg_entry, descriptor
     ):
@@ -476,21 +471,35 @@ def _migrate_local_io_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> Non
         reg_entry.entity_id,
       )
       continue
+    migration_target_entity_id = local_io_migration_target_entity_id(
+      reg_entry.entity_id,
+      target_entity_id,
+      descriptor.get("legacy_entity_ids", []),
+    )
+    if reg_entry.entity_id == migration_target_entity_id:
+      continue
+    if registry.async_get(migration_target_entity_id) is not None:
+      _LOGGER.warning(
+        "HomeTiles local I/O entity ID %s is already in use; keeping %s",
+        migration_target_entity_id,
+        reg_entry.entity_id,
+      )
+      continue
     try:
       registry.async_update_entity(
         reg_entry.entity_id,
-        new_entity_id=target_entity_id,
+        new_entity_id=migration_target_entity_id,
       )
       _LOGGER.info(
         "HomeTiles local I/O entity migration: %s -> %s",
         reg_entry.entity_id,
-        target_entity_id,
+        migration_target_entity_id,
       )
     except (ValueError, TypeError) as err:
       _LOGGER.warning(
         "HomeTiles local I/O entity migration failed for %s -> %s: %s",
         reg_entry.entity_id,
-        target_entity_id,
+        migration_target_entity_id,
         err,
       )
 
@@ -518,7 +527,7 @@ def _is_default_local_io_entity_id(
         # multi-entry proof below. Otherwise the result changes when the first
         # colliding entry is migrated and frees the unsuffixed base ID.
         if not any(
-          _legacy_local_io_collision_index(
+          local_io_legacy_collision_index(
             reg_entry.entity_id, legacy_entity_id
           ) is not None
           for legacy_entity_id in descriptor.get("legacy_entity_ids", [])
@@ -599,7 +608,7 @@ def _is_legacy_local_io_collision_id(
     return False
 
   for legacy_entity_id in descriptor.get("legacy_entity_ids", []):
-    collision_index = _legacy_local_io_collision_index(
+    collision_index = local_io_legacy_collision_index(
       reg_entry.entity_id, legacy_entity_id
     )
     if collision_index is None:
@@ -620,23 +629,6 @@ def _is_legacy_local_io_collision_id(
     if collision_index <= owner_count:
       return True
   return False
-
-
-def _legacy_local_io_collision_index(
-  entity_id: str,
-  legacy_entity_id: str,
-) -> int | None:
-  """Return a canonical HA collision suffix index, if present."""
-  prefix = f"{legacy_entity_id}_"
-  if not entity_id.startswith(prefix):
-    return None
-  suffix = entity_id[len(prefix):]
-  if not suffix.isdigit():
-    return None
-  collision_index = int(suffix)
-  if collision_index < 2 or suffix != str(collision_index):
-    return None
-  return collision_index
 
 
 def _local_io_registry_suggestion_matches(
