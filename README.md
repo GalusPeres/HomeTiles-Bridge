@@ -127,7 +127,9 @@ frame rate and number of simultaneously open panels.
 - Commit and push to `main`
 - Push the matching `v*` tag (for example `v0.6.32`); GitHub Actions creates
   the release
-- Replace the generated release text with the matching checked-in release notes
+- Never create the GitHub release manually; wait for the tag workflow to finish
+- Replace the generated release text with the matching checked-in release notes,
+  for example `gh release edit v0.6.34 --notes-file RELEASE_NOTES_v0.6.34.md`
 
 ## License
 
