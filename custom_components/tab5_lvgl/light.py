@@ -19,30 +19,42 @@ from .device_helpers import (
     state_topic,
 )
 
-MIN_BRIGHTNESS_RAW = 121
-MAX_BRIGHTNESS_RAW = 255
-MIN_SCREENSAVER_PERCENT = 1
-MAX_SCREENSAVER_PERCENT = 100
+MIN_BRIGHTNESS_PERCENT = 1
+MAX_BRIGHTNESS_PERCENT = 100
+LEGACY_MIN_BRIGHTNESS_RAW = 121
+LEGACY_MAX_BRIGHTNESS_RAW = 255
 
 
-def _raw_to_ha(raw: int) -> int:
-    raw = max(MIN_BRIGHTNESS_RAW, min(MAX_BRIGHTNESS_RAW, raw))
-    return round((raw - MIN_BRIGHTNESS_RAW) * 255 / (MAX_BRIGHTNESS_RAW - MIN_BRIGHTNESS_RAW))
+def _legacy_raw_to_percent(raw: int) -> int:
+    """Decode the 121..255 protocol used by older firmware."""
+    raw = max(LEGACY_MIN_BRIGHTNESS_RAW, min(LEGACY_MAX_BRIGHTNESS_RAW, raw))
+    return round(
+        MIN_BRIGHTNESS_PERCENT
+        + (raw - LEGACY_MIN_BRIGHTNESS_RAW)
+        * (MAX_BRIGHTNESS_PERCENT - MIN_BRIGHTNESS_PERCENT)
+        / (LEGACY_MAX_BRIGHTNESS_RAW - LEGACY_MIN_BRIGHTNESS_RAW)
+    )
 
 
-def _ha_to_raw(value: int) -> int:
-    value = max(0, min(255, value))
-    return round(MIN_BRIGHTNESS_RAW + (value * (MAX_BRIGHTNESS_RAW - MIN_BRIGHTNESS_RAW) / 255))
+def _percent_to_legacy_raw(percent: int) -> int:
+    """Encode percent for firmware that still expects 121..255."""
+    percent = max(MIN_BRIGHTNESS_PERCENT, min(MAX_BRIGHTNESS_PERCENT, percent))
+    return round(
+        LEGACY_MIN_BRIGHTNESS_RAW
+        + (percent - MIN_BRIGHTNESS_PERCENT)
+        * (LEGACY_MAX_BRIGHTNESS_RAW - LEGACY_MIN_BRIGHTNESS_RAW)
+        / (MAX_BRIGHTNESS_PERCENT - MIN_BRIGHTNESS_PERCENT)
+    )
 
 
 def _percent_to_ha(percent: int) -> int:
     """Map the firmware's 1..100 percent range to HA's 1..255 range."""
-    percent = max(MIN_SCREENSAVER_PERCENT, min(MAX_SCREENSAVER_PERCENT, percent))
+    percent = max(MIN_BRIGHTNESS_PERCENT, min(MAX_BRIGHTNESS_PERCENT, percent))
     return round(
         1
-        + (percent - MIN_SCREENSAVER_PERCENT)
+        + (percent - MIN_BRIGHTNESS_PERCENT)
         * 254
-        / (MAX_SCREENSAVER_PERCENT - MIN_SCREENSAVER_PERCENT)
+        / (MAX_BRIGHTNESS_PERCENT - MIN_BRIGHTNESS_PERCENT)
     )
 
 
@@ -50,9 +62,9 @@ def _ha_to_percent(value: int) -> int:
     """Map HA's 1..255 brightness range to firmware percent."""
     value = max(1, min(255, value))
     return round(
-        MIN_SCREENSAVER_PERCENT
+        MIN_BRIGHTNESS_PERCENT
         + (value - 1)
-        * (MAX_SCREENSAVER_PERCENT - MIN_SCREENSAVER_PERCENT)
+        * (MAX_BRIGHTNESS_PERCENT - MIN_BRIGHTNESS_PERCENT)
         / 254
     )
 
@@ -87,6 +99,7 @@ class Tab5DisplayLight(LightEntity):
         self._topic_state = state_topic(base_topic, TOPIC_DISPLAY_BRIGHTNESS)
         self._unsub_state = None
         self._last_nonzero: Optional[int] = None
+        self._legacy_raw_topics = False
 
     @property
     def device_info(self):
@@ -96,13 +109,20 @@ class Tab5DisplayLight(LightEntity):
         await super().async_added_to_hass()
 
         async def _handle_state(msg: mqtt.ReceiveMessage) -> None:
-            raw_text = msg.payload.strip()
+            value_text = msg.payload.strip()
             try:
-                raw = int(float(raw_text))
+                value = int(float(value_text))
             except (TypeError, ValueError):
                 return
-            raw = max(MIN_BRIGHTNESS_RAW, min(MAX_BRIGHTNESS_RAW, raw))
-            brightness = _raw_to_ha(raw)
+            self._legacy_raw_topics = value > MAX_BRIGHTNESS_PERCENT
+            if self._legacy_raw_topics:
+                percent = _legacy_raw_to_percent(value)
+            else:
+                percent = max(
+                    MIN_BRIGHTNESS_PERCENT,
+                    min(MAX_BRIGHTNESS_PERCENT, value),
+                )
+            brightness = _percent_to_ha(percent)
             self._attr_brightness = brightness
             self._attr_is_on = brightness > 0
             if brightness > 0:
@@ -123,17 +143,31 @@ class Tab5DisplayLight(LightEntity):
         brightness = kwargs.get("brightness")
         if brightness is None:
             brightness = self._last_nonzero if self._last_nonzero is not None else 255
-        raw = _ha_to_raw(int(brightness))
-        await mqtt.async_publish(self.hass, self._topic_cmd, str(raw), qos=0, retain=False)
-        self._attr_brightness = _raw_to_ha(raw)
+        percent = _ha_to_percent(int(brightness))
+        command = (
+            _percent_to_legacy_raw(percent)
+            if self._legacy_raw_topics
+            else percent
+        )
+        await mqtt.async_publish(
+            self.hass, self._topic_cmd, str(command), qos=0, retain=False
+        )
+        self._attr_brightness = _percent_to_ha(percent)
         self._attr_is_on = self._attr_brightness > 0
         if self._attr_brightness > 0:
             self._last_nonzero = self._attr_brightness
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
-        raw = _ha_to_raw(0)
-        await mqtt.async_publish(self.hass, self._topic_cmd, str(raw), qos=0, retain=False)
+        percent = MIN_BRIGHTNESS_PERCENT
+        command = (
+            _percent_to_legacy_raw(percent)
+            if self._legacy_raw_topics
+            else percent
+        )
+        await mqtt.async_publish(
+            self.hass, self._topic_cmd, str(command), qos=0, retain=False
+        )
         self._attr_brightness = 0
         self._attr_is_on = False
         self.async_write_ha_state()
@@ -174,12 +208,12 @@ class Tab5ScreensaverBrightnessLight(LightEntity):
             except (TypeError, ValueError):
                 return
             percent = max(
-                MIN_SCREENSAVER_PERCENT,
-                min(MAX_SCREENSAVER_PERCENT, percent),
+                MIN_BRIGHTNESS_PERCENT,
+                min(MAX_BRIGHTNESS_PERCENT, percent),
             )
             brightness = _percent_to_ha(percent)
             self._attr_brightness = brightness
-            self._attr_is_on = percent > MIN_SCREENSAVER_PERCENT
+            self._attr_is_on = brightness > 0
             if self._attr_is_on:
                 self._last_nonzero = brightness
             self.async_write_ha_state()
@@ -207,13 +241,13 @@ class Tab5ScreensaverBrightnessLight(LightEntity):
             retain=False,
         )
         self._attr_brightness = _percent_to_ha(percent)
-        self._attr_is_on = percent > MIN_SCREENSAVER_PERCENT
+        self._attr_is_on = self._attr_brightness > 0
         if self._attr_is_on:
             self._last_nonzero = self._attr_brightness
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
-        percent = MIN_SCREENSAVER_PERCENT
+        percent = MIN_BRIGHTNESS_PERCENT
         await mqtt.async_publish(
             self.hass,
             self._topic_cmd,

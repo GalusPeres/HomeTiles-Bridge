@@ -76,6 +76,8 @@ The integration communicates with the display firmware via MQTT:
 | `base_topic/cmnd/scene` | Display > HA | Scene activation |
 | `base_topic/cmnd/camera` | Display > HA | Open or close an experimental camera stream |
 | `base_topic/stat/camera` | HA > Display | Camera stream endpoint, protocol and status |
+| `base_topic/cmnd/display_brightness` | HA > Display | Set normal display brightness (1-100%) |
+| `base_topic/stat/display_brightness` | Display > HA | Current normal display brightness (1-100%) |
 | `base_topic/cmnd/screensaver_brightness` | HA > Display | Set screensaver brightness (1-100%) |
 | `base_topic/stat/screensaver_brightness` | Display > HA | Current screensaver brightness (1-100%) |
 | `base_topic/cmnd/io/{channel_id}` | HA > Display | Local relay command (`ON`/`OFF`, not retained) |

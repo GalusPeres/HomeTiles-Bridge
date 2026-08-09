@@ -19,6 +19,31 @@ from .device_helpers import (
     state_topic,
 )
 
+MIN_BRIGHTNESS_PERCENT = 1
+MAX_BRIGHTNESS_PERCENT = 100
+LEGACY_MIN_BRIGHTNESS_RAW = 121
+LEGACY_MAX_BRIGHTNESS_RAW = 255
+
+
+def _legacy_raw_to_percent(raw: int) -> int:
+    raw = max(LEGACY_MIN_BRIGHTNESS_RAW, min(LEGACY_MAX_BRIGHTNESS_RAW, raw))
+    return round(
+        MIN_BRIGHTNESS_PERCENT
+        + (raw - LEGACY_MIN_BRIGHTNESS_RAW)
+        * (MAX_BRIGHTNESS_PERCENT - MIN_BRIGHTNESS_PERCENT)
+        / (LEGACY_MAX_BRIGHTNESS_RAW - LEGACY_MIN_BRIGHTNESS_RAW)
+    )
+
+
+def _percent_to_legacy_raw(percent: int) -> int:
+    percent = max(MIN_BRIGHTNESS_PERCENT, min(MAX_BRIGHTNESS_PERCENT, percent))
+    return round(
+        LEGACY_MIN_BRIGHTNESS_RAW
+        + (percent - MIN_BRIGHTNESS_PERCENT)
+        * (LEGACY_MAX_BRIGHTNESS_RAW - LEGACY_MIN_BRIGHTNESS_RAW)
+        / (MAX_BRIGHTNESS_PERCENT - MIN_BRIGHTNESS_PERCENT)
+    )
+
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities
@@ -33,8 +58,8 @@ class Tab5BrightnessNumber(NumberEntity):
     _attr_has_entity_name = True
     _attr_name = "Display Helligkeit"
     _attr_icon = "mdi:brightness-6"
-    _attr_native_min_value = 121
-    _attr_native_max_value = 255
+    _attr_native_min_value = MIN_BRIGHTNESS_PERCENT
+    _attr_native_max_value = MAX_BRIGHTNESS_PERCENT
     _attr_native_step = 1
     _attr_mode = NumberMode.SLIDER
     _attr_entity_category = EntityCategory.CONFIG
@@ -46,6 +71,7 @@ class Tab5BrightnessNumber(NumberEntity):
         self._topic_cmd = command_topic(base_topic, TOPIC_DISPLAY_BRIGHTNESS)
         self._topic_state = state_topic(base_topic, TOPIC_DISPLAY_BRIGHTNESS)
         self._unsub_state = None
+        self._legacy_raw_topics = False
 
     @property
     def device_info(self):
@@ -60,10 +86,14 @@ class Tab5BrightnessNumber(NumberEntity):
                 value = int(float(raw))
             except (TypeError, ValueError):
                 return
-            if value < 121:
-                value = 121
-            if value > 255:
-                value = 255
+            self._legacy_raw_topics = value > MAX_BRIGHTNESS_PERCENT
+            if self._legacy_raw_topics:
+                value = _legacy_raw_to_percent(value)
+            else:
+                value = max(
+                    MIN_BRIGHTNESS_PERCENT,
+                    min(MAX_BRIGHTNESS_PERCENT, value),
+                )
             self._attr_native_value = value
             self.async_write_ha_state()
 
@@ -79,10 +109,17 @@ class Tab5BrightnessNumber(NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         value_int = int(round(value))
-        if value_int < 121:
-            value_int = 121
-        if value_int > 255:
-            value_int = 255
-        await mqtt.async_publish(self.hass, self._topic_cmd, str(value_int), qos=0, retain=False)
+        value_int = max(
+            MIN_BRIGHTNESS_PERCENT,
+            min(MAX_BRIGHTNESS_PERCENT, value_int),
+        )
+        command = (
+            _percent_to_legacy_raw(value_int)
+            if self._legacy_raw_topics
+            else value_int
+        )
+        await mqtt.async_publish(
+            self.hass, self._topic_cmd, str(command), qos=0, retain=False
+        )
         self._attr_native_value = value_int
         self.async_write_ha_state()
