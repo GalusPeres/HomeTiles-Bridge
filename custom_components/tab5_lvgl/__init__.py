@@ -61,6 +61,7 @@ from .const import (
   CONF_BASE_TOPIC,
   CONF_CAMERAS,
   CONF_CLIMATES,
+  CONF_COVERS,
   CONF_DEVICE_ID,
   CONF_DEVICE_NAME,
   CONF_ENERGY_ELECTRICITY,
@@ -87,6 +88,11 @@ from .const import (
   HISTORY_RESPONSE_SUFFIX,
   SERVICE_PUBLISH_SNAPSHOT,
   WEATHER_REQUEST_SUFFIX,
+)
+from .cover_helpers import (
+  build_cover_state_payload,
+  normalise_cover_command,
+  parse_cover_position,
 )
 from .camera_stream import (
   CAMERA_BRIDGE_PROTOCOL_VERSION,
@@ -785,6 +791,7 @@ class Tab5Bridge:
     self.switches: List[str] = _unique_entities(list(data.get(CONF_SWITCHES, [])))
     self.media_players: List[str] = _unique_entities(list(data.get(CONF_MEDIA_PLAYERS, [])))
     self.climates: List[str] = _unique_entities(list(data.get(CONF_CLIMATES, [])))
+    self.covers: List[str] = _unique_entities(list(data.get(CONF_COVERS, [])))
     self.cameras: List[str] = _unique_entities(list(data.get(CONF_CAMERAS, [])))
     self.tracked_entities: List[str] = []
     self._media_cover_cache: Dict[str, Dict[str, Any]] = {}
@@ -819,6 +826,7 @@ class Tab5Bridge:
     self._unsub_switch = None
     self._unsub_media = None
     self._unsub_climate = None
+    self._unsub_cover = None
     self._unsub_camera = None
     self._unsub_request = None
     self._unsub_history = None
@@ -877,6 +885,7 @@ class Tab5Bridge:
     all_switches: List[str] = []
     all_media_players: List[str] = []
     all_climates: List[str] = []
+    all_covers: List[str] = []
     all_cameras: List[str] = []
     all_weathers: List[str] = []
     all_scene_map: Dict[str, str] = {}
@@ -893,6 +902,7 @@ class Tab5Bridge:
       all_switches.extend(list(data.get(CONF_SWITCHES, [])))
       all_media_players.extend(list(data.get(CONF_MEDIA_PLAYERS, [])))
       all_climates.extend(list(data.get(CONF_CLIMATES, [])))
+      all_covers.extend(list(data.get(CONF_COVERS, [])))
       all_cameras.extend(list(data.get(CONF_CAMERAS, [])))
       all_weathers.extend(weathers)
       for alias, entity in (data.get(CONF_SCENE_MAP, {}) or {}).items():
@@ -904,6 +914,7 @@ class Tab5Bridge:
       "switches": _unique_entities(all_switches),
       "media_players": _unique_entities(all_media_players),
       "climates": _unique_entities(all_climates),
+      "covers": _unique_entities(all_covers),
       "cameras": _unique_entities(all_cameras),
       "weathers": _unique_entities(all_weathers),
       "scene_map": all_scene_map,
@@ -926,11 +937,18 @@ class Tab5Bridge:
     self.switches = _unique_entities(merged["switches"] + local_relays)
     self.media_players = merged["media_players"]
     self.climates = merged["climates"]
+    self.covers = merged["covers"]
     self.cameras = merged["cameras"]
     self.weathers = merged["weathers"]
     self.scene_map.update(merged["scene_map"])
     self.tracked_entities = _unique_entities(
-      self.sensors + self.lights + self.switches + self.media_players + self.climates + self.weathers
+      self.sensors
+      + self.lights
+      + self.switches
+      + self.media_players
+      + self.climates
+      + self.covers
+      + self.weathers
     )
     if self._runtime_setup_complete and tuple(self.tracked_entities) != previous_tracked:
       if self._unsub_state:
@@ -986,6 +1004,12 @@ class Tab5Bridge:
       self._async_handle_climate_command,
     )
 
+    self._unsub_cover = await mqtt.async_subscribe(
+      self.hass,
+      f"{self.base_topic}/cmnd/cover",
+      self._async_handle_cover_command,
+    )
+
     self._unsub_camera = await mqtt.async_subscribe(
       self.hass,
       f"{self.base_topic}/cmnd/camera",
@@ -1003,7 +1027,7 @@ class Tab5Bridge:
     self._prime_icon_cache()
 
     _LOGGER.info(
-      "Tab5 MQTT bridge ready (device=%s, base=%s, ha_prefix=%s, sensors=%d, lights=%d, switches=%d, media=%d, climate=%d, cameras=%d)",
+      "Tab5 MQTT bridge ready (device=%s, base=%s, ha_prefix=%s, sensors=%d, lights=%d, switches=%d, media=%d, climate=%d, covers=%d, cameras=%d)",
       self.device_id or "n/a",
       self.base_topic,
       self.ha_prefix,
@@ -1012,6 +1036,7 @@ class Tab5Bridge:
       len(self.switches),
       len(self.media_players),
       len(self.climates),
+      len(self.covers),
       len(self.cameras),
     )
     if self.config_topic:
@@ -1077,6 +1102,9 @@ class Tab5Bridge:
     if self._unsub_climate:
       self._unsub_climate()
       self._unsub_climate = None
+    if self._unsub_cover:
+      self._unsub_cover()
+      self._unsub_cover = None
     if self._unsub_camera:
       self._unsub_camera()
       self._unsub_camera = None
@@ -1132,6 +1160,8 @@ class Tab5Bridge:
           "media_player_meta": self._build_entity_meta(self.media_players),
           CONF_CLIMATES: self.climates,
           "climate_meta": self._build_entity_meta(self.climates),
+          CONF_COVERS: self.covers,
+          "cover_meta": self._build_entity_meta(self.covers),
           CONF_CAMERAS: self.cameras,
           "camera_meta": self._build_entity_meta(self.cameras),
           "scene_meta": self._build_scene_meta(),
@@ -2342,6 +2372,62 @@ class Tab5Bridge:
       blocking=False,
     )
 
+  async def _async_handle_cover_command(self, msg: ReceiveMessage) -> None:
+    """Execute cover and cover-tilt commands originating from HomeTiles."""
+    parsed = _try_parse_json(msg.payload.strip())
+    if not isinstance(parsed, dict):
+      _LOGGER.warning("Unhandled cover command from HomeTiles: %s", msg.payload)
+      return
+
+    raw_entity = parsed.get("entity_id") or parsed.get("entity")
+    requested_entity = str(raw_entity).strip() if raw_entity is not None else ""
+    if requested_entity:
+      entity_id = requested_entity if requested_entity in self.covers else None
+    else:
+      entity_id = self.covers[0] if len(self.covers) == 1 else None
+    if not entity_id or not entity_id.startswith("cover."):
+      _LOGGER.warning(
+        "Unhandled cover command from HomeTiles (unknown entity): %s",
+        msg.payload,
+      )
+      return
+
+    command = normalise_cover_command(
+      parsed.get("command")
+      or parsed.get("service")
+      or parsed.get("action")
+      or parsed.get("state")
+    )
+    if command is None:
+      if parsed.get("tilt_position") is not None:
+        command = "set_cover_tilt_position"
+      elif parsed.get("position") is not None:
+        command = "set_cover_position"
+    if command is None:
+      _LOGGER.warning("Cover command is missing a supported action: %s", msg.payload)
+      return
+
+    service_data: Dict[str, Any] = {"entity_id": entity_id}
+    if command == "set_cover_position":
+      position = parse_cover_position(parsed.get("position"))
+      if position is None:
+        _LOGGER.warning("Cover position must be an integer from 0 to 100: %s", msg.payload)
+        return
+      service_data["position"] = position
+    elif command == "set_cover_tilt_position":
+      tilt_position = parse_cover_position(parsed.get("tilt_position"))
+      if tilt_position is None:
+        _LOGGER.warning("Cover tilt position must be an integer from 0 to 100: %s", msg.payload)
+        return
+      service_data["tilt_position"] = tilt_position
+
+    await self.hass.services.async_call(
+      "cover",
+      command,
+      service_data,
+      blocking=False,
+    )
+
   async def _async_handle_camera_command(self, msg: ReceiveMessage) -> None:
     """Create or stop the short-lived JPEG-frame stream used by the popup."""
     parsed = _try_parse_json(msg.payload.strip())
@@ -2774,6 +2860,8 @@ class Tab5Bridge:
       if isinstance(hs, (list, tuple)) and len(hs) >= 2:
         payload["hs_color"] = [float(hs[0]), float(hs[1])]
       return json.dumps(payload)
+    if entity_id.startswith("cover."):
+      return json.dumps(build_cover_state_payload(state.state, state.attributes or {}))
     if entity_id.startswith("climate."):
       attrs = state.attributes or {}
       payload: Dict[str, Any] = {
@@ -3607,6 +3695,19 @@ def _fallback_icon_from_state(state: State) -> Optional[str]:
     return "mdi:lightbulb"
   if domain == "switch":
     return "mdi:toggle-switch"
+  if domain == "cover":
+    return {
+      "awning": "mdi:awning",
+      "blind": "mdi:blinds",
+      "curtain": "mdi:curtains",
+      "damper": "mdi:air-filter",
+      "door": "mdi:door",
+      "garage": "mdi:garage",
+      "gate": "mdi:gate",
+      "shade": "mdi:roller-shade",
+      "shutter": "mdi:window-shutter",
+      "window": "mdi:window-closed",
+    }.get(device_class, "mdi:window-shutter")
   if domain == "scene":
     return "mdi:palette"
   if domain == "media_player":
@@ -3951,7 +4052,8 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     # verwerfen, weil sonst nur der SOURCE_IMPORT-Erstell-Pfad sie uebernimmt.
     for key in (
       CONF_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES,
-      CONF_MEDIA_PLAYERS, CONF_CLIMATES, CONF_CAMERAS, CONF_SCENE_MAP,
+      CONF_MEDIA_PLAYERS, CONF_CLIMATES, CONF_COVERS, CONF_CAMERAS,
+      CONF_SCENE_MAP,
     ):
       if not existing.get(key) and data.get(key):
         existing[key] = data[key]
@@ -4043,6 +4145,13 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     raise ValueError("invalid_climates")
   climates = [str(item).strip() for item in climates_raw if str(item).strip()]
 
+  covers_raw = payload.get("covers") or []
+  if not isinstance(covers_raw, list):
+    raise ValueError("invalid_covers")
+  covers = [str(item).strip() for item in covers_raw if str(item).strip()]
+  if any(not entity_id.startswith("cover.") for entity_id in covers):
+    raise ValueError("invalid_covers")
+
   cameras_raw = payload.get("cameras") or []
   if not isinstance(cameras_raw, list):
     raise ValueError("invalid_cameras")
@@ -4071,6 +4180,7 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     CONF_SWITCHES: switches,
     CONF_MEDIA_PLAYERS: media_players,
     CONF_CLIMATES: climates,
+    CONF_COVERS: covers,
     CONF_CAMERAS: cameras,
     CONF_SCENE_MAP: scene_map,
   }

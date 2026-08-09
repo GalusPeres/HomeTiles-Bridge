@@ -23,6 +23,7 @@ from .const import (
   CONF_BASE_TOPIC,
   CONF_CAMERAS,
   CONF_CLIMATES,
+  CONF_COVERS,
   CONF_DEVICE_ID,
   CONF_DEVICE_NAME,
   CONF_ENERGY_ELECTRICITY,
@@ -313,7 +314,8 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
         # einem device_id-Wechsel), war die gesamte Auswahl ersatzlos weg.
         # Auf allen Eintraegen spiegeln, wie es async_step_energy schon tut.
         shared_keys = (
-          CONF_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES, CONF_CLIMATES,
+          CONF_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES,
+          CONF_CLIMATES, CONF_COVERS,
           CONF_MEDIA_PLAYERS, CONF_CAMERAS, CONF_SCENE_MAP, CONF_SCENE_MAP_TEXT,
         )
         for entry in self.hass.config_entries.async_entries(DOMAIN):
@@ -346,6 +348,9 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
         ),
         vol.Optional(CONF_CLIMATES, default=merged.get(CONF_CLIMATES, [])): selector.EntitySelector(
           selector.EntitySelectorConfig(domain=["climate"], multiple=True)
+        ),
+        vol.Optional(CONF_COVERS, default=merged.get(CONF_COVERS, [])): selector.EntitySelector(
+          selector.EntitySelectorConfig(domain=["cover"], multiple=True)
         ),
         vol.Optional(CONF_CAMERAS, default=merged.get(CONF_CAMERAS, [])): selector.EntitySelector(
           selector.EntitySelectorConfig(domain=["camera"], multiple=True)
@@ -423,6 +428,7 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
   all_switches = list(current.get(CONF_SWITCHES, []))
   all_media_players = list(current.get(CONF_MEDIA_PLAYERS, []))
   all_climates = list(current.get(CONF_CLIMATES, []))
+  all_covers = list(current.get(CONF_COVERS, []))
   all_cameras = list(current.get(CONF_CAMERAS, []))
   all_scene_ids = list((current.get(CONF_SCENE_MAP) or {}).values())
   scene_map_text = current.get(CONF_SCENE_MAP_TEXT, "")
@@ -441,6 +447,7 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
     all_switches.extend(list(data.get(CONF_SWITCHES, [])))
     all_media_players.extend(list(data.get(CONF_MEDIA_PLAYERS, [])))
     all_climates.extend(list(data.get(CONF_CLIMATES, [])))
+    all_covers.extend(list(data.get(CONF_COVERS, [])))
     all_cameras.extend(list(data.get(CONF_CAMERAS, [])))
     all_scene_ids.extend(list((data.get(CONF_SCENE_MAP) or {}).values()))
 
@@ -451,6 +458,7 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
     CONF_SWITCHES: _unique(all_switches),
     CONF_MEDIA_PLAYERS: _unique(all_media_players),
     CONF_CLIMATES: _unique(all_climates),
+    CONF_COVERS: _unique(all_covers),
     CONF_CAMERAS: _unique(all_cameras),
     CONF_SCENE_ENTITIES: _unique(all_scene_ids),
     CONF_SCENE_MAP_TEXT: scene_map_text,
@@ -466,6 +474,7 @@ def _convert_entity_data(user_input: Dict[str, Any], current: Dict[str, Any]) ->
   switches = _normalise_entity_list(user_input.get(CONF_SWITCHES, []))
   media_players = _normalise_entity_list(user_input.get(CONF_MEDIA_PLAYERS, []))
   climates = _normalise_entity_list(user_input.get(CONF_CLIMATES, []))
+  covers = _normalise_entity_list(user_input.get(CONF_COVERS, []))
   cameras = _normalise_entity_list(user_input.get(CONF_CAMERAS, []))
 
   scene_map = {}
@@ -495,6 +504,7 @@ def _convert_entity_data(user_input: Dict[str, Any], current: Dict[str, Any]) ->
   updated[CONF_SWITCHES] = switches
   updated[CONF_MEDIA_PLAYERS] = media_players
   updated[CONF_CLIMATES] = climates
+  updated[CONF_COVERS] = covers
   updated[CONF_CAMERAS] = cameras
   updated[CONF_SCENE_MAP] = scene_map
   updated[CONF_SCENE_MAP_TEXT] = scene_map_text

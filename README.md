@@ -12,7 +12,7 @@ This integration is the Home Assistant companion for the **HomeTiles** firmware.
 - Sensor history for popup charts (24h / 5min buckets)
 - Weather forecasts (daily + hourly)
 - Energy dashboard data (consumption, solar, grid, battery, gas, water)
-- Light, switch, climate, media player and scene control from the display
+- Light, switch, cover, climate, media player and scene control from the display
 - Experimental camera popups with local, receiver-paced JPEG video transport
 - Auto-discovery of integration-owned sensors and device-announced local I/O
 
@@ -53,7 +53,7 @@ Detailed instructions: [bridge documentation](https://galusperes.github.io/HomeT
 Configure via the Home Assistant UI:
 
 - **Panel Settings** - MQTT base topic, HA prefix, device metadata
-- **Entity Configuration** - Sensors, weather, lights, switches, climate devices, media players, scenes
+- **Entity Configuration** - Sensors, weather, lights, switches, covers, climate devices, media players, scenes
 - **Energy Dashboard** - Electricity, gas and water from the HA Energy Dashboard
 
 ## MQTT Topics
@@ -73,6 +73,7 @@ The integration communicates with the display firmware via MQTT:
 | `base_topic/cmnd/switch` | Display > HA | Switch control commands |
 | `base_topic/cmnd/media` | Display > HA | Media player commands |
 | `base_topic/cmnd/climate` | Display > HA | Climate temperature and HVAC mode commands |
+| `base_topic/cmnd/cover` | Display > HA | Cover position, tilt, open, close and stop commands |
 | `base_topic/cmnd/scene` | Display > HA | Scene activation |
 | `base_topic/cmnd/camera` | Display > HA | Open or close an experimental camera stream |
 | `base_topic/stat/camera` | HA > Display | Camera stream endpoint, protocol and status |
