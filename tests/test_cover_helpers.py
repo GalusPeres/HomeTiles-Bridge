@@ -27,6 +27,27 @@ COVERS = _load_cover_helpers_module()
 
 
 class CoverHelpersTest(unittest.TestCase):
+    def test_cover_icons_match_home_assistant_component_icons(self) -> None:
+        expected = {
+            ("blind", "open"): "mdi:blinds-horizontal",
+            ("blind", "closed"): "mdi:blinds-horizontal-closed",
+            ("curtain", "closing"): "mdi:arrow-collapse-horizontal",
+            ("curtain", "opening"): "mdi:arrow-split-vertical",
+            ("damper", "closed"): "mdi:circle-slice-8",
+            ("garage", "opening"): "mdi:arrow-up-box",
+            ("gate", "closing"): "mdi:arrow-right",
+            ("shade", "closed"): "mdi:roller-shade-closed",
+            ("shutter", "open"): "mdi:window-shutter-open",
+            ("window", "closed"): "mdi:window-closed",
+            ("awning", "open"): "mdi:window-open",
+            (None, "closing"): "mdi:arrow-down-box",
+        }
+        for (device_class, state), icon in expected.items():
+            with self.subTest(device_class=device_class, state=state):
+                self.assertEqual(
+                    COVERS.cover_component_icon(device_class, state), icon
+                )
+
     def test_normalises_all_supported_cover_commands(self) -> None:
         expected = {
             "open": "open_cover",

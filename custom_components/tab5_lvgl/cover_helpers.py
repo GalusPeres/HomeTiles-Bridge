@@ -32,6 +32,74 @@ COVER_COMMAND_ALIASES = {
 }
 
 
+_COVER_COMPONENT_ICONS = {
+  "_": {
+    "default": "mdi:window-open",
+    "closed": "mdi:window-closed",
+    "closing": "mdi:arrow-down-box",
+    "opening": "mdi:arrow-up-box",
+  },
+  "blind": {
+    "default": "mdi:blinds-horizontal",
+    "closed": "mdi:blinds-horizontal-closed",
+    "closing": "mdi:arrow-down-box",
+    "opening": "mdi:arrow-up-box",
+  },
+  "curtain": {
+    "default": "mdi:curtains",
+    "closed": "mdi:curtains-closed",
+    "closing": "mdi:arrow-collapse-horizontal",
+    "opening": "mdi:arrow-split-vertical",
+  },
+  "damper": {
+    "default": "mdi:circle",
+    "closed": "mdi:circle-slice-8",
+  },
+  "door": {
+    "default": "mdi:door-open",
+    "closed": "mdi:door-closed",
+  },
+  "garage": {
+    "default": "mdi:garage-open",
+    "closed": "mdi:garage",
+    "closing": "mdi:arrow-down-box",
+    "opening": "mdi:arrow-up-box",
+  },
+  "gate": {
+    "default": "mdi:gate-open",
+    "closed": "mdi:gate",
+    "closing": "mdi:arrow-right",
+    "opening": "mdi:arrow-right",
+  },
+  "shade": {
+    "default": "mdi:roller-shade",
+    "closed": "mdi:roller-shade-closed",
+    "closing": "mdi:arrow-down-box",
+    "opening": "mdi:arrow-up-box",
+  },
+  "shutter": {
+    "default": "mdi:window-shutter-open",
+    "closed": "mdi:window-shutter",
+    "closing": "mdi:arrow-down-box",
+    "opening": "mdi:arrow-up-box",
+  },
+  "window": {
+    "default": "mdi:window-open",
+    "closed": "mdi:window-closed",
+    "closing": "mdi:arrow-down-box",
+    "opening": "mdi:arrow-up-box",
+  },
+}
+
+
+def cover_component_icon(device_class: Any, state_value: Any) -> str:
+  """Resolve the standard Cover icon from Home Assistant's icons.json."""
+  key = str(device_class or "").strip().lower()
+  icons = _COVER_COMPONENT_ICONS.get(key, _COVER_COMPONENT_ICONS["_"])
+  state = str(state_value or "").strip().lower()
+  return icons.get(state, icons["default"])
+
+
 def normalise_cover_command(value: Any) -> Optional[str]:
   """Return the canonical Home Assistant cover service for a command."""
   if value is None:

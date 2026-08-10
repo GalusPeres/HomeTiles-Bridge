@@ -91,6 +91,7 @@ from .const import (
 )
 from .cover_helpers import (
   build_cover_state_payload,
+  cover_component_icon,
   normalise_cover_command,
   parse_cover_position,
 )
@@ -3696,18 +3697,7 @@ def _fallback_icon_from_state(state: State) -> Optional[str]:
   if domain == "switch":
     return "mdi:toggle-switch"
   if domain == "cover":
-    return {
-      "awning": "mdi:awning",
-      "blind": "mdi:blinds",
-      "curtain": "mdi:curtains",
-      "damper": "mdi:air-filter",
-      "door": "mdi:door",
-      "garage": "mdi:garage",
-      "gate": "mdi:gate",
-      "shade": "mdi:roller-shade",
-      "shutter": "mdi:window-shutter",
-      "window": "mdi:window-closed",
-    }.get(device_class, "mdi:window-shutter")
+    return cover_component_icon(device_class, state.state)
   if domain == "scene":
     return "mdi:palette"
   if domain == "media_player":
@@ -3766,8 +3756,16 @@ def _normalize_mdi_icon_value(icon: Any) -> Optional[str]:
 def _extract_mdi_icon(state: State, hass: Optional[HomeAssistant] = None) -> Optional[str]:
   if not state:
     return None
-  raw_icon = state.attributes.get("icon")
-  icon = raw_icon.strip() if isinstance(raw_icon, str) else ""
+  icon = ""
+  if hass:
+    try:
+      registry_entry = er.async_get(hass).async_get(state.entity_id)
+      icon = getattr(registry_entry, "icon", None) if registry_entry else ""
+    except Exception:
+      icon = ""
+  if not icon:
+    raw_icon = state.attributes.get("icon")
+    icon = raw_icon.strip() if isinstance(raw_icon, str) else ""
   if not icon and hass and icon_for_entity:
     try:
       # HA 2025+ typically supports state kwarg.
