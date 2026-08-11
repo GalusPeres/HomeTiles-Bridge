@@ -31,6 +31,19 @@ COVER_COMMAND_ALIASES = {
   "toggle_cover_tilt": "toggle_cover_tilt",
 }
 
+COVER_COMMAND_FEATURES = {
+  "open_cover": 1,
+  "close_cover": 2,
+  "set_cover_position": 4,
+  "stop_cover": 8,
+  "open_cover_tilt": 16,
+  "close_cover_tilt": 32,
+  "stop_cover_tilt": 64,
+  "set_cover_tilt_position": 128,
+  "toggle": 1 | 2,
+  "toggle_cover_tilt": 16 | 32,
+}
+
 
 _COVER_COMPONENT_ICONS = {
   "_": {
@@ -108,6 +121,24 @@ def normalise_cover_command(value: Any) -> Optional[str]:
   if command.startswith("cover."):
     command = command[6:]
   return COVER_COMMAND_ALIASES.get(command)
+
+
+def cover_command_supported(command: str, supported_features: Any) -> bool:
+  """Return whether an advertised Cover feature mask permits a command."""
+  required = COVER_COMMAND_FEATURES.get(command)
+  if required is None:
+    return False
+  if isinstance(supported_features, bool):
+    return False
+  try:
+    features = int(supported_features)
+  except (OverflowError, TypeError, ValueError):
+    return False
+  if isinstance(supported_features, float) and not supported_features.is_integer():
+    return False
+  if features < 0:
+    return False
+  return features & required == required
 
 
 def parse_cover_position(value: Any) -> Optional[int]:

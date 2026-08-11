@@ -91,9 +91,14 @@ from .const import (
 )
 from .cover_helpers import (
   build_cover_state_payload,
+  cover_command_supported,
   cover_component_icon,
   normalise_cover_command,
   parse_cover_position,
+)
+from .climate_helpers import (
+  build_climate_service_call,
+  build_climate_state_payload,
 )
 from .camera_stream import (
   CAMERA_BRIDGE_PROTOCOL_VERSION,
@@ -105,6 +110,7 @@ from .camera_stream import (
   CameraStreamManager,
 )
 from .device_helpers import entry_device_id, entry_device_info, entry_device_name
+from .device_registry_helpers import is_stale_device_entry
 from .local_io import (
   LOCAL_IO_RELAY,
   LOCAL_IO_TEMPERATURE,
@@ -749,6 +755,21 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await bridge.async_unload()
     hass.data[DOMAIN]["entries"].pop(entry.entry_id, None)
   return unload_ok
+
+
+async def async_remove_config_entry_device(
+  hass: HomeAssistant,
+  config_entry: ConfigEntry,
+  device_entry: dr.DeviceEntry,
+) -> bool:
+  """Allow Home Assistant to remove a stale HomeTiles registry device."""
+  # A manually created entry initially uses its config-entry ID, then adopts
+  # the firmware-announced device ID after the first bridge-config message.
+  # The old registry device is stale; the current identifier must stay owned.
+  return is_stale_device_entry(
+    device_entry.identifiers,
+    (DOMAIN, entry_device_id(config_entry)),
+  )
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -2118,7 +2139,7 @@ class Tab5Bridge:
       1 for e in result_entries
       if e.get("is_cost") and any(v is not None for v in e.get("values", []))
     )
-    _LOGGER.warning(
+    _LOGGER.debug(
       "Tab5 energy response: period=%s entries=%d cost_entries=%d cost_entries_with_values=%d",
       period,
       len(result_entries),
@@ -2298,73 +2319,14 @@ class Tab5Bridge:
       )
       return
 
-    command = str(parsed.get("command") or parsed.get("service") or "").strip().lower()
-    service = ""
-    service_data: Dict[str, Any] = {"entity_id": entity_id}
-
-    hvac_mode = str(parsed.get("hvac_mode") or "").strip().lower()
-    if command == "set_hvac_mode" or hvac_mode:
-      if not hvac_mode:
-        _LOGGER.warning("Climate HVAC command is missing hvac_mode: %s", msg.payload)
-        return
-      service = "set_hvac_mode"
-      service_data["hvac_mode"] = hvac_mode
-    elif command in ("turn_on", "turn_off", "toggle"):
-      service = command
-    elif command == "set_humidity" or parsed.get("humidity") is not None:
-      humidity = _coerce_float(parsed.get("humidity"))
-      if humidity is None:
-        _LOGGER.warning("Climate humidity command is invalid: %s", msg.payload)
-        return
-      service = "set_humidity"
-      service_data["humidity"] = humidity
-    elif command == "set_fan_mode" or parsed.get("fan_mode") is not None:
-      fan_mode = str(parsed.get("fan_mode") or "").strip()
-      if not fan_mode:
-        _LOGGER.warning("Climate fan command is missing fan_mode: %s", msg.payload)
-        return
-      service = "set_fan_mode"
-      service_data["fan_mode"] = fan_mode
-    elif command == "set_swing_mode" or parsed.get("swing_mode") is not None:
-      swing_mode = str(parsed.get("swing_mode") or "").strip()
-      if not swing_mode:
-        _LOGGER.warning("Climate swing command is missing swing_mode: %s", msg.payload)
-        return
-      service = "set_swing_mode"
-      service_data["swing_mode"] = swing_mode
-    elif (
-      command == "set_swing_horizontal_mode"
-      or parsed.get("swing_horizontal_mode") is not None
-    ):
-      swing_mode = str(parsed.get("swing_horizontal_mode") or "").strip()
-      if not swing_mode:
-        _LOGGER.warning(
-          "Climate horizontal swing command is missing swing_horizontal_mode: %s",
-          msg.payload,
-        )
-        return
-      service = "set_swing_horizontal_mode"
-      service_data["swing_horizontal_mode"] = swing_mode
-    elif command == "set_preset_mode" or parsed.get("preset_mode") is not None:
-      preset_mode = str(parsed.get("preset_mode") or "").strip()
-      if not preset_mode:
-        _LOGGER.warning("Climate preset command is missing preset_mode: %s", msg.payload)
-        return
-      service = "set_preset_mode"
-      service_data["preset_mode"] = preset_mode
-    else:
-      for key in ("temperature", "target_temp_low", "target_temp_high"):
-        if parsed.get(key) is None:
-          continue
-        value = _coerce_float(parsed.get(key))
-        if value is None:
-          _LOGGER.warning("Climate temperature command has invalid %s: %s", key, msg.payload)
-          return
-        service_data[key] = value
-      if len(service_data) == 1:
-        _LOGGER.warning("Climate command is missing a supported action: %s", msg.payload)
-        return
-      service = "set_temperature"
+    state = self.hass.states.get(entity_id)
+    attributes = state.attributes if state is not None else {}
+    try:
+      service, command_data = build_climate_service_call(parsed, attributes)
+    except ValueError as err:
+      _LOGGER.warning("Climate command rejected (%s): %s", err, msg.payload)
+      return
+    service_data: Dict[str, Any] = {"entity_id": entity_id, **command_data}
 
     await self.hass.services.async_call(
       "climate",
@@ -2406,6 +2368,18 @@ class Tab5Bridge:
         command = "set_cover_position"
     if command is None:
       _LOGGER.warning("Cover command is missing a supported action: %s", msg.payload)
+      return
+
+    state = self.hass.states.get(entity_id)
+    attributes = state.attributes if state is not None else {}
+    if "supported_features" in attributes and not cover_command_supported(
+      command, attributes.get("supported_features")
+    ):
+      _LOGGER.warning(
+        "Cover command %s is not supported by %s",
+        command,
+        entity_id,
+      )
       return
 
     service_data: Dict[str, Any] = {"entity_id": entity_id}
@@ -2865,44 +2839,11 @@ class Tab5Bridge:
       return json.dumps(build_cover_state_payload(state.state, state.attributes or {}))
     if entity_id.startswith("climate."):
       attrs = state.attributes or {}
-      payload: Dict[str, Any] = {
-        "state": state.state,
-        "hvac_mode": state.state,
-      }
-      for key in (
-        "hvac_action",
-        "current_temperature",
-        "current_humidity",
-        "temperature",
-        "target_humidity",
-        "humidity",
-        "target_temp_low",
-        "target_temp_high",
-        "min_temp",
-        "max_temp",
-        "min_humidity",
-        "max_humidity",
-        "target_temp_step",
-        "precision",
-        "hvac_modes",
-        "fan_mode",
-        "fan_modes",
-        "preset_mode",
-        "preset_modes",
-        "swing_mode",
-        "swing_modes",
-        "swing_horizontal_mode",
-        "swing_horizontal_modes",
-      ):
-        value = attrs.get(key)
-        if value is not None:
-          payload[key] = value
-      unit = attrs.get("temperature_unit") or attrs.get("unit_of_measurement")
-      if not unit:
-        unit = getattr(self.hass.config.units, "temperature_unit", None)
-      if unit:
-        payload["temperature_unit"] = str(unit)
-      return json.dumps(payload, default=str)
+      unit = getattr(self.hass.config.units, "temperature_unit", None)
+      return json.dumps(
+        build_climate_state_payload(state.state, attrs, unit),
+        default=str,
+      )
     if entity_id.startswith("media_player."):
       return json.dumps(_extract_media_player_payload(state, self.hass), default=str)
     return state.state.replace(",", ".")

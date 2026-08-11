@@ -65,6 +65,35 @@ class CoverHelpersTest(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(COVERS.normalise_cover_command(command), service)
 
+    def test_cover_commands_require_their_advertised_features(self) -> None:
+        expected = {
+            "open_cover": 1,
+            "close_cover": 2,
+            "set_cover_position": 4,
+            "stop_cover": 8,
+            "open_cover_tilt": 16,
+            "close_cover_tilt": 32,
+            "stop_cover_tilt": 64,
+            "set_cover_tilt_position": 128,
+            "toggle": 3,
+            "toggle_cover_tilt": 48,
+        }
+        self.assertEqual(COVERS.COVER_COMMAND_FEATURES, expected)
+        for command, required in expected.items():
+            with self.subTest(command=command):
+                self.assertTrue(COVERS.cover_command_supported(command, required))
+                self.assertTrue(COVERS.cover_command_supported(command, 255))
+                self.assertFalse(
+                    COVERS.cover_command_supported(command, required & (required - 1))
+                )
+
+        self.assertFalse(COVERS.cover_command_supported("unknown", 255))
+        for invalid_mask in (None, True, -1, 1.5, float("inf"), "invalid"):
+            with self.subTest(invalid_mask=invalid_mask):
+                self.assertFalse(
+                    COVERS.cover_command_supported("open_cover", invalid_mask)
+                )
+
     def test_command_positions_are_strict_integer_percentages(self) -> None:
         for value, expected in ((0, 0), (100, 100), ("25", 25), (25.0, 25)):
             with self.subTest(value=value):
