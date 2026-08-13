@@ -9,6 +9,7 @@ from io import BytesIO
 from ipaddress import ip_address
 import json
 import logging
+from time import monotonic
 from typing import Any, Dict, List, Optional, Tuple
 
 import voluptuous as vol
@@ -135,6 +136,8 @@ MEDIA_COVER_MAX_BYTES = 14000
 MEDIA_COVER_FETCH_MAX_BYTES = 1_500_000
 MEDIA_COVER_CACHE_MAX = 24
 MEDIA_COVER_THUMBNAIL_SIZE = 240
+MEDIA_COVER_WARNING_INTERVAL_SECONDS = 15 * 60
+MEDIA_COVER_WARNING_MAX_KEYS = 64
 
 
 def _is_png_payload(data: bytes) -> bool:
@@ -146,7 +149,7 @@ def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
   try:
     from PIL import Image, ImageFile, ImageOps
   except Exception as err:
-    _LOGGER.warning("Tab5 media cover: Pillow not available (%s)", err)
+    _LOGGER.debug("Tab5 media cover: Pillow not available (%s)", err)
     return None
 
   # HA's media_player_proxy occasionally truncates the JPEG by a few bytes
@@ -184,7 +187,7 @@ def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
           return resized, "image/jpeg"
       return resized, "image/jpeg"
   except Exception as err:
-    _LOGGER.warning(
+    _LOGGER.debug(
       "Tab5 media cover: resize failed (%s: %s, %s bytes input)",
       type(err).__name__,
       err,
@@ -817,6 +820,7 @@ class Tab5Bridge:
     self.cameras: List[str] = _unique_entities(list(data.get(CONF_CAMERAS, [])))
     self.tracked_entities: List[str] = []
     self._media_cover_cache: Dict[str, Dict[str, Any]] = {}
+    self._media_cover_warning_last: Dict[Tuple[str, str], float] = {}
     self._media_publish_generation: Dict[str, int] = {}
     self.scene_map: Dict[str, str] = {
       (alias or "").lower(): entity
@@ -1245,7 +1249,7 @@ class Tab5Bridge:
         await self._async_attach_media_cover_data(entity_id, payload)
       payload_text = json.dumps(payload, default=str)
       if include_media_cover:
-        _LOGGER.warning(
+        _LOGGER.debug(
           "Tab5 media state payload for %s: %s chars, cover_data=%s",
           entity_id,
           len(payload_text),
@@ -1307,6 +1311,29 @@ class Tab5Bridge:
     if _is_weather_entity(entity_id):
       await self._async_publish_weather_state(entity_id, state, retain=True)
 
+  def _log_media_cover_warning(
+    self,
+    entity_id: str,
+    reason: str,
+    message: str,
+    *args: Any,
+  ) -> None:
+    """Rate-limit recurring media-cover problems by entity and reason."""
+    now = monotonic()
+    key = (entity_id, reason)
+    last_logged = self._media_cover_warning_last.get(key)
+    if last_logged is not None and now - last_logged < MEDIA_COVER_WARNING_INTERVAL_SECONDS:
+      return
+
+    self._media_cover_warning_last[key] = now
+    if len(self._media_cover_warning_last) > MEDIA_COVER_WARNING_MAX_KEYS:
+      oldest_key = min(
+        self._media_cover_warning_last,
+        key=self._media_cover_warning_last.get,
+      )
+      self._media_cover_warning_last.pop(oldest_key, None)
+    _LOGGER.warning(message, *args)
+
   async def _async_attach_media_cover_data(self, entity_id: str, payload: Dict[str, Any]) -> None:
     url = ""
     # Prefer media_image_url first - it usually points at the upstream CDN
@@ -1319,19 +1346,15 @@ class Tab5Bridge:
         url = value
         break
     if not url:
-      _LOGGER.warning("Tab5 media cover missing URL for %s", entity_id)
+      _LOGGER.debug("Tab5 media cover has no artwork URL for %s", entity_id)
       return
 
-    _LOGGER.warning(
-      "Tab5 media cover fetching for %s: %s",
-      entity_id,
-      url[:120] + ("..." if len(url) > 120 else ""),
-    )
+    _LOGGER.debug("Tab5 media cover fetch started for %s", entity_id)
 
     cached = self._media_cover_cache.get(url)
     if cached:
       payload.update(cached)
-      _LOGGER.warning(
+      _LOGGER.debug(
         "Tab5 media cover cache hit for %s: %s bytes",
         entity_id,
         cached.get("entity_picture_bytes"),
@@ -1342,7 +1365,9 @@ class Tab5Bridge:
       session = async_get_clientsession(self.hass)
       async with session.get(url, timeout=5) as response:
         if response.status != 200:
-          _LOGGER.warning(
+          self._log_media_cover_warning(
+            entity_id,
+            f"http_{response.status}",
             "Tab5 media cover fetch failed for %s: HTTP %s",
             entity_id,
             response.status,
@@ -1364,11 +1389,22 @@ class Tab5Bridge:
             break
         data = b"".join(chunks)
     except Exception as err:  # pragma: no cover - network dependent
-      _LOGGER.warning("Tab5 media cover fetch failed for %s: %s", entity_id, err)
+      self._log_media_cover_warning(
+        entity_id,
+        "network",
+        "Tab5 media cover fetch failed for %s: %s",
+        entity_id,
+        type(err).__name__,
+      )
       return
 
     if len(data) == 0:
-      _LOGGER.warning("Tab5 media cover skipped for %s: empty response", entity_id)
+      self._log_media_cover_warning(
+        entity_id,
+        "empty",
+        "Tab5 media cover skipped for %s: empty response",
+        entity_id,
+      )
       return
 
     # Some upstreams (radio TuneIn covers, etc.) advertise
@@ -1388,7 +1424,7 @@ class Tab5Bridge:
 
     if not content_type or not content_type.startswith("image/"):
       if sniffed_mime:
-        _LOGGER.warning(
+        _LOGGER.debug(
           "Tab5 media cover: %s reported content-type=%s, sniffed %s",
           entity_id,
           content_type or "<none>",
@@ -1396,7 +1432,9 @@ class Tab5Bridge:
         )
         content_type = sniffed_mime
       else:
-        _LOGGER.warning(
+        self._log_media_cover_warning(
+          entity_id,
+          "invalid_type",
           "Tab5 media cover skipped for %s: content-type=%s, magic=%s",
           entity_id,
           content_type or "<none>",
@@ -1409,7 +1447,9 @@ class Tab5Bridge:
       content_type = sniffed_mime
 
     if len(data) > MEDIA_COVER_FETCH_MAX_BYTES:
-      _LOGGER.warning(
+      self._log_media_cover_warning(
+        entity_id,
+        "fetch_too_large",
         "Tab5 media cover skipped for %s: %s bytes > fetch limit %s",
         entity_id,
         len(data),
@@ -1432,14 +1472,18 @@ class Tab5Bridge:
           or _is_png_payload(data)
           or data[:3] == b"\xff\xd8\xff"
         ):
-          _LOGGER.warning(
+          self._log_media_cover_warning(
+            entity_id,
+            "resize_fallback",
             "Tab5 media cover: resize failed for %s, sending original (%s bytes, %s)",
             entity_id,
             len(data),
             content_type or "unknown",
           )
         else:
-          _LOGGER.warning(
+          self._log_media_cover_warning(
+            entity_id,
+            "conversion_failed",
             "Tab5 media cover skipped for %s: %s bytes, type=%s, conversion failed",
             entity_id,
             len(data),
@@ -1448,7 +1492,7 @@ class Tab5Bridge:
           return
       else:
         resized_data, resized_mime = resized
-        _LOGGER.warning(
+        _LOGGER.debug(
           "Tab5 media cover converted for %s: %s %s bytes -> %s %s bytes",
           entity_id,
           content_type or "unknown",
@@ -1460,7 +1504,9 @@ class Tab5Bridge:
         content_type = resized_mime
 
     if len(data) > MEDIA_COVER_MAX_BYTES:
-      _LOGGER.warning(
+      self._log_media_cover_warning(
+        entity_id,
+        "resized_too_large",
         "Tab5 media cover skipped for %s: resized %s bytes > %s",
         entity_id,
         len(data),
@@ -1477,7 +1523,7 @@ class Tab5Bridge:
     while len(self._media_cover_cache) > MEDIA_COVER_CACHE_MAX:
       self._media_cover_cache.pop(next(iter(self._media_cover_cache)))
     payload.update(cover_payload)
-    _LOGGER.warning(
+    _LOGGER.debug(
       "Tab5 media cover attached for %s: %s bytes, base64=%s chars",
       entity_id,
       len(data),

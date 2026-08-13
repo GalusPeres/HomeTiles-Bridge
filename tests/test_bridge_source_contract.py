@@ -89,6 +89,39 @@ class BridgeSourceContractTest(unittest.TestCase):
             )
         )
 
+    def test_media_cover_status_is_debug_and_failures_are_rate_limited(self) -> None:
+        payload_builder = _find_function(self.tree, "_async_build_state_payload")
+        cover_handler = _find_function(self.tree, "_async_attach_media_cover_data")
+        warning_limiter = _find_function(self.tree, "_log_media_cover_warning")
+
+        payload_logs = _logger_calls(payload_builder)
+        cover_logs = _logger_calls(cover_handler)
+        self.assertIn(
+            ("debug", "Tab5 media state payload for %s: %s chars, cover_data=%s"),
+            payload_logs,
+        )
+        self.assertFalse(any(level == "warning" for level, _ in payload_logs))
+
+        expected_debug_messages = {
+            "Tab5 media cover has no artwork URL for %s",
+            "Tab5 media cover fetch started for %s",
+            "Tab5 media cover cache hit for %s: %s bytes",
+            "Tab5 media cover converted for %s: %s %s bytes -> %s %s bytes",
+            "Tab5 media cover attached for %s: %s bytes, base64=%s chars",
+        }
+        debug_messages = {
+            message for level, message in cover_logs if level == "debug"
+        }
+        self.assertTrue(expected_debug_messages.issubset(debug_messages))
+        self.assertFalse(any(level == "warning" for level, _ in cover_logs))
+        self.assertIn("_log_media_cover_warning", _called_names(cover_handler))
+        self.assertIn("monotonic", _called_names(warning_limiter))
+
+        source = BRIDGE_SOURCE.read_text(encoding="utf-8")
+        self.assertNotIn("url[:120]", source)
+        self.assertIn("MEDIA_COVER_WARNING_INTERVAL_SECONDS = 15 * 60", source)
+        self.assertIn("type(err).__name__", source)
+
     def test_device_removal_uses_stale_identifier_policy(self) -> None:
         handler = _find_function(self.tree, "async_remove_config_entry_device")
 
