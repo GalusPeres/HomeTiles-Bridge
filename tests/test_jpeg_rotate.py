@@ -68,6 +68,12 @@ class JpegRotateTest(unittest.TestCase):
     def test_backend_is_reported(self):
         self.assertIn(JR.backend(), {"turbojpeg", "pillow"})
 
+    def test_lossless_path_stays_off_until_validated(self):
+        # ctypes into libturbojpeg is enabled only after a container test.
+        self.assertFalse(JR.LOSSLESS_ENABLED)
+        self.assertIsNone(JR._turbojpeg())
+        self.assertEqual(JR.backend(), "pillow")
+
     @unittest.skipUnless(JR.backend() == "turbojpeg", "libturbojpeg not installed")
     def test_turbojpeg_turn_is_lossless(self):
         # Four quarter turns give back exactly the same pixels: the coded

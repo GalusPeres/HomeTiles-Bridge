@@ -3,7 +3,7 @@
 Beta for display cameras that are mounted sideways.
 
 - The front camera of the Waveshare ESP32-P4-WIFI6-Touch-LCD-8 sits a quarter turn from the landscape screen. The display now sends its picture as it comes from the sensor, and the Bridge turns it upright before Home Assistant shows it: live view, still images and cameras on other HomeTiles displays. The display no longer spends time turning every frame itself, which made its screen sluggish.
-- The turn is lossless when the TurboJPEG library is available (Home Assistant OS and the container include it); otherwise the picture is turned and encoded again with Pillow.
+- The Bridge turns the picture with Pillow and encodes it again at high quality. A lossless turn that needs no new encoding follows in a later beta after it has been validated in the Home Assistant container.
 - Displays whose camera is mounted upright (Guition JC8012P4A1 V2) are unchanged.
 - Everything from v0.6.48b8 is unchanged.
 

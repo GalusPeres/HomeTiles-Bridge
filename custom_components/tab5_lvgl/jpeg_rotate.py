@@ -5,11 +5,11 @@ JPEGs and announces ``"rotate": 90`` (clockwise degrees) in its retained
 camera status. The Bridge turns every frame once, before Home Assistant or
 any viewer sees it.
 
-The turn is lossless when libjpeg-turbo's TurboJPEG library is available
-(Home Assistant OS and the container ship it for the camera integration): the
-coded blocks are rearranged without decoding pixels. Panels encode 4:2:0 with
-whole 16x16 blocks for this, so the result stays a common 4:2:0 JPEG.
-Without the library, Pillow decodes, turns and re-encodes the frame.
+Pillow decodes, turns and re-encodes the frame. A lossless path through
+libjpeg-turbo's TurboJPEG library (Home Assistant OS and the container ship
+it for the camera integration) rearranges the coded blocks without decoding
+pixels; panels encode 4:2:0 with whole 16x16 blocks for it, so the result
+stays a common 4:2:0 JPEG. It is off (LOSSLESS_ENABLED) until validated.
 
 The module has no Home Assistant imports. Every function is blocking and
 belongs in an executor.
@@ -27,6 +27,12 @@ from typing import Final
 _LOGGER = logging.getLogger(__name__)
 
 ROTATIONS: Final = frozenset({0, 90, 180, 270})
+
+# The lossless TurboJPEG path calls a C library through ctypes; a wrong call
+# there could take Home Assistant down instead of failing one frame. It stays
+# off until it has run against the libturbojpeg of the Home Assistant
+# container; until then Pillow turns the frames.
+LOSSLESS_ENABLED: Final = False
 
 # TurboJPEG transform operations (turbojpeg.h): TJXOP_ROT90/180/270 turn
 # clockwise.
@@ -126,6 +132,8 @@ def _library_candidates() -> list[str]:
 
 def _turbojpeg() -> _TurboJpeg | None:
     global _turbo, _turbo_checked
+    if not LOSSLESS_ENABLED:
+        return None
     with _lock:
         if _turbo_checked:
             return _turbo
