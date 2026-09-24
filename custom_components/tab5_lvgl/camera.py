@@ -186,6 +186,11 @@ class HomeTilesLocalCamera(Camera):
             self.hass, f"{self._image_prefix}/+", handle_image, qos=0, encoding=None))
         self._subscriptions.append(await mqtt.async_subscribe(
             self.hass, f"{self._error_prefix}/+", handle_error, qos=0))
+        register_live = getattr(self._stream_manager(), "register_live_camera", None)
+        if self._live is not None and register_live is not None:
+            # Another panel's camera popup finds this entity's live stream
+            # here and joins it as a viewer (camera_stream.py).
+            self._subscriptions.append(register_live(self))
         subscribe_connection = getattr(mqtt, "async_subscribe_connection_status", None)
         if self._live is not None and subscribe_connection is not None:
             # A broker disconnect suspends the stream without waiting for the
@@ -211,6 +216,11 @@ class HomeTilesLocalCamera(Camera):
             json.dumps(request, separators=(",", ":")), qos=0, retain=False)
 
     # Live stream ---------------------------------------------------------
+
+    @property
+    def live_stream(self) -> LocalCameraLiveStream | None:
+        """The shared live stream, or None for a still-image-only panel."""
+        return self._live
 
     def _poke_live(self) -> None:
         if self._live is not None:

@@ -10,13 +10,18 @@ import secrets
 import socket
 import struct
 import time
-from typing import Final
+from typing import Any, Callable, Final
 
 from homeassistant.components.camera import async_get_image, async_get_stream_source
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.core import HomeAssistant
 
-from .local_camera_stream import LocalCameraUploadRegistry, is_upload_handshake
+from .local_camera_stream import (
+  LIVE_FRAME_WAIT_S,
+  STREAM_FPS as LIVE_STREAM_FPS,
+  LocalCameraUploadRegistry,
+  is_upload_handshake,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,7 +33,15 @@ CAMERA_STREAM_FPS: Final = 24
 CAMERA_STREAM_MIN_WIDTH: Final = 320
 CAMERA_STREAM_MIN_HEIGHT: Final = 180
 CAMERA_STREAM_MAX_PIXELS: Final = CAMERA_STREAM_WIDTH * CAMERA_STREAM_HEIGHT
-CAMERA_STILL_FPS: Final = 2
+# Still-image cameras are fetched back to back with one request in flight,
+# never faster than this rate and never faster than the camera answers.
+CAMERA_STILL_MAX_FPS: Final = 10
+# While the next still image (or live frame) is pending, the previous frame is
+# written again at this interval so FFmpeg keeps emitting output.
+CAMERA_STILL_REPEAT_SECONDS: Final = 0.5
+# After a failed still image the next request waits at least this long, so the
+# failure limit still spans several seconds for a camera that fails fast.
+CAMERA_STILL_RETRY_SECONDS: Final = 0.5
 # FFmpeg's MJPEG scale is inverse: a larger value produces smaller frames.
 # Direct streams must stay below roughly five acknowledged 8 KiB blocks at
 # 24 FPS; still-image cameras retain the previous higher JPEG quality.
@@ -105,6 +118,13 @@ class CameraStreamSession:
   fps: int
   expires_at: float
   stop_event: asyncio.Event
+  # Live upload of another HomeTiles panel's camera (LocalCameraLiveStream).
+  # The popup counts as one of its viewers while the TCP stream runs.
+  live: Any = None
+  # Newest still image fed to FFmpeg; an FFmpeg restart resumes from it
+  # instead of the snapshot taken when the popup opened.
+  latest_image: bytes | None = None
+  still_rate_logged: bool = False
 
 
 @dataclass(slots=True)
@@ -266,6 +286,29 @@ class CameraStreamManager:
     # Uploads from a panel's own camera share this listener (reverse
     # direction, see local_camera_stream.py).
     self.local_camera_uploads = LocalCameraUploadRegistry()
+    # HomeTiles panel cameras with a live upload, one entry per entity.
+    self._live_cameras: list[Any] = []
+
+  def register_live_camera(self, camera: Any) -> Callable[[], None]:
+    """Let popup sessions find a panel camera's live stream by entity id."""
+    if camera not in self._live_cameras:
+      self._live_cameras.append(camera)
+
+    def unregister() -> None:
+      with suppress(ValueError):
+        self._live_cameras.remove(camera)
+
+    return unregister
+
+  def live_camera_stream(self, entity_id: str) -> Any:
+    """Return the open live stream of a registered panel camera, if any."""
+    for camera in self._live_cameras:
+      if getattr(camera, "entity_id", None) != entity_id:
+        continue
+      live = getattr(camera, "live_stream", None)
+      if live is not None and not live.closed:
+        return live
+    return None
 
   async def async_start_tcp_server(self) -> None:
     """Start the LAN-only acknowledged TCP endpoint used by the display."""
@@ -354,14 +397,15 @@ class CameraStreamManager:
       )
 
     first_image: bytes | None = None
+    live: Any = None
     if not source:
       try:
+        # No width/height: Home Assistant would rescale the JPEG on its event
+        # loop for every fetch; FFmpeg scales and crops in its own process.
         image = await async_get_image(
           self.hass,
           entity_id,
           timeout=10,
-          width=width,
-          height=height,
         )
         first_image = bytes(image.content) if image.content else None
       except Exception as err:
@@ -372,7 +416,12 @@ class CameraStreamManager:
         )
       if not first_image:
         raise ValueError("camera_image_unavailable")
-      fps = min(fps, CAMERA_STILL_FPS)
+      live = self.live_camera_stream(entity_id)
+      # A panel camera's live upload runs at its own stream rate; every
+      # other still-image camera is bounded by the adaptive still rate.
+      fps = min(
+        fps, LIVE_STREAM_FPS if live is not None else CAMERA_STILL_MAX_FPS
+      )
 
     await self.async_stop_device(device_id)
     token = secrets.token_urlsafe(24)
@@ -388,6 +437,7 @@ class CameraStreamManager:
       fps=fps,
       expires_at=time.monotonic() + CAMERA_SESSION_TTL_SECONDS,
       stop_event=stop_event,
+      live=live,
     )
     async with self._lock:
       self._drop_expired_sessions_locked()
@@ -679,24 +729,213 @@ class CameraStreamConnection:
     session: CameraStreamSession,
     process: asyncio.subprocess.Process,
   ) -> None:
-    """Feed HA still images to FFmpeg for cameras without stream_source()."""
+    """Feed HA still images to FFmpeg for cameras without stream_source().
+
+    Exactly one image request is in flight at a time. The next one starts as
+    soon as the previous one answers, at most at the session rate (bounded by
+    CAMERA_STILL_MAX_FPS), so a fast camera reaches that rate while a slow
+    one (BambuLab snapshots take seconds) keeps its own pace. Each new image
+    is written once; while a request is pending, the previous frame is
+    repeated every CAMERA_STILL_REPEAT_SECONDS so FFmpeg keeps emitting.
+    """
     if process.stdin is None or session.first_image is None:
       return
 
-    frame = session.first_image
+    # After an FFmpeg restart, resume from the newest still image instead of
+    # the snapshot taken when the popup opened.
+    frame = session.latest_image or session.first_image
+    request_interval = 1.0 / max(1, min(session.fps, CAMERA_STILL_MAX_FPS))
     failures = 0
-    interval = 1.0 / max(1, session.fps)
+    image_task: asyncio.Task | None = None
+    request_started = 0.0
+    next_request_at = time.monotonic()
+    measure_started = next_request_at
+    completed = 0
+    new_frames = 0
+    failed = 0
+    fetch_seconds = 0.0
+    try:
+      while process.returncode is None:
+        process.stdin.write(frame)
+        await process.stdin.drain()
+        repeat_at = time.monotonic() + CAMERA_STILL_REPEAT_SECONDS
+
+        new_frame: bytes | None = None
+        while new_frame is None and process.returncode is None:
+          now = time.monotonic()
+          if image_task is None and now >= next_request_at:
+            request_started = now
+            next_request_at = now + request_interval
+            # Full-size image on purpose, see async_create_session: up to
+            # 10 fetches per second must not rescale on the event loop.
+            image_task = self._manager.hass.async_create_task(
+              async_get_image(
+                self._manager.hass,
+                session.entity_id,
+                timeout=5,
+              ),
+              f"HomeTiles camera refresh {session.entity_id}",
+            )
+          wake_at = (
+            repeat_at
+            if image_task is not None
+            else min(repeat_at, next_request_at)
+          )
+          timeout = wake_at - time.monotonic()
+          if image_task is not None:
+            if timeout > 0:
+              await asyncio.wait((image_task,), timeout=timeout)
+          elif timeout > 0:
+            await asyncio.sleep(timeout)
+
+          if image_task is not None and image_task.done():
+            task, image_task = image_task, None
+            completed += 1
+            fetch_seconds += time.monotonic() - request_started
+            content = b""
+            error: Exception | None = None
+            try:
+              image = task.result()
+              content = bytes(image.content) if image.content else b""
+            except asyncio.CancelledError:
+              raise
+            except Exception as err:
+              error = err
+            if content:
+              failures = 0
+              # An unchanged image is not a new frame; the repeat covers it.
+              if content != frame:
+                new_frame = content
+                new_frames += 1
+            else:
+              failures += 1
+              failed += 1
+              # A camera that fails fast must not exhaust the failure limit
+              # at the full still rate.
+              next_request_at = max(
+                next_request_at,
+                request_started + CAMERA_STILL_RETRY_SECONDS,
+              )
+              _LOGGER.debug(
+                "HomeTiles camera image refresh failed for %s (%d/%d): %s",
+                session.entity_id,
+                failures,
+                CAMERA_IMAGE_FAILURE_LIMIT,
+                error if error is not None else "empty image",
+              )
+            if failures >= CAMERA_IMAGE_FAILURE_LIMIT:
+              _LOGGER.warning(
+                "HomeTiles camera image source stopped responding: %s",
+                session.entity_id,
+              )
+              return
+
+            elapsed = time.monotonic() - measure_started
+            if (
+              not session.still_rate_logged
+              and elapsed >= CAMERA_STREAM_DIAGNOSTIC_INTERVAL_SECONDS
+            ):
+              session.still_rate_logged = True
+              _LOGGER.info(
+                "[CameraDiag] %s still=%.1f fps new=%.1f fps "
+                "fetch=%.1f ms/image failed=%d cap=%d fps",
+                session.entity_id,
+                completed / elapsed,
+                new_frames / elapsed,
+                fetch_seconds * 1000.0 / completed,
+                failed,
+                round(1.0 / request_interval),
+              )
+
+          if time.monotonic() >= repeat_at:
+            break
+
+        if new_frame is not None:
+          frame = new_frame
+          session.latest_image = frame
+    except (BrokenPipeError, ConnectionResetError):
+      pass
+    finally:
+      if image_task:
+        image_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+          await image_task
+      if process.stdin and not process.stdin.is_closing():
+        process.stdin.close()
+        with suppress(BrokenPipeError, ConnectionResetError):
+          await process.stdin.wait_closed()
+
+  def _renew_live_viewer(self, session: CameraStreamSession) -> Any:
+    """Move the popup's viewer lease to a reloaded panel camera's stream.
+
+    session.live always names the stream whose viewer lease this popup
+    holds; the swap is synchronous, so the lease is never lost or doubled.
+    """
+    live = session.live
+    if live is None or not live.closed:
+      return live
+    replacement = self._manager.live_camera_stream(session.entity_id)
+    if replacement is None or replacement is live:
+      return live
+    replacement.acquire()
+    live.release()
+    session.live = replacement
+    _LOGGER.info(
+      "HomeTiles camera popup moved to the reloaded live stream: %s",
+      session.entity_id,
+    )
+    return replacement
+
+  async def _async_feed_live_frames(
+    self,
+    session: CameraStreamSession,
+    process: asyncio.subprocess.Process,
+  ) -> None:
+    """Feed another HomeTiles panel's live camera upload to FFmpeg.
+
+    Each new live frame is written once, at most at the session cadence.
+    Until the first live frame arrives, or while the upload pauses, the
+    previous frame is repeated every CAMERA_STILL_REPEAT_SECONDS so FFmpeg
+    keeps emitting. After LIVE_FRAME_WAIT_S without a live frame, snapshots are
+    fetched in the background like for any still-image camera.
+    """
+    live = session.live
+    if process.stdin is None or session.first_image is None or live is None:
+      return
+
+    # After an FFmpeg restart, resume from the newest fresh live frame, or
+    # the newest frame already fed, instead of the snapshot taken when the
+    # popup opened.
+    frame = live.latest() or session.latest_image or session.first_image
+    frame_interval = 1.0 / max(1, session.fps)
+    idle_interval = CAMERA_STILL_REPEAT_SECONDS
+    last_live_at = time.monotonic()
+    failures = 0
     image_task: asyncio.Task | None = None
     try:
       while process.returncode is None:
         process.stdin.write(frame)
         await process.stdin.drain()
+        written_at = time.monotonic()
 
-        # BambuLab snapshot retrieval can take several seconds. Keep feeding
-        # the latest good JPEG at the requested cadence while the next image
-        # is fetched in parallel; otherwise FFmpeg receives only one frame and
-        # cannot emit a JPEG video frame before the display starts waiting.
-        if image_task is None:
+        live_frame: bytes | None = None
+        if live.closed:
+          # A reloaded panel camera entity provides a new live stream.
+          live = self._renew_live_viewer(session)
+        if live.closed:
+          await asyncio.sleep(idle_interval)
+        else:
+          # Wakes on the next upload and is bounded, so it never blocks.
+          live_frame = await live.async_next_frame(frame, idle_interval)
+        if live_frame is not None:
+          frame = live_frame
+          session.latest_image = frame
+          last_live_at = time.monotonic()
+          failures = 0
+        elif (
+          image_task is None
+          and time.monotonic() - last_live_at >= LIVE_FRAME_WAIT_S
+        ):
           image_task = self._manager.hass.async_create_task(
             async_get_image(
               self._manager.hass,
@@ -707,19 +946,26 @@ class CameraStreamConnection:
             ),
             f"HomeTiles camera refresh {session.entity_id}",
           )
-        await asyncio.sleep(interval)
-        if image_task.done():
+
+        if image_task is not None and image_task.done():
+          task, image_task = image_task, None
+          # Live frames resumed meanwhile win over a late snapshot, and a
+          # late snapshot failure does not count against them.
+          live_paused = time.monotonic() - last_live_at >= LIVE_FRAME_WAIT_S
           try:
-            image = image_task.result()
-            if image.content:
+            image = task.result()
+            if not image.content:
+              if live_paused:
+                failures += 1
+            elif live_paused:
               frame = bytes(image.content)
+              session.latest_image = frame
               failures = 0
-            else:
-              failures += 1
           except asyncio.CancelledError:
             raise
           except Exception as err:
-            failures += 1
+            if live_paused:
+              failures += 1
             _LOGGER.debug(
               "HomeTiles camera image refresh failed for %s (%d/%d): %s",
               session.entity_id,
@@ -727,14 +973,16 @@ class CameraStreamConnection:
               CAMERA_IMAGE_FAILURE_LIMIT,
               err,
             )
-          finally:
-            image_task = None
         if failures >= CAMERA_IMAGE_FAILURE_LIMIT:
           _LOGGER.warning(
             "HomeTiles camera image source stopped responding: %s",
             session.entity_id,
           )
           break
+
+        remaining = frame_interval - (time.monotonic() - written_at)
+        if remaining > 0:
+          await asyncio.sleep(remaining)
     except (BrokenPipeError, ConnectionResetError):
       pass
     finally:
@@ -814,9 +1062,11 @@ class CameraStreamConnection:
     ffmpeg_binary = get_ffmpeg_manager(self._manager.hass).binary
     command = [ffmpeg_binary, "-hide_banner", "-loglevel", "warning"]
     image_mode = session.source is None
+    live = session.live if image_mode else None
+    # A live panel upload is video, so it uses the direct-stream JPEG budget.
     jpeg_quality = (
       CAMERA_STILL_JPEG_QUALITY
-      if image_mode
+      if image_mode and live is None
       else CAMERA_STREAM_JPEG_QUALITY
     )
     if image_mode:
@@ -882,12 +1132,16 @@ class CameraStreamConnection:
     sent_frame_once = False
     sequence = 0
     diagnostics = CameraStreamDiagnostics(session.entity_id)
+    if live is not None:
+      # The popup is a live viewer for exactly this stream's lifetime; the
+      # outer finally releases it on every exit path.
+      live.acquire()
     try:
       _LOGGER.info(
         "HomeTiles camera acknowledged TCP client connected "
         "(%s, mode=%s, fps=%d, chunk=%d, jpeg_q=%d)",
         session.entity_id,
-        "image" if image_mode else "stream",
+        "live" if live is not None else "image" if image_mode else "stream",
         session.fps,
         CAMERA_STREAM_CHUNK_BYTES,
         jpeg_quality,
@@ -925,7 +1179,12 @@ class CameraStreamConnection:
             self._async_log_ffmpeg_stderr(session, process, image_mode),
             f"HomeTiles camera FFmpeg log {session.entity_id}",
           )
-          if image_mode:
+          if live is not None:
+            feeder = self._manager.hass.async_create_task(
+              self._async_feed_live_frames(session, process),
+              f"HomeTiles camera live frames {session.entity_id}",
+            )
+          elif image_mode:
             feeder = self._manager.hass.async_create_task(
               self._async_feed_camera_images(session, process),
               f"HomeTiles camera images {session.entity_id}",
@@ -1050,6 +1309,10 @@ class CameraStreamConnection:
         sent,
       )
     finally:
+      if live is not None:
+        # session.live is the stream currently leased; the feeder may have
+        # moved the lease to a reloaded panel camera's stream.
+        session.live.release()
       diagnostics.maybe_log(force=True)
       session.stop_event.set()
       await self._manager.async_forget_stop_event(
