@@ -73,7 +73,7 @@ class LocalCameraContractTest(unittest.TestCase):
         status = LC.parse_status(json.dumps(ready), CONST.LOCAL_CAMERA_MAX_BYTES)
         self.assertEqual(status, {"state": "ready", "width": 1280, "height": 720,
                                   "max_bytes": 131072, "min_interval_s": 1.0, "sensor": "ov02c10",
-                                  "paused": False, "ended": None})
+                                  "paused": False, "ended": None, "rotate": 0})
         self.assertEqual(LC.parse_status(json.dumps(ready).encode(), 262144)["state"], "ready")
         # The Bridge cap bounds what a panel may send.
         self.assertEqual(LC.parse_status(json.dumps(dict(ready, max_bytes=1_000_000)), 262144)["max_bytes"], 262144)
@@ -91,6 +91,20 @@ class LocalCameraContractTest(unittest.TestCase):
             self.assertIsNone(LC.parse_status(json.dumps(bad), 262144), bad)
         for raw in ["", "not json", "[]", "null", b"\xff\xfe", "{" + " " * 2000 + "}", 5]:
             self.assertIsNone(LC.parse_status(raw, 262144), raw)
+
+    def test_rotate_status_is_additive(self):
+        # A panel whose camera is mounted sideways (Waveshare 8-inch) sends
+        # portrait JPEGs and the clockwise turn; older firmware sends nothing.
+        base = {"v": 1, "state": "ready", "width": 544, "height": 960}
+        self.assertEqual(LC.parse_status(json.dumps(dict(base, rotate=90)), 262144)["rotate"], 90)
+        self.assertEqual(LC.parse_status(json.dumps(base), 262144)["rotate"], 0)
+        for value in (270, 180):
+            self.assertEqual(LC.parse_status(json.dumps(dict(base, rotate=value)), 262144)["rotate"], value)
+        # Anything else means no turn, never a rejected status.
+        for bad in (45, -90, 90.0, "90", True, None, [90]):
+            status = LC.parse_status(json.dumps(dict(base, rotate=bad)), 262144)
+            self.assertIsNotNone(status, bad)
+            self.assertEqual(status["rotate"], 0, bad)
 
     def test_paused_status_is_additive_and_strict(self):
         ready = {"v": 1, "state": "ready", "width": 1280, "height": 720}

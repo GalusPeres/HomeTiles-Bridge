@@ -33,6 +33,7 @@ from .const import (
     LOCAL_CAMERA_WARNING_INTERVAL_S,
 )
 from .device_helpers import entry_base_topic, entry_device_id, entry_device_info, state_topic
+from .jpeg_rotate import rotate_jpeg
 from .local_camera import (
     LocalCameraSnapshots,
     RateLimitedWarnings,
@@ -113,7 +114,12 @@ class HomeTilesLocalCamera(Camera):
                 registry=self._upload_registry,
                 ready=self._live_ready,
                 log_name=base_topic,
+                transform=self._turn_live_frame,
             )
+        # Last turned image, so cached snapshots are not turned again.
+        self._turn_source: bytes | None = None
+        self._turn_result: bytes | None = None
+        self._turn_degrees = 0
 
     def _paused(self) -> bool:
         return self._status is not None and self._status["paused"]
@@ -151,7 +157,33 @@ class HomeTilesLocalCamera(Camera):
         for key in ("width", "height", "sensor", "error"):
             if key in self._status:
                 attributes[key] = self._status[key]
+        if self._rotation() in (90, 270) and "width" in attributes and "height" in attributes:
+            # The picture Home Assistant shows is the turned JPEG.
+            attributes["width"], attributes["height"] = attributes["height"], attributes["width"]
         return attributes
+
+    def _rotation(self) -> int:
+        return self._status.get("rotate", 0) if self._status is not None else 0
+
+    def _turn_live_frame(self, jpeg: bytes):
+        """Awaitable turned frame for the live stream, or None without a turn."""
+        return self._async_turn(jpeg) if self._rotation() else None
+
+    async def _async_turn(self, image: bytes | None) -> bytes | None:
+        """Turn a panel JPEG as its status asks (camera mounted sideways)."""
+        degrees = self._rotation()
+        if image is None or degrees == 0:
+            return image
+        if image is self._turn_source and degrees == self._turn_degrees:
+            return self._turn_result
+        turned = await self.hass.async_add_executor_job(rotate_jpeg, image, degrees)
+        if turned is None:
+            self._warn("rotate_failed",
+                       "HomeTiles local camera frame of %s could not be turned by %d degrees",
+                       self._base, degrees)
+            return image
+        self._turn_source, self._turn_result, self._turn_degrees = image, turned, degrees
+        return turned
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -350,15 +382,19 @@ class HomeTilesLocalCamera(Camera):
             # Paused by the user: fail fast, never ask the panel for a frame
             # and never serve one captured before the pause.
             return None
+        # Live frames are turned on arrival; stills from the snapshot cache
+        # are turned here (the last result is reused for the same image).
         if self._live is not None and self._live.ended:
             # The panel ended the live view on its display: keep its last
             # frame and never ask the panel for new stills until the camera
             # is opened again (a new session).
-            return self._live.ended_frame or self._snapshots.fallback(monotonic())
+            if self._live.ended_frame is not None:
+                return self._live.ended_frame
+            return await self._async_turn(self._snapshots.fallback(monotonic()))
         if self._live is not None and (frame := self._live.latest(LIVE_FRAME_FRESH_S)) is not None:
             return frame
         if not self.available or not mqtt.is_connected(self.hass):
-            return self._snapshots.fallback(monotonic())
+            return await self._async_turn(self._snapshots.fallback(monotonic()))
         image, failure = await self._snapshots.async_fetch(
             self._async_publish_request,
             max_bytes=self._request_max_bytes(),
@@ -371,4 +407,4 @@ class HomeTilesLocalCamera(Camera):
                        "HomeTiles local camera snapshot failed for %s: %s%s",
                        self._base, failure,
                        " (serving cached frame)" if image is not None else "")
-        return image
+        return await self._async_turn(image)

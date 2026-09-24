@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import importlib
 import json
 import logging
@@ -217,6 +218,25 @@ class UploadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await panel.closed(), b"")
         self.assertFalse(self.registry.is_connected(SESSION))
         self.assertTrue(self.registry.is_registered(SESSION))
+
+    async def test_async_frame_handler_is_awaited_in_order(self):
+        # A frame that is turned first (camera mounted sideways) finishes
+        # before the next frame is read, so the order never changes.
+        async def slow_append(frame):
+            await asyncio.sleep(0.02 if frame is first else 0)
+            self.frames.append(frame)
+
+        first, second = jpeg(300), jpeg(400)
+        self.registry.register(SESSION, TOKEN, slow_append)
+        panel = await self.panel()
+        await panel.hello()
+        await panel.send_frame(1, first)
+        await panel.send_frame(2, second)
+        for _ in range(50):
+            if len(self.frames) == 2:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(self.frames, [first, second])
 
     async def test_no_second_chunk_is_read_before_its_ack(self):
         self.register()
@@ -634,6 +654,56 @@ class LiveCameraEntityTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(camera._live.running)
         self.assertEqual(self.mqtt.published[-1][1],
                          {"v": 1, "action": "stream_stop", "session": session})
+
+    async def test_sideways_panel_turns_live_frames_and_stills(self):
+        # Waveshare 8-inch: portrait 544x960 JPEGs with "rotate": 90; Home
+        # Assistant sees 960x544 frames, stills and attributes.
+        from test_jpeg_rotate import Image, is_red, open_jpeg, portrait_jpeg
+        if Image is None:
+            self.skipTest("Pillow is required")
+        camera = await self.start({"local_camera": True, "local_camera_stream": True})
+        loop = asyncio.get_running_loop()
+        camera.hass.async_add_executor_job = lambda func, *args: loop.run_in_executor(None, func, *args)
+        handler, _ = self.mqtt.subscriptions[f"{BASE}/stat/local_camera"]
+        await handler(message(f"{BASE}/stat/local_camera",
+                              json.dumps(dict(READY, width=544, height=960, rotate=90))))
+        attributes = camera.extra_state_attributes
+        self.assertEqual((attributes["width"], attributes["height"]), (960, 544))
+
+        camera._live._keepalive_s = 0.05
+        request = types.SimpleNamespace(images=[], closed=lambda: False)
+        viewer = asyncio.create_task(camera.handle_async_mjpeg_stream(request))
+        await asyncio.sleep(0.02)
+        session = self.mqtt.published[0][1]["session"]
+        _token, on_frame = self.registry.sessions[session]
+        source = portrait_jpeg()
+        pending = on_frame(source)
+        self.assertIsNotNone(pending, "A turned frame is awaited by the upload")
+        await pending
+        turned = camera._live.latest()
+        self.assertIsNotNone(turned)
+        image = open_jpeg(turned)
+        self.assertEqual(image.size, (960, 544))
+        self.assertTrue(is_red(image.getpixel((960 - 40, 40))))
+        self.assertIs(await camera.async_camera_image(), turned)
+        viewer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await viewer
+
+        # Stills from the snapshot cache are turned once and reused.
+        calls = []
+        real = camera.hass.async_add_executor_job
+        camera.hass.async_add_executor_job = lambda func, *args: (calls.append(1), real(func, *args))[1]
+        still = portrait_jpeg()  # A new object: not the live frame turned above.
+        first = await camera._async_turn(still)
+        self.assertIs(await camera._async_turn(still), first)
+        self.assertEqual(len(calls), 1)
+
+    async def test_upright_panel_frames_stay_untouched(self):
+        camera = await self.start({"local_camera": True, "local_camera_stream": True})
+        self.assertIsNone(camera._turn_live_frame(jpeg(50)))
+        frame = jpeg(60)
+        self.assertIs(await camera._async_turn(frame), frame)
 
     async def test_offline_panel_suspends_the_stream(self):
         camera = await self.start({"local_camera": True, "local_camera_stream": True})

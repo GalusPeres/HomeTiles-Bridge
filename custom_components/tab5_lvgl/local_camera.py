@@ -11,7 +11,8 @@ MQTT contract (base = the panel base topic):
 - ``{base}/stat/local_camera``: panel to Bridge, retained JSON status. While
   the user paused the camera it reports ``"state": "disabled"`` together
   with ``"paused": true``; the field is absent otherwise and on firmware
-  without the pause switch.
+  without the pause switch. A panel whose camera is mounted sideways adds
+  ``"rotate": 90``: its JPEGs arrive portrait and the Bridge turns them.
 - ``{base}/stat/local_camera/image/<id>``: panel to Bridge, raw JPEG bytes.
 - ``{base}/stat/local_camera/error/<id>``: panel to Bridge, JSON error.
 """
@@ -53,6 +54,8 @@ LOCAL_CAMERA_MAX_ANNOUNCED_BYTES = 16 * 1024 * 1024
 LOCAL_CAMERA_STATUS_MAX_PAYLOAD = 1024
 LOCAL_CAMERA_ERROR_MAX_PAYLOAD = 256
 LOCAL_CAMERA_MIN_JPEG_BYTES = 4
+# Clockwise turns a panel may announce for its JPEGs.
+LOCAL_CAMERA_ROTATIONS = frozenset({0, 90, 180, 270})
 
 _REQUEST_ID_RE = re.compile(r"^[0-9a-f]{16,32}$")
 _TOKEN_RE = re.compile(r"^[a-z0-9_.-]{1,32}$")
@@ -233,6 +236,11 @@ def parse_status(payload: Any, bridge_max_bytes: int) -> dict[str, Any] | None:
     # display (tap on the camera indicator). Anything malformed is ignored.
     ended = data.get("ended")
     result["ended"] = ended if isinstance(ended, str) and _SESSION_ID_RE.fullmatch(ended) else None
+    # Additive field: a panel whose camera is mounted a quarter turn from its
+    # landscape UI sends portrait JPEGs (width/height as sent) and the
+    # clockwise turn the Bridge applies. Anything else means no turn.
+    rotate = data.get("rotate", 0)
+    result["rotate"] = rotate if type(rotate) is int and rotate in LOCAL_CAMERA_ROTATIONS else 0
     return result
 
 

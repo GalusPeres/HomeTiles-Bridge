@@ -63,6 +63,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+import inspect
 import ipaddress
 import logging
 import re
@@ -235,7 +236,9 @@ class _UploadConnection:
 @dataclass(slots=True)
 class _UploadSession:
     token: str
-    on_frame: Callable[[bytes], None]
+    # May return an awaitable (a frame that is turned first); the upload waits
+    # for it before reading the next frame, so frames stay in order.
+    on_frame: Callable[[bytes], Awaitable[None] | None]
     expires_at: float
     connection: _UploadConnection | None = None
 
@@ -250,7 +253,8 @@ class LocalCameraUploadRegistry:
         self._sessions: dict[str, _UploadSession] = {}
         self._warnings = RateLimitedWarnings(WARNING_INTERVAL_S)
 
-    def register(self, session: str, token: str, on_frame: Callable[[bytes], None]) -> None:
+    def register(self, session: str, token: str,
+                 on_frame: Callable[[bytes], Awaitable[None] | None]) -> None:
         if not valid_session_id(session) or not valid_token(token):
             raise ValueError("invalid_stream_session")
         self.revoke(session)
@@ -347,7 +351,9 @@ class LocalCameraUploadRegistry:
                 if self._sessions.get(session) is not entry:
                     break
                 frames += 1
-                entry.on_frame(jpeg)
+                result = entry.on_frame(jpeg)
+                if inspect.isawaitable(result):
+                    await result
         except UploadViolation as err:
             self._warn(str(err), "HomeTiles local camera stream upload closed for %s: %s", peer, err)
         except (asyncio.IncompleteReadError, ConnectionError, asyncio.TimeoutError):
@@ -429,8 +435,13 @@ class LocalCameraLiveStream:
         grace_s: float = STOP_GRACE_S,
         session_factory: Callable[[], str] = new_session_id,
         token_factory: Callable[[], str] = new_token,
+        transform: Callable[[bytes], Awaitable[bytes] | None] | None = None,
     ) -> None:
         self._publish = publish
+        # Turns uploaded frames before viewers see them (a panel whose camera
+        # is mounted sideways): returns an awaitable turned frame, or None
+        # when the frame stays as it arrived.
+        self._transform = transform
         self._endpoint = endpoint
         self._registry = registry
         self._ready = ready
@@ -495,6 +506,26 @@ class LocalCameraLiveStream:
             _LOGGER.warning(message, *args)
 
     # Frames ------------------------------------------------------------
+
+    def _on_upload_frame(self, jpeg: bytes) -> Awaitable[None] | None:
+        """Frame from the upload; turned first when the panel asks for it.
+
+        Without a turn the frame is stored at once, exactly as before.
+        """
+        pending = self._transform(jpeg) if self._transform is not None else None
+        if pending is None:
+            self._on_frame(jpeg)
+            return None
+        return self._async_transformed_frame(pending, jpeg)
+
+    async def _async_transformed_frame(self, pending: Awaitable[bytes], jpeg: bytes) -> None:
+        try:
+            frame = await pending
+        except Exception as err:  # noqa: BLE001 - keep the stream running
+            self._warn("transform_failed", "HomeTiles local camera frame turn failed for %s: %s",
+                       self._log_name, err)
+            frame = jpeg
+        self._on_frame(frame if frame is not None else jpeg)
 
     def _on_frame(self, jpeg: bytes) -> None:
         self._frame = jpeg
@@ -643,7 +674,7 @@ class LocalCameraLiveStream:
                        self._log_name)
             return None
         request = build_stream_request(session, endpoint[0], endpoint[1], token)
-        registry.register(session, token, self._on_frame)
+        registry.register(session, token, self._on_upload_frame)
         return request
 
     async def _async_run(self) -> None:
