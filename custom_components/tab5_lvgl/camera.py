@@ -3,6 +3,9 @@
 Still images use MQTT snapshots (local_camera.py). Panels that announce
 ``local_camera_stream`` additionally deliver a live JPEG stream over the
 acknowledged TCP upload described in local_camera_stream.py.
+
+While the user pauses the camera (switch.py) the entity stays registered and
+available but serves no images and requests neither snapshots nor a stream.
 """
 
 from __future__ import annotations
@@ -110,12 +113,29 @@ class HomeTilesLocalCamera(Camera):
                 log_name=base_topic,
             )
 
-    def _refresh_available(self) -> None:
-        self._attr_available = (
+    def _paused(self) -> bool:
+        return self._status is not None and self._status["paused"]
+
+    def _capturing(self) -> bool:
+        """Whether the panel can deliver images now (ready and not paused)."""
+        return (
             self._panel_online is not False
             and self._status is not None
             and self._status["state"] == "ready"
+            and not self._status["paused"]
         )
+
+    def _refresh_available(self) -> None:
+        # A paused camera stays available: the pause switch is a user choice,
+        # not a fault, and the entity must not look broken or disappear.
+        self._attr_available = (
+            self._panel_online is not False
+            and self._status is not None
+            and (self._status["state"] == "ready" or self._status["paused"])
+        )
+        # Home Assistant rejects image and stream requests for a camera that
+        # is off before calling the entity, so a paused camera is not asked.
+        self._attr_is_on = not self._paused()
 
     def _warn(self, reason: str, message: str, *args) -> None:
         if self._warnings.allow(reason, monotonic()):
@@ -146,7 +166,8 @@ class HomeTilesLocalCamera(Camera):
                                self._base)
                     return
                 self._status = status
-            if self._status is None or self._status["state"] != "ready":
+            if (self._status is None or self._status["state"] != "ready"
+                    or self._status["paused"]):
                 self._snapshots.fail_all("not_ready")
             self._refresh_available()
             self._poke_live()
@@ -233,7 +254,9 @@ class HomeTilesLocalCamera(Camera):
         self._poke_live()
 
     def _live_ready(self) -> bool:
-        return self.available and mqtt.is_connected(self.hass)
+        # Not ready while paused: the stream loop then suspends and sends
+        # neither stream nor keepalive requests until the user resumes.
+        return self._capturing() and mqtt.is_connected(self.hass)
 
     def _domain_data(self) -> dict:
         data = getattr(self.hass, "data", None)
@@ -273,10 +296,11 @@ class HomeTilesLocalCamera(Camera):
         async def next_image() -> bytes | None:
             # Returning None ends the multipart response.
             nonlocal last, misses
-            if live.closed:
+            # A pause ends the view instead of freezing the last frame.
+            if live.closed or self._paused():
                 return None
             image = await live.async_next_frame(last, LIVE_FRAME_WAIT_S)
-            if live.closed:
+            if live.closed or self._paused():
                 return None
             if image is not None:
                 misses = 0
@@ -313,6 +337,10 @@ class HomeTilesLocalCamera(Camera):
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
         # width/height are ignored: Home Assistant rescales the JPEG itself.
+        if self._paused():
+            # Paused by the user: fail fast, never ask the panel for a frame
+            # and never serve one captured before the pause.
+            return None
         if self._live is not None and (frame := self._live.latest(LIVE_FRAME_FRESH_S)) is not None:
             return frame
         if not self.available or not mqtt.is_connected(self.hass):

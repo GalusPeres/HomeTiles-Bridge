@@ -103,6 +103,11 @@
       "view": {
         "name": "View"
       }
+    },
+    "switch": {
+      "local_camera": {
+        "name": "Camera"
+      }
     }
   },
   "exceptions": {

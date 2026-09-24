@@ -652,9 +652,11 @@ def _remove_stale_local_io_entities(hass: HomeAssistant, entry: ConfigEntry) -> 
       stale.append(entity.entity_id)
     elif "_local_io_" in unique_id and unique_id not in expected:
       stale.append(entity.entity_id)
-    elif entity.domain == "camera" and stale_local_camera(unique_id, merged):
+    elif (entity.domain in ("camera", "switch") and "_local_io_" not in unique_id
+          and stale_local_camera(unique_id, merged)):
       # The panel withdrew its own camera (opt-in off, sensor missing or
       # older firmware); a registry orphan would stay unavailable forever.
+      # The camera's pause switch shares the camera's unique ID suffix.
       stale.append(entity.entity_id)
     elif local_io_announced and (
       unique_id == legacy_temperature_id

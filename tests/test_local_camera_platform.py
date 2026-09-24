@@ -263,6 +263,54 @@ class LocalCameraPlatformTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await task)
         self.assertFalse(camera.available)
 
+    async def test_paused_camera_stays_available_and_never_asks_the_panel(self):
+        camera = await self.start()
+        status_topic = f"{BASE}/stat/local_camera"
+        await self.deliver(status_topic, status_topic, json.dumps(dict(READY, min_interval_ms=0)))
+        task = asyncio.create_task(camera.async_camera_image())
+        await asyncio.sleep(0.01)
+        [(_topic, request, _qos, _retain)] = self.mqtt.published
+        await self.deliver(f"{BASE}/stat/local_camera/image/+",
+                           f"{BASE}/stat/local_camera/image/{request['id']}", JPEG)
+        self.assertEqual(await task, JPEG)
+        # Older than the fresh-cache window, still within the stale fallback.
+        camera._snapshots._image_at -= 10
+        camera._snapshots._last_request_at = None
+        pending = asyncio.create_task(camera.async_camera_image())
+        await asyncio.sleep(0.01)
+        self.assertEqual(len(self.mqtt.published), 2)
+        # The pause releases a pending request quietly and keeps the entity.
+        with self.assertNoLogs(self.module._LOGGER, "WARNING"):
+            await self.deliver(status_topic, status_topic, '{"v":1,"state":"disabled","paused":true}')
+            await pending
+        self.assertTrue(camera.available)
+        self.assertIs(camera._attr_is_on, False)
+        self.assertEqual(camera.extra_state_attributes, {"panel_camera_state": "disabled"})
+        # Fails fast: no snapshot request and no frame captured before the pause.
+        self.assertIsNone(await camera.async_camera_image())
+        self.assertEqual(len(self.mqtt.published), 2)
+        await self.deliver(f"{BASE}/stat/connected", f"{BASE}/stat/connected", "0")
+        self.assertFalse(camera.available)
+        await self.deliver(f"{BASE}/stat/connected", f"{BASE}/stat/connected", "1")
+        self.assertTrue(camera.available)
+        self.assertIsNone(await camera.async_camera_image())
+        self.assertEqual(len(self.mqtt.published), 2)
+        # Resuming restores snapshots.
+        await self.deliver(status_topic, status_topic, json.dumps(dict(READY, min_interval_ms=0)))
+        self.assertTrue(camera.available)
+        self.assertIs(camera._attr_is_on, True)
+        camera._snapshots._last_request_at = None
+        camera._snapshots._image = None
+        task = asyncio.create_task(camera.async_camera_image())
+        await asyncio.sleep(0.01)
+        self.assertEqual(len(self.mqtt.published), 3)
+        self.assertEqual(self.mqtt.published[-1][1]["op"], "snapshot")
+        # A disabled camera that is not paused stays unavailable as before.
+        await self.deliver(status_topic, status_topic, '{"v":1,"state":"disabled"}')
+        self.assertIsNone(await task)
+        self.assertFalse(camera.available)
+        self.assertIs(camera._attr_is_on, True)
+
     async def test_disconnected_broker_sends_nothing(self):
         camera = await self.start()
         await self.deliver(f"{BASE}/stat/local_camera", f"{BASE}/stat/local_camera", json.dumps(READY))

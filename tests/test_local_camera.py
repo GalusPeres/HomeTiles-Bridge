@@ -72,7 +72,8 @@ class LocalCameraContractTest(unittest.TestCase):
                  "max_bytes": 131072, "min_interval_ms": 1000, "sensor": "ov02c10"}
         status = LC.parse_status(json.dumps(ready), CONST.LOCAL_CAMERA_MAX_BYTES)
         self.assertEqual(status, {"state": "ready", "width": 1280, "height": 720,
-                                  "max_bytes": 131072, "min_interval_s": 1.0, "sensor": "ov02c10"})
+                                  "max_bytes": 131072, "min_interval_s": 1.0, "sensor": "ov02c10",
+                                  "paused": False})
         self.assertEqual(LC.parse_status(json.dumps(ready).encode(), 262144)["state"], "ready")
         # The Bridge cap bounds what a panel may send.
         self.assertEqual(LC.parse_status(json.dumps(dict(ready, max_bytes=1_000_000)), 262144)["max_bytes"], 262144)
@@ -90,6 +91,42 @@ class LocalCameraContractTest(unittest.TestCase):
             self.assertIsNone(LC.parse_status(json.dumps(bad), 262144), bad)
         for raw in ["", "not json", "[]", "null", b"\xff\xfe", "{" + " " * 2000 + "}", 5]:
             self.assertIsNone(LC.parse_status(raw, 262144), raw)
+
+    def test_paused_status_is_additive_and_strict(self):
+        ready = {"v": 1, "state": "ready", "width": 1280, "height": 720}
+        # Firmware without the pause switch never sends the field.
+        self.assertIs(LC.parse_status(json.dumps(ready), 262144)["paused"], False)
+        self.assertIs(LC.parse_status('{"v":1,"state":"disabled"}', 262144)["paused"], False)
+        self.assertIs(LC.parse_status(json.dumps(dict(ready, paused=False)), 262144)["paused"], False)
+        paused = LC.parse_status('{"v":1,"state":"disabled","paused":true}', 262144)
+        self.assertEqual((paused["state"], paused["paused"]), ("disabled", True))
+        self.assertIs(LC.parse_status(b'{"v":1,"state":"disabled","paused":true}', 262144)["paused"], True)
+        for bad in ["true", 1, 0, None, [], {}]:
+            payload = json.dumps({"v": 1, "state": "disabled", "paused": bad})
+            self.assertIsNone(LC.parse_status(payload, 262144), bad)
+
+    def test_pause_commands_and_switch_state(self):
+        self.assertEqual(LC.build_pause_request(True), {"v": 1, "action": "pause"})
+        self.assertEqual(LC.build_pause_request(False), {"v": 1, "action": "resume"})
+        self.assertEqual(json.dumps(LC.build_pause_request(True), separators=(",", ":")),
+                         '{"v":1,"action":"pause"}')
+        self.assertEqual(json.dumps(LC.build_pause_request(False), separators=(",", ":")),
+                         '{"v":1,"action":"resume"}')
+
+        def status(raw):
+            return LC.parse_status(raw, 262144)
+
+        ready = status('{"v":1,"state":"ready","width":2,"height":2}')
+        paused = status('{"v":1,"state":"disabled","paused":true}')
+        errored = status('{"v":1,"state":"error","error":"sensor_unavailable"}')
+        disabled = status('{"v":1,"state":"disabled"}')
+        for previous in (None, True, False):
+            self.assertIsNone(LC.camera_allowed(None, previous))
+            self.assertIs(LC.camera_allowed(paused, previous), False)
+            self.assertIs(LC.camera_allowed(ready, previous), True)
+            # An error or a Web Admin disable says nothing about the pause.
+            self.assertIs(LC.camera_allowed(errored, previous), previous)
+            self.assertIs(LC.camera_allowed(disabled, previous), previous)
 
     def test_error_and_connected_parsing(self):
         for code in ["busy", "disabled", "sensor_unavailable", "encoder_busy", "too_large", "rate_limited"]:

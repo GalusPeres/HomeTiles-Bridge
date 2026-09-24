@@ -5,8 +5,13 @@ validation and topic contract can be tested without a Home Assistant install.
 
 MQTT contract (base = the panel base topic):
 - ``{base}/cmnd/local_camera``: Bridge to panel, not retained, JSON request
-  ``{"v": 1, "id": "<hex>", "op": "snapshot", "max_bytes": N}``.
-- ``{base}/stat/local_camera``: panel to Bridge, retained JSON status.
+  ``{"v": 1, "id": "<hex>", "op": "snapshot", "max_bytes": N}``, or the
+  user's pause switch ``{"v": 1, "action": "pause"}`` /
+  ``{"v": 1, "action": "resume"}``.
+- ``{base}/stat/local_camera``: panel to Bridge, retained JSON status. While
+  the user paused the camera it reports ``"state": "disabled"`` together
+  with ``"paused": true``; the field is absent otherwise and on firmware
+  without the pause switch.
 - ``{base}/stat/local_camera/image/<id>``: panel to Bridge, raw JPEG bytes.
 - ``{base}/stat/local_camera/error/<id>``: panel to Bridge, JSON error.
 """
@@ -24,6 +29,8 @@ from typing import Any
 LOCAL_CAMERA_LEAF = "local_camera"
 LOCAL_CAMERA_PROTOCOL_VERSION = 1
 LOCAL_CAMERA_OP_SNAPSHOT = "snapshot"
+LOCAL_CAMERA_ACTION_PAUSE = "pause"
+LOCAL_CAMERA_ACTION_RESUME = "resume"
 LOCAL_CAMERA_UNIQUE_ID_SUFFIX = "_local_camera"
 
 LOCAL_CAMERA_STATES = frozenset({"ready", "disabled", "error"})
@@ -128,6 +135,14 @@ def build_request(request_id: str, max_bytes: int) -> dict[str, Any]:
     }
 
 
+def build_pause_request(paused: bool) -> dict[str, Any]:
+    """Return the command that pauses (True) or resumes (False) the camera."""
+    return {
+        "v": LOCAL_CAMERA_PROTOCOL_VERSION,
+        "action": LOCAL_CAMERA_ACTION_PAUSE if paused else LOCAL_CAMERA_ACTION_RESUME,
+    }
+
+
 # --- Payload parsing --------------------------------------------------------
 
 def valid_jpeg(payload: Any, max_bytes: int) -> bool:
@@ -207,7 +222,28 @@ def parse_status(payload: Any, bridge_max_bytes: int) -> dict[str, Any] | None:
         result["sensor"] = sensor
     if (error := _optional_token(data.get("error"))) is not None:
         result["error"] = error
+    # Additive field: older firmware never sends it, so absent means false.
+    paused = data.get("paused", False)
+    if type(paused) is not bool:
+        return None
+    result["paused"] = paused
     return result
+
+
+def camera_allowed(status: dict[str, Any] | None, previous: bool | None) -> bool | None:
+    """Return the pause switch state (True = capture allowed) for a status.
+
+    ``None`` means unknown: no status yet, or the panel cleared it. An error
+    or a disabled camera that the user did not pause says nothing about the
+    pause switch, so the last known state is kept.
+    """
+    if status is None:
+        return None
+    if status["paused"]:
+        return False
+    if status["state"] == "ready":
+        return True
+    return previous
 
 
 def parse_error(payload: Any) -> str:

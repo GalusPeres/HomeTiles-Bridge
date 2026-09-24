@@ -596,6 +596,54 @@ class LiveCameraEntityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.mqtt.published), count)
         camera._live.release()
 
+    async def test_pause_suspends_the_stream_without_any_request(self):
+        camera = await self.start({"local_camera": True, "local_camera_stream": True})
+        camera._live._keepalive_s = 0.02
+        camera._live.acquire()
+        await asyncio.sleep(0.01)
+        session = self.mqtt.published[-1][1]["session"]
+        count = len(self.mqtt.published)
+        status, _ = self.mqtt.subscriptions[f"{BASE}/stat/local_camera"]
+        await status(message(f"{BASE}/stat/local_camera", '{"v":1,"state":"disabled","paused":true}'))
+        # Several keepalive intervals pass: no keepalive, no stop, no snapshot.
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.registry.revoked, [session])
+        self.assertEqual(len(self.mqtt.published), count)
+        self.assertTrue(camera.available)
+        # A still-image request ignores even a fresh live frame while paused.
+        camera._live._on_frame(jpeg(40))
+        self.assertIsNone(await camera.async_camera_image())
+        # A new MJPEG viewer ends at once instead of freezing a frame.
+        request, task = self.viewer(camera)
+        self.assertEqual(await asyncio.wait_for(task, 0.5), "response")
+        self.assertEqual(request.images, [])
+        self.assertEqual(len(self.mqtt.published), count)
+        # Resuming restarts the stream for the viewer that is still there.
+        await status(message(f"{BASE}/stat/local_camera", json.dumps(READY)))
+        await asyncio.sleep(0.01)
+        self.assertEqual(len(self.mqtt.published), count + 1)
+        self.assertEqual(self.mqtt.published[-1][1]["action"], "stream")
+        self.assertIn(session, self.registry.sessions)
+        camera._live.release()
+
+    async def test_pause_ends_open_mjpeg_viewers(self):
+        camera = await self.start({"local_camera": True, "local_camera_stream": True})
+        with mock.patch.object(self.module, "LIVE_FRAME_WAIT_S", 0.02):
+            request, task = self.viewer(camera)
+            await asyncio.sleep(0.01)
+            session = self.mqtt.published[-1][1]["session"]
+            frame = jpeg(50)
+            self.registry.sessions[session][1](frame)
+            await asyncio.sleep(0.01)
+            count = len(self.mqtt.published)
+            status, _ = self.mqtt.subscriptions[f"{BASE}/stat/local_camera"]
+            await status(message(f"{BASE}/stat/local_camera",
+                                 '{"v":1,"state":"disabled","paused":true}'))
+            self.assertEqual(await asyncio.wait_for(task, 0.5), "response")
+        self.assertEqual(request.images, [frame])
+        self.assertEqual(len(self.mqtt.published), count)
+        self.assertEqual(camera._live.viewers, 0)
+
     async def test_stale_live_frame_falls_back_to_snapshot(self):
         camera = await self.start({"local_camera": True, "local_camera_stream": True})
         camera._live._frame = jpeg(40)
