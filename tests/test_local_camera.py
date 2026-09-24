@@ -73,7 +73,7 @@ class LocalCameraContractTest(unittest.TestCase):
         status = LC.parse_status(json.dumps(ready), CONST.LOCAL_CAMERA_MAX_BYTES)
         self.assertEqual(status, {"state": "ready", "width": 1280, "height": 720,
                                   "max_bytes": 131072, "min_interval_s": 1.0, "sensor": "ov02c10",
-                                  "paused": False})
+                                  "paused": False, "ended": None})
         self.assertEqual(LC.parse_status(json.dumps(ready).encode(), 262144)["state"], "ready")
         # The Bridge cap bounds what a panel may send.
         self.assertEqual(LC.parse_status(json.dumps(dict(ready, max_bytes=1_000_000)), 262144)["max_bytes"], 262144)
@@ -104,6 +104,18 @@ class LocalCameraContractTest(unittest.TestCase):
         for bad in ["true", 1, 0, None, [], {}]:
             payload = json.dumps({"v": 1, "state": "disabled", "paused": bad})
             self.assertIsNone(LC.parse_status(payload, 262144), bad)
+
+    def test_ended_session_is_additive_and_validated(self):
+        ready = {"v": 1, "state": "ready", "width": 1280, "height": 720}
+        # Firmware that never ended a session on the display sends nothing.
+        self.assertIsNone(LC.parse_status(json.dumps(ready), 262144)["ended"])
+        session = "ab" * 16
+        self.assertEqual(LC.parse_status(json.dumps(dict(ready, ended=session)), 262144)["ended"], session)
+        # Malformed values are ignored; the rest of the status still counts.
+        for bad in ["AB" * 16, "ab" * 17, "short", "", 5, None, [], {"x": 1}]:
+            status = LC.parse_status(json.dumps(dict(ready, ended=bad)), 262144)
+            self.assertIsNotNone(status, bad)
+            self.assertIsNone(status["ended"], bad)
 
     def test_pause_commands_and_switch_state(self):
         self.assertEqual(LC.build_pause_request(True), {"v": 1, "action": "pause"})

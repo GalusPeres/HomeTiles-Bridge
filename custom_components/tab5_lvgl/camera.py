@@ -166,6 +166,11 @@ class HomeTilesLocalCamera(Camera):
                                self._base)
                     return
                 self._status = status
+                ended = status.get("ended")
+                if ended and self._live is not None:
+                    # Tap on the panel's camera indicator: end the viewers of
+                    # that session instead of freezing them.
+                    await self._live.async_end_session(ended)
             if (self._status is None or self._status["state"] != "ready"
                     or self._status["paused"]):
                 self._snapshots.fail_all("not_ready")
@@ -290,17 +295,19 @@ class HomeTilesLocalCamera(Camera):
         if self._live is None:
             return await super().handle_async_mjpeg_stream(request)
         live = self._live
+        generation = live.generation
         last: bytes | None = None
         misses = 0
 
         async def next_image() -> bytes | None:
             # Returning None ends the multipart response.
             nonlocal last, misses
-            # A pause ends the view instead of freezing the last frame.
-            if live.closed or self._paused():
+            # A pause, or the panel ending this session on its display, ends
+            # the view instead of freezing the last frame.
+            if live.closed or self._paused() or live.generation != generation:
                 return None
-            image = await live.async_next_frame(last, LIVE_FRAME_WAIT_S)
-            if live.closed or self._paused():
+            image = await live.async_next_frame(last, LIVE_FRAME_WAIT_S, generation)
+            if live.closed or self._paused() or live.generation != generation:
                 return None
             if image is not None:
                 misses = 0

@@ -42,8 +42,9 @@ TCP (panel connects to ``host:port``; all integers big-endian)
     4. The JPEG follows in chunks of exactly ``min(8192, remaining)`` bytes.
        After each chunk the panel waits for the existing ACK struct ``>4sII``
        (12 bytes): ``b"HTA1"``, the frame's sequence u32 and the cumulative
-       number of payload bytes received for that frame u32. At most one
-       unacknowledged chunk is ever in flight. The next frame header may be
+       number of payload bytes received for that frame u32. The Bridge reads
+       and acknowledges chunks strictly in order; a panel may send the next
+       chunk before the previous ACK arrives. The next frame header may be
        sent only after the final ACK of the previous frame.
     5. The Bridge closes the connection on any violation: bad magic, unknown
        type, length out of range, a payload that does not start with FFD8 (checked
@@ -449,6 +450,9 @@ class LocalCameraLiveStream:
         self._frame_event: asyncio.Event | None = None
         # Terminal: set when the owning entity is removed; never restarts.
         self._closed = False
+        # Bumped when the panel ends the current session on its display:
+        # viewers that started before it end, later viewers get a new session.
+        self._generation = 0
 
     @property
     def viewers(self) -> int:
@@ -465,6 +469,10 @@ class LocalCameraLiveStream:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def generation(self) -> int:
+        return self._generation
 
     def _warn(self, reason: str, message: str, *args) -> None:
         if self._warnings.allow(reason, self._clock()):
@@ -487,12 +495,17 @@ class LocalCameraLiveStream:
             return None
         return self._frame
 
-    async def async_next_frame(self, last: bytes | None, timeout_s: float) -> bytes | None:
+    def _ended_for(self, generation: int | None) -> bool:
+        return self._closed or (generation is not None and generation != self._generation)
+
+    async def async_next_frame(self, last: bytes | None, timeout_s: float,
+                               generation: int | None = None) -> bytes | None:
         """Return a fresh frame other than *last*, or None after *timeout_s*.
 
-        Always None once the stream is closed, so waiting viewers end.
+        Always None once the stream is closed, or once the panel ended the
+        session of the viewer's *generation*, so waiting viewers end.
         """
-        if self._closed:
+        if self._ended_for(generation):
             return None
         frame = self.latest()
         if frame is not None and frame is not last:
@@ -504,7 +517,7 @@ class LocalCameraLiveStream:
             await asyncio.wait_for(event.wait(), timeout_s)
         except asyncio.TimeoutError:
             return None
-        return None if self._closed else self._frame
+        return None if self._ended_for(generation) else self._frame
 
     # Viewers -----------------------------------------------------------
 
@@ -544,6 +557,25 @@ class LocalCameraLiveStream:
             self._grace_task.cancel()
             self._grace_task = None
         await self._async_stop_task()
+
+    async def async_end_session(self, session: str) -> bool:
+        """The panel ended *session* on its display: end every current viewer.
+
+        The run stops without further keepalives. The next viewer that
+        acquires the stream starts a new session, which the panel accepts.
+        Returns False when *session* is not the running one.
+        """
+        if self._closed or not self.running or session != self._session:
+            return False
+        self._generation += 1
+        self._frame = None
+        self._frame_at = None
+        event, self._frame_event = self._frame_event, None
+        if event is not None:
+            event.set()
+        await self.async_stop()
+        _LOGGER.info("HomeTiles local camera stream ended on the panel for %s", self._log_name)
+        return True
 
     async def async_close(self) -> None:
         """Stop for good (entity removal or reload) and end every viewer."""

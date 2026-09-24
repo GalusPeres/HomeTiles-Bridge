@@ -56,6 +56,8 @@ LOCAL_CAMERA_MIN_JPEG_BYTES = 4
 
 _REQUEST_ID_RE = re.compile(r"^[0-9a-f]{16,32}$")
 _TOKEN_RE = re.compile(r"^[a-z0-9_.-]{1,32}$")
+# Stream session ids (local_camera_stream.new_session_id()).
+_SESSION_ID_RE = re.compile(r"^[0-9a-f]{16,32}$")
 _JPEG_SOI = b"\xff\xd8"
 _JPEG_EOI = b"\xff\xd9"
 
@@ -227,6 +229,10 @@ def parse_status(payload: Any, bridge_max_bytes: int) -> dict[str, Any] | None:
     if type(paused) is not bool:
         return None
     result["paused"] = paused
+    # Additive field: the live-stream session the user ended on the panel
+    # display (tap on the camera indicator). Anything malformed is ignored.
+    ended = data.get("ended")
+    result["ended"] = ended if isinstance(ended, str) and _SESSION_ID_RE.fullmatch(ended) else None
     return result
 
 

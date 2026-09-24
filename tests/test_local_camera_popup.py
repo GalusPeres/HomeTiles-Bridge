@@ -498,6 +498,20 @@ class LiveFeederTest(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(process.written), 12)
         self.assertIn(SNAPSHOT, process.written)
 
+    async def test_panel_end_stops_the_popup_without_snapshots(self):
+        self.live.acquire()
+        session = self.session()
+        process = FakeProcess(echo=False)
+        task = asyncio.create_task(self.connection._async_feed_live_frames(session, process))
+        await asyncio.sleep(0.05)
+        self.assertTrue(await self.live.async_end_session(self.live.session))
+        await asyncio.wait_for(task, 1.0)
+        self.assertTrue(session.ended_by_panel)
+        self.assertTrue(process.stdin.is_closing())
+        # No snapshot fallback after the end (the camera stays off).
+        self.assertEqual(self.image_calls, [])
+        self.live.release()
+
     async def test_failing_fallback_ends_after_the_failure_limit(self):
         self.image_content = b""
         process = FakeProcess(echo=False)

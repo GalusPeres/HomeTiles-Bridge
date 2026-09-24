@@ -474,6 +474,46 @@ class LiveStreamTest(unittest.IsolatedAsyncioTestCase):
         now[0] += 1.0
         self.assertIsNone(self.live.latest())
 
+    async def test_panel_end_ends_viewers_and_the_next_viewer_gets_a_new_session(self):
+        sessions = iter(["11" * 16, "22" * 16])
+        live = STREAM.LocalCameraLiveStream(
+            publish=self.publish, endpoint=self.get_endpoint, registry=lambda: self.registry,
+            ready=lambda: True, log_name=BASE, keepalive_s=0.05, grace_s=0.15,
+            session_factory=lambda: next(sessions), token_factory=lambda: TOKEN)
+        try:
+            live.acquire()
+            await asyncio.sleep(0.01)
+            first = live.session
+            generation = live.generation
+            waiter = asyncio.create_task(live.async_next_frame(None, 5.0, generation))
+            await asyncio.sleep(0.01)
+            # Another session is not ours: nothing happens.
+            self.assertFalse(await live.async_end_session("33" * 16))
+            self.assertTrue(live.running)
+            self.assertTrue(await live.async_end_session(first))
+            self.assertIsNone(await asyncio.wait_for(waiter, 0.5))
+            self.assertFalse(live.running)
+            self.assertEqual(self.published[-1], {"v": 1, "action": "stream_stop", "session": first})
+            # The old viewer never gets frames again, even from a new session.
+            self.assertIsNone(await live.async_next_frame(None, 0.01, generation))
+            count = len(self.published)
+            await asyncio.sleep(0.12)
+            self.assertEqual(len(self.published), count, "No keepalive after the end")
+            # A viewer opening afterwards starts a new session.
+            live.acquire()
+            await asyncio.sleep(0.01)
+            self.assertTrue(live.running)
+            self.assertEqual(live.session, "22" * 16)
+            self.assertEqual(self.published[-1]["action"], "stream")
+            self.assertEqual(self.published[-1]["session"], "22" * 16)
+            # Repeating the retained end of the old session changes nothing.
+            self.assertFalse(await live.async_end_session(first))
+            self.assertTrue(live.running)
+            live.release()
+            live.release()
+        finally:
+            await live.async_close()
+
     async def test_close_ends_waiting_viewers_and_never_restarts(self):
         self.live.acquire()
         await asyncio.sleep(0.01)
@@ -678,6 +718,33 @@ class LiveCameraEntityTest(unittest.IsolatedAsyncioTestCase):
     def viewer(self, camera, closed=lambda: False):
         request = types.SimpleNamespace(images=[], closed=closed)
         return request, asyncio.create_task(camera.handle_async_mjpeg_stream(request))
+
+    async def test_panel_end_ends_open_mjpeg_viewers_and_reopening_streams_again(self):
+        camera = await self.start({"local_camera": True, "local_camera_stream": True})
+        with mock.patch.object(self.module, "LIVE_FRAME_WAIT_S", 0.02):
+            request, task = self.viewer(camera)
+            await asyncio.sleep(0.01)
+            session = self.mqtt.published[-1][1]["session"]
+            frame = jpeg(50)
+            self.registry.sessions[session][1](frame)
+            await asyncio.sleep(0.01)
+            status, _ = self.mqtt.subscriptions[f"{BASE}/stat/local_camera"]
+            await status(message(f"{BASE}/stat/local_camera", json.dumps(dict(READY, ended=session))))
+            # The view ends instead of freezing on the last frame.
+            self.assertEqual(await asyncio.wait_for(task, 0.5), "response")
+            self.assertEqual(request.images, [frame])
+            self.assertEqual(self.mqtt.published[-1][1],
+                             {"v": 1, "action": "stream_stop", "session": session})
+            self.assertTrue(camera.available)
+            # Opening the camera again starts a new session at once.
+            again, again_task = self.viewer(camera)
+            await asyncio.sleep(0.01)
+            request_again = self.mqtt.published[-1][1]
+            self.assertEqual(request_again["action"], "stream")
+            self.assertNotEqual(request_again["session"], session)
+            self.cameras.remove(camera)
+            await camera.async_will_remove_from_hass()
+            await asyncio.wait_for(again_task, 0.5)
 
     async def test_removal_ends_open_viewers(self):
         camera = await self.start({"local_camera": True, "local_camera_stream": True})

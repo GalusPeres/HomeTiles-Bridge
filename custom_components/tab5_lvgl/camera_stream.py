@@ -10,7 +10,7 @@ import secrets
 import socket
 import struct
 import time
-from typing import Any, Callable, Final
+from typing import Any, Awaitable, Callable, Final
 
 from homeassistant.components.camera import async_get_image, async_get_stream_source
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
@@ -49,6 +49,9 @@ CAMERA_STREAM_JPEG_QUALITY: Final = 11
 CAMERA_STILL_JPEG_QUALITY: Final = 7
 CAMERA_SESSION_TTL_SECONDS: Final = 30.0
 CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
+# After a popup stream the camera's panel ended: the "stopped" notice follows
+# the TCP close, so the popup does not end on a connection error.
+CAMERA_PANEL_END_STATUS_DELAY_S: Final = 0.5
 CAMERA_MAX_JPEG_BYTES: Final = 256 * 1024
 CAMERA_STREAM_TRANSPORT: Final = "tcp-ack-v1"
 CAMERA_STREAM_FRAMING: Final = "ack-jpeg-v1"
@@ -125,6 +128,10 @@ class CameraStreamSession:
   # instead of the snapshot taken when the popup opened.
   latest_image: bytes | None = None
   still_rate_logged: bool = False
+  # Set when the camera's panel ended the live session on its display; the
+  # popup then gets a neutral "stopped" (on_panel_end) after its stream closed.
+  ended_by_panel: bool = False
+  on_panel_end: Callable[[], Awaitable[None]] | None = None
 
 
 @dataclass(slots=True)
@@ -907,6 +914,7 @@ class CameraStreamConnection:
     # the newest frame already fed, instead of the snapshot taken when the
     # popup opened.
     frame = live.latest() or session.latest_image or session.first_image
+    generation = live.generation
     frame_interval = 1.0 / max(1, session.fps)
     idle_interval = CAMERA_STILL_REPEAT_SECONDS
     last_live_at = time.monotonic()
@@ -922,11 +930,18 @@ class CameraStreamConnection:
         if live.closed:
           # A reloaded panel camera entity provides a new live stream.
           live = self._renew_live_viewer(session)
+          generation = live.generation
         if live.closed:
           await asyncio.sleep(idle_interval)
         else:
           # Wakes on the next upload and is bounded, so it never blocks.
-          live_frame = await live.async_next_frame(frame, idle_interval)
+          live_frame = await live.async_next_frame(frame, idle_interval, generation)
+        if live.generation != generation:
+          # The panel ended its live view on its display: end this popup's
+          # stream instead of freezing or falling back to snapshots.
+          session.ended_by_panel = True
+          _LOGGER.info("HomeTiles camera popup ended by the panel: %s", session.entity_id)
+          break
         if live_frame is not None:
           frame = live_frame
           session.latest_image = frame
@@ -1318,3 +1333,12 @@ class CameraStreamConnection:
       await self._manager.async_forget_stop_event(
         session.device_id, session.stop_event
       )
+      on_panel_end = getattr(session, "on_panel_end", None)
+      if getattr(session, "ended_by_panel", False) and on_panel_end is not None:
+        # After the TCP stream closed, so the popup ends on the neutral
+        # "stream stopped" instead of a connection error.
+        await asyncio.sleep(CAMERA_PANEL_END_STATUS_DELAY_S)
+        try:
+          await on_panel_end()
+        except Exception as err:  # noqa: BLE001 - MQTT errors are HA-specific
+          _LOGGER.debug("HomeTiles camera stop notice failed: %s", err)

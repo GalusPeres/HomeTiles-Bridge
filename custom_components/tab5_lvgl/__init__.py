@@ -3313,6 +3313,22 @@ class Tab5Bridge:
         parsed.get("height", CAMERA_STREAM_HEIGHT),
         parsed.get("fps", CAMERA_STREAM_FPS),
       )
+
+      async def _async_notify_panel_end(stopped_entity: str = entity_id) -> None:
+        # The camera's panel ended the live view: this popup shows "stopped".
+        await mqtt.async_publish(
+          self.hass,
+          status_topic,
+          json.dumps({
+            "status": "stopped",
+            "entity_id": stopped_entity,
+            "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
+          }),
+          qos=0,
+          retain=False,
+        )
+
+      session.on_panel_end = _async_notify_panel_end
       _LOGGER.info(
         "HomeTiles camera session ready (%s, mode=%s, %dx%d@%d)",
         entity_id,
