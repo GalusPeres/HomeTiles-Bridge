@@ -471,7 +471,10 @@ class LiveStreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.live.latest(), second)
         self.assertIs(await self.live.async_next_frame(first, 1.0), second)
         self.assertIsNone(await self.live.async_next_frame(second, 0.05))
-        now[0] += 1.0
+        # Still fresh at the slowest panel rate (one frame per second).
+        now[0] += 1.5
+        self.assertIs(self.live.latest(), second)
+        now[0] += STREAM.LIVE_FRAME_FRESH_S
         self.assertIsNone(self.live.latest())
 
     async def test_panel_end_ends_viewers_and_the_next_viewer_gets_a_new_session(self):

@@ -114,7 +114,8 @@ STREAM_TTL_MS: Final = 6000
 KEEPALIVE_INTERVAL_S: Final = 2.0
 STOP_GRACE_S: Final = 3.0
 # A live frame older than this no longer answers a still-image request.
-LIVE_FRAME_FRESH_S: Final = 1.0
+# Long enough for the slowest panel rate (1 frame per second, Custom mode).
+LIVE_FRAME_FRESH_S: Final = 2.5
 # How long an MJPEG viewer waits for the next live frame before falling back.
 LIVE_FRAME_WAIT_S: Final = 5.0
 # Consecutive waits without a live frame after which an MJPEG viewer's
