@@ -27,6 +27,7 @@ class FakeMqtt(types.ModuleType):
         self.published = []
         self.connected = True
         self.unsubscribed = 0
+        self.connection_callbacks = []
         self.ReceiveMessage = types.SimpleNamespace
 
     async def async_subscribe(self, hass, topic, handler, qos=0, encoding="utf-8"):
@@ -41,6 +42,24 @@ class FakeMqtt(types.ModuleType):
 
     def is_connected(self, hass):
         return self.connected
+
+    def async_subscribe_connection_status(self, hass, connection_status_callback):
+        # Home Assistant's dispatcher runs targets without @callback in an
+        # executor thread; only loop-safe callbacks are accepted here.
+        if not getattr(connection_status_callback, "_hass_callback", False):
+            raise AssertionError("connection status callback must be a @callback")
+        self.connection_callbacks.append(connection_status_callback)
+
+        def unsubscribe():
+            self.unsubscribed += 1
+            self.connection_callbacks.remove(connection_status_callback)
+        return unsubscribe
+
+
+def fake_callback(func):
+    """Mirror homeassistant.core.callback: mark the function as loop-safe."""
+    setattr(func, "_hass_callback", True)
+    return func
 
 
 class FakeCamera:
@@ -62,6 +81,27 @@ class FakeCamera:
         pass
 
 
+async def fake_still_stream(request, image_cb, content_type, interval):
+    """Mimic Home Assistant's multipart loop: pull images until None or closed.
+
+    Like Home Assistant, an image equal to the previous one is not written.
+    """
+    last = None
+    while not request.closed():
+        image = await image_cb()
+        if not image:
+            break
+        if image != last:
+            request.images.append(image)
+            last = image
+        await asyncio.sleep(interval)
+    return "response"
+
+
+async def fake_source_ip(hass, target_ip=None):
+    return "192.168.1.10"
+
+
 def load_camera_module(fake_mqtt):
     package_name = "_hometiles_camera_testpkg"
     package = types.ModuleType(package_name)
@@ -72,10 +112,15 @@ def load_camera_module(fake_mqtt):
     camera = types.ModuleType("homeassistant.components.camera")
     camera.Camera = FakeCamera
     camera.CameraEntityFeature = int
+    camera.async_get_still_stream = fake_still_stream
+    network = types.ModuleType("homeassistant.components.network")
+    network.async_get_source_ip = fake_source_ip
+    components.network = network
     config_entries = types.ModuleType("homeassistant.config_entries")
     config_entries.ConfigEntry = object
     core = types.ModuleType("homeassistant.core")
     core.HomeAssistant = object
+    core.callback = fake_callback
     helpers = types.ModuleType("homeassistant.helpers")
     device_registry = types.ModuleType("homeassistant.helpers.device_registry")
     device_registry.DeviceInfo = dict
@@ -85,6 +130,7 @@ def load_camera_module(fake_mqtt):
         "homeassistant.components": components,
         "homeassistant.components.mqtt": fake_mqtt,
         "homeassistant.components.camera": camera,
+        "homeassistant.components.network": network,
         "homeassistant.config_entries": config_entries,
         "homeassistant.core": core,
         "homeassistant.helpers": helpers,

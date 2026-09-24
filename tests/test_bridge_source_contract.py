@@ -189,7 +189,7 @@ class BridgeSourceContractTest(unittest.TestCase):
         retain = {keyword.arg: keyword.value for keyword in publishes[0].keywords}["retain"]
         self.assertIs(retain.value, False)
 
-        for module in ("camera.py", "local_camera.py"):
+        for module in ("camera.py", "local_camera.py", "local_camera_stream.py"):
             tree = ast.parse((package / module).read_text(encoding="utf-8"))
             for _level, message in _logger_calls(tree):
                 self.assertTrue(message.isascii(), message)

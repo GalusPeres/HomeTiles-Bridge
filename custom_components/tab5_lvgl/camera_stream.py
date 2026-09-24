@@ -16,6 +16,8 @@ from homeassistant.components.camera import async_get_image, async_get_stream_so
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.core import HomeAssistant
 
+from .local_camera_stream import LocalCameraUploadRegistry, is_upload_handshake
+
 _LOGGER = logging.getLogger(__name__)
 
 CAMERA_STREAM_TCP_PORT_FIRST: Final = 8124
@@ -261,6 +263,9 @@ class CameraStreamManager:
     self._tcp_server: asyncio.AbstractServer | None = None
     self._tcp_port: int | None = None
     self._tcp_connection = CameraStreamConnection(self)
+    # Uploads from a panel's own camera share this listener (reverse
+    # direction, see local_camera_stream.py).
+    self.local_camera_uploads = LocalCameraUploadRegistry()
 
   async def async_start_tcp_server(self) -> None:
     """Start the LAN-only acknowledged TCP endpoint used by the display."""
@@ -320,6 +325,7 @@ class CameraStreamManager:
       )
     for device_id in device_ids:
       await self.async_stop_device(device_id)
+    self.local_camera_uploads.close_all()
     if self._tcp_server is not None:
       self._tcp_server.close()
       await self._tcp_server.wait_closed()
@@ -510,6 +516,16 @@ class CameraStreamConnection:
       if len(raw_request) > 256 or not raw_request.endswith(b"\n"):
         raise ValueError("camera_invalid_handshake")
       request = raw_request.decode("ascii", errors="strict").strip()
+      if is_upload_handshake(request):
+        # A panel uploading its own camera; the registry validates the
+        # session/token and runs the acknowledged receive loop.
+        await self._manager.local_camera_uploads.async_handle_upload(
+          request,
+          reader,
+          writer,
+          peer,
+        )
+        return
       if not request.startswith(CAMERA_STREAM_REQUEST_PREFIX):
         raise ValueError("camera_invalid_handshake")
       token = request[len(CAMERA_STREAM_REQUEST_PREFIX):].strip()

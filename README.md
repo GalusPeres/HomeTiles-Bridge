@@ -99,6 +99,8 @@ The integration communicates with the display firmware via MQTT:
 | `base_topic/cmnd/camera` | Display > HA | Open or close an experimental camera stream |
 | `base_topic/stat/camera` | HA > Display | Camera stream endpoint, protocol and status |
 | `base_topic/cmnd/local_camera` | HA > Display | Request one still image from the display's own camera (not retained) |
+| `base_topic/cmnd/local_camera` (`"action":"stream"`) | HA > Display | Start or keep alive the live stream (not retained): `{"v":1,"action":"stream","session":"<32 hex>","host":"<Bridge IPv4>","port":8124,"token":"<32 hex>","width":640,"height":360,"fps":15,"quality":65,"ttl_ms":6000}`, re-sent every 2 s while viewers exist |
+| `base_topic/cmnd/local_camera` (`"action":"stream_stop"`) | HA > Display | Stop the live stream (not retained): `{"v":1,"action":"stream_stop","session":"<32 hex>"}` |
 | `base_topic/stat/local_camera` | Display > HA | Retained built-in camera status (`ready`, `disabled`, `error`) |
 | `base_topic/stat/local_camera/image/{id}` | Display > HA | Raw JPEG answer for request `{id}` (not retained) |
 | `base_topic/stat/local_camera/error/{id}` | Display > HA | Error answer for request `{id}` (not retained) |
@@ -238,6 +240,21 @@ single JPEG snapshots over MQTT; the bridge shares one request between all
 viewers, caches the last frame for at least 1.5 seconds, never retains images
 and refuses to stream a display's own camera back into that display's camera
 popup.
+
+When the firmware additionally announces `"local_camera_stream": true`, opening
+the camera in Home Assistant shows a live MJPEG view. The first viewer sends a
+`stream` request with a one-time session and token, the bridge repeats it every
+2 seconds as a keepalive, and the last viewer stops the stream after a 3-second
+grace period (the display also stops by itself after `ttl_ms` without a
+keepalive). The display connects to the bridge's camera TCP port (8124-8131),
+sends `HTCAMUP/1 <session> <token>\n` and uploads JPEG frames with the same
+16-byte frame header, 8 KiB chunks and per-chunk acknowledgements as the camera
+popup stream, so at most one chunk is ever unacknowledged. Frames are limited to
+131072 bytes and must be complete JPEGs; the bridge keeps only the newest frame
+per display. A viewer that receives no live frame for about 20 seconds, or whose
+camera entity is removed or reloaded, is ended instead of showing a frozen
+image. The full wire format is documented in
+`custom_components/tab5_lvgl/local_camera_stream.py`.
 
 ## Release Process
 

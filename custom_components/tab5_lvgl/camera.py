@@ -1,4 +1,9 @@
-"""Camera entity for the camera built into a HomeTiles panel (still images)."""
+"""Camera entity for the camera built into a HomeTiles panel.
+
+Still images use MQTT snapshots (local_camera.py). Panels that announce
+``local_camera_stream`` additionally deliver a live JPEG stream over the
+acknowledged TCP upload described in local_camera_stream.py.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +12,14 @@ import logging
 from time import monotonic
 
 from homeassistant.components import mqtt
-from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.components import network as ha_network
+from homeassistant.components.camera import Camera, CameraEntityFeature, async_get_still_stream
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 
 from .capabilities import merged_capabilities_data, supports
 from .const import (
+    DOMAIN,
     LOCAL_CAMERA_FRAME_INTERVAL_S,
     LOCAL_CAMERA_MAX_BYTES,
     LOCAL_CAMERA_MIN_AGE_S,
@@ -34,6 +41,14 @@ from .local_camera import (
     parse_status,
     request_id_from_topic,
 )
+from .local_camera_stream import (
+    LIVE_FRAME_FRESH_S,
+    LIVE_FRAME_MAX_MISSES,
+    LIVE_FRAME_WAIT_S,
+    STREAM_FPS,
+    LocalCameraLiveStream,
+    valid_ipv4,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,13 +62,15 @@ async def async_setup_entry(
     entities = []
     # Consent and sensor detection live on the panel; the Bridge only mirrors
     # the announcement and never probes panels that did not announce it.
-    if supports(merged_capabilities_data(entry), "local_camera"):
-        entities.append(HomeTilesLocalCamera(entry, entry_base_topic(entry)))
+    data = merged_capabilities_data(entry)
+    if supports(data, "local_camera"):
+        entities.append(HomeTilesLocalCamera(
+            entry, entry_base_topic(entry), live=supports(data, "local_camera_stream")))
     async_add_entities(entities)
 
 
 class HomeTilesLocalCamera(Camera):
-    """On-demand JPEG snapshots requested from the panel over MQTT."""
+    """On-demand JPEG snapshots, plus a live MJPEG view when announced."""
 
     _attr_has_entity_name = True
     _attr_translation_key = "local_camera"
@@ -61,9 +78,10 @@ class HomeTilesLocalCamera(Camera):
     _attr_supported_features = CameraEntityFeature(0)
     _attr_frame_interval = LOCAL_CAMERA_FRAME_INTERVAL_S
 
-    def __init__(self, entry: ConfigEntry, base_topic: str) -> None:
+    def __init__(self, entry: ConfigEntry, base_topic: str, live: bool = False) -> None:
         super().__init__()
         self.content_type = "image/jpeg"
+        self._entry_id = entry.entry_id
         self._attr_device_info = entry_device_info(entry)
         self._attr_unique_id = local_camera_unique_id(entry_device_id(entry))
         self._base = base_topic
@@ -78,6 +96,19 @@ class HomeTilesLocalCamera(Camera):
         self._panel_online: bool | None = None
         self._subscriptions = []
         self._attr_available = False
+        # A capability change reloads the entry, so this is fixed per entity.
+        self._live: LocalCameraLiveStream | None = None
+        if live:
+            # Polling interval for clients that bypass the MJPEG handler
+            # below; the live handler itself is paced by arriving frames.
+            self._attr_frame_interval = 1.0 / STREAM_FPS
+            self._live = LocalCameraLiveStream(
+                publish=self._async_publish_request,
+                endpoint=self._async_live_endpoint,
+                registry=self._upload_registry,
+                ready=self._live_ready,
+                log_name=base_topic,
+            )
 
     def _refresh_available(self) -> None:
         self._attr_available = (
@@ -118,6 +149,7 @@ class HomeTilesLocalCamera(Camera):
             if self._status is None or self._status["state"] != "ready":
                 self._snapshots.fail_all("not_ready")
             self._refresh_available()
+            self._poke_live()
             self.async_write_ha_state()
 
         async def handle_connected(msg: mqtt.ReceiveMessage) -> None:
@@ -128,6 +160,7 @@ class HomeTilesLocalCamera(Camera):
             if not online:
                 self._snapshots.fail_all("offline")
             self._refresh_available()
+            self._poke_live()
             self.async_write_ha_state()
 
         async def handle_image(msg: mqtt.ReceiveMessage) -> None:
@@ -153,13 +186,109 @@ class HomeTilesLocalCamera(Camera):
             self.hass, f"{self._image_prefix}/+", handle_image, qos=0, encoding=None))
         self._subscriptions.append(await mqtt.async_subscribe(
             self.hass, f"{self._error_prefix}/+", handle_error, qos=0))
+        subscribe_connection = getattr(mqtt, "async_subscribe_connection_status", None)
+        if self._live is not None and subscribe_connection is not None:
+            # A broker disconnect suspends the stream without waiting for the
+            # next keepalive tick; reconnecting resumes it for current viewers.
+            self._subscriptions.append(subscribe_connection(
+                self.hass, self._async_mqtt_connection_changed))
 
     async def async_will_remove_from_hass(self) -> None:
         for unsubscribe in self._subscriptions:
             unsubscribe()
         self._subscriptions.clear()
         self._snapshots.fail_all("removed")
+        if self._live is not None:
+            # Closing also ends MJPEG responses that are still open, so no
+            # viewer keeps a frozen frame of a removed or reloaded entity.
+            await self._live.async_close()
         await super().async_will_remove_from_hass()
+
+    async def _async_publish_request(self, request: dict) -> None:
+        # Snapshot and stream requests are commands, never retained state.
+        await mqtt.async_publish(
+            self.hass, local_camera_command_topic(self._base),
+            json.dumps(request, separators=(",", ":")), qos=0, retain=False)
+
+    # Live stream ---------------------------------------------------------
+
+    def _poke_live(self) -> None:
+        if self._live is not None:
+            self._live.poke()
+
+    @callback
+    def _async_mqtt_connection_changed(self, _connected: bool) -> None:
+        # Must be a @callback: the dispatcher would otherwise run it in an
+        # executor thread, where asyncio.Event.set() is not safe.
+        self._poke_live()
+
+    def _live_ready(self) -> bool:
+        return self.available and mqtt.is_connected(self.hass)
+
+    def _domain_data(self) -> dict:
+        data = getattr(self.hass, "data", None)
+        return data.get(DOMAIN, {}) if isinstance(data, dict) else {}
+
+    def _stream_manager(self):
+        return self._domain_data().get("camera_stream_manager")
+
+    def _upload_registry(self):
+        manager = self._stream_manager()
+        if manager is None or getattr(manager, "tcp_port", None) is None:
+            return None
+        return getattr(manager, "local_camera_uploads", None)
+
+    async def _async_live_endpoint(self) -> tuple[str, int] | None:
+        """Return the Bridge IPv4 address and listener port the panel can reach."""
+        manager = self._stream_manager()
+        port = getattr(manager, "tcp_port", None)
+        if port is None:
+            return None
+        bridge = self._domain_data().get("entries", {}).get(self._entry_id)
+        device_ip = getattr(bridge, "_device_ip", None)
+        if device_ip:
+            host = await ha_network.async_get_source_ip(self.hass, target_ip=device_ip)
+        else:
+            host = await ha_network.async_get_source_ip(self.hass)
+        return (host, port) if valid_ipv4(host) else None
+
+    async def handle_async_mjpeg_stream(self, request):
+        """Serve the live stream to one viewer; all viewers share one upload."""
+        if self._live is None:
+            return await super().handle_async_mjpeg_stream(request)
+        live = self._live
+        last: bytes | None = None
+        misses = 0
+
+        async def next_image() -> bytes | None:
+            # Returning None ends the multipart response.
+            nonlocal last, misses
+            if live.closed:
+                return None
+            image = await live.async_next_frame(last, LIVE_FRAME_WAIT_S)
+            if live.closed:
+                return None
+            if image is not None:
+                misses = 0
+            else:
+                misses += 1
+                if misses > LIVE_FRAME_MAX_MISSES:
+                    # No live frame for too long (panel cannot upload): end
+                    # instead of showing a frozen image forever.
+                    _LOGGER.debug("HomeTiles local camera live view ended for %s: no frames",
+                                  self._base)
+                    return None
+                # No live frame yet (starting, suspended or panel busy): keep
+                # the previous image, else try one snapshot, else end.
+                image = last if last is not None else await self.async_camera_image()
+            last = image
+            return image
+
+        live.acquire()
+        try:
+            return await async_get_still_stream(request, next_image, self.content_type, 0.0)
+        finally:
+            live.release()
 
     def _request_max_bytes(self) -> int:
         if self._status is None:
@@ -174,17 +303,12 @@ class HomeTilesLocalCamera(Camera):
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
         # width/height are ignored: Home Assistant rescales the JPEG itself.
+        if self._live is not None and (frame := self._live.latest(LIVE_FRAME_FRESH_S)) is not None:
+            return frame
         if not self.available or not mqtt.is_connected(self.hass):
             return self._snapshots.fallback(monotonic())
-        command_topic = local_camera_command_topic(self._base)
-
-        async def publish(request: dict) -> None:
-            await mqtt.async_publish(
-                self.hass, command_topic, json.dumps(request, separators=(",", ":")),
-                qos=0, retain=False)
-
         image, failure = await self._snapshots.async_fetch(
-            publish,
+            self._async_publish_request,
             max_bytes=self._request_max_bytes(),
             min_interval_s=self._min_interval_s(),
         )
