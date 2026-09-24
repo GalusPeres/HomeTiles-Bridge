@@ -11,6 +11,6 @@ Requires HomeTiles firmware v0.6.12b29 on the Waveshare 8-inch camera test build
 
 Install: in HACS enable "Show beta versions" for HomeTiles Bridge, update, and restart Home Assistant.
 
-Validation: 252 Bridge tests pass, including the turn direction, the frame order in the live stream and the still-image cache. Real Home Assistant and hardware validation is pending.
+Validation: 253 Bridge tests pass, including the turn direction, the frame order in the live stream and the still-image cache. Real Home Assistant and hardware validation is pending.
 
 **Full Changelog:** https://github.com/GalusPeres/HomeTiles-Bridge/compare/v0.6.48b8...v0.6.48b9
