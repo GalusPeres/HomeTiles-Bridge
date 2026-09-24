@@ -485,14 +485,21 @@ class LiveStreamTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
             first = live.session
             generation = live.generation
-            waiter = asyncio.create_task(live.async_next_frame(None, 5.0, generation))
+            frame = b"\xff\xd8last\xff\xd9"
+            live._on_frame(frame)
+            waiter = asyncio.create_task(live.async_next_frame(frame, 5.0, generation))
             await asyncio.sleep(0.01)
             # Another session is not ours: nothing happens.
             self.assertFalse(await live.async_end_session("33" * 16))
             self.assertTrue(live.running)
+            self.assertFalse(live.ended)
             self.assertTrue(await live.async_end_session(first))
             self.assertIsNone(await asyncio.wait_for(waiter, 0.5))
             self.assertFalse(live.running)
+            # The last frame stays as the ended picture until a new viewer.
+            self.assertTrue(live.ended)
+            self.assertIs(live.ended_frame, frame)
+            self.assertIsNone(live.latest())
             self.assertEqual(self.published[-1], {"v": 1, "action": "stream_stop", "session": first})
             # The old viewer never gets frames again, even from a new session.
             self.assertIsNone(await live.async_next_frame(None, 0.01, generation))
@@ -501,6 +508,8 @@ class LiveStreamTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.published), count, "No keepalive after the end")
             # A viewer opening afterwards starts a new session.
             live.acquire()
+            self.assertFalse(live.ended)
+            self.assertIsNone(live.ended_frame)
             await asyncio.sleep(0.01)
             self.assertTrue(live.running)
             self.assertEqual(live.session, "22" * 16)
@@ -742,6 +751,38 @@ class LiveCameraEntityTest(unittest.IsolatedAsyncioTestCase):
             request_again = self.mqtt.published[-1][1]
             self.assertEqual(request_again["action"], "stream")
             self.assertNotEqual(request_again["session"], session)
+            self.cameras.remove(camera)
+            await camera.async_will_remove_from_hass()
+            await asyncio.wait_for(again_task, 0.5)
+
+    async def test_panel_end_freezes_the_picture_without_snapshots_until_reopened(self):
+        camera = await self.start({"local_camera": True, "local_camera_stream": True})
+        with mock.patch.object(self.module, "LIVE_FRAME_WAIT_S", 0.02):
+            request, task = self.viewer(camera)
+            await asyncio.sleep(0.01)
+            session = self.mqtt.published[-1][1]["session"]
+            frame = jpeg(50)
+            self.registry.sessions[session][1](frame)
+            await asyncio.sleep(0.01)
+            status, _ = self.mqtt.subscriptions[f"{BASE}/stat/local_camera"]
+            await status(message(f"{BASE}/stat/local_camera", json.dumps(dict(READY, ended=session))))
+            self.assertEqual(await asyncio.wait_for(task, 0.5), "response")
+            count = len(self.mqtt.published)
+            # Home Assistant refreshes the picture: the last frame, no snapshot,
+            # also long after the live frame went stale.
+            self.assertIs(await camera.async_camera_image(), frame)
+            with mock.patch.object(self.module, "monotonic", return_value=10_000.0):
+                self.assertIs(await camera.async_camera_image(), frame)
+            self.assertEqual(len(self.mqtt.published), count)
+            # The retained end repeats (e.g. another status change): still frozen.
+            await status(message(f"{BASE}/stat/local_camera", json.dumps(dict(READY, ended=session))))
+            self.assertIs(await camera.async_camera_image(), frame)
+            self.assertEqual(len(self.mqtt.published), count)
+            # Opening the camera again streams a new session and unfreezes.
+            again, again_task = self.viewer(camera)
+            await asyncio.sleep(0.01)
+            self.assertEqual(self.mqtt.published[-1][1]["action"], "stream")
+            self.assertFalse(camera._live.ended)
             self.cameras.remove(camera)
             await camera.async_will_remove_from_hass()
             await asyncio.wait_for(again_task, 0.5)

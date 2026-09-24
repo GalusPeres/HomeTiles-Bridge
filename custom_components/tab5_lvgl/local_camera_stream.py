@@ -453,6 +453,11 @@ class LocalCameraLiveStream:
         # Bumped when the panel ends the current session on its display:
         # viewers that started before it end, later viewers get a new session.
         self._generation = 0
+        # Set when the panel ended the session on its display, with its last
+        # frame. Until a viewer starts a new session, Home Assistant keeps
+        # showing that frame instead of asking the panel for new stills.
+        self._ended = False
+        self._ended_frame: bytes | None = None
 
     @property
     def viewers(self) -> int:
@@ -473,6 +478,16 @@ class LocalCameraLiveStream:
     @property
     def generation(self) -> int:
         return self._generation
+
+    @property
+    def ended(self) -> bool:
+        """True after the panel ended its session, until the next viewer."""
+        return self._ended
+
+    @property
+    def ended_frame(self) -> bytes | None:
+        """The last frame of the session the panel ended, if any."""
+        return self._ended_frame
 
     def _warn(self, reason: str, message: str, *args) -> None:
         if self._warnings.allow(reason, self._clock()):
@@ -522,6 +537,9 @@ class LocalCameraLiveStream:
     # Viewers -----------------------------------------------------------
 
     def acquire(self) -> None:
+        # Opening the camera again: new stills and a new session are wanted.
+        self._ended = False
+        self._ended_frame = None
         self._viewers += 1
         if self._grace_task is not None:
             self._grace_task.cancel()
@@ -568,6 +586,8 @@ class LocalCameraLiveStream:
         if self._closed or not self.running or session != self._session:
             return False
         self._generation += 1
+        self._ended = True
+        self._ended_frame = self._frame
         self._frame = None
         self._frame_at = None
         event, self._frame_event = self._frame_event, None
@@ -582,6 +602,7 @@ class LocalCameraLiveStream:
         self._closed = True
         self._frame = None
         self._frame_at = None
+        self._ended_frame = None
         event, self._frame_event = self._frame_event, None
         if event is not None:
             event.set()

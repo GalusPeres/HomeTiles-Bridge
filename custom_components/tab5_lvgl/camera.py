@@ -6,6 +6,8 @@ acknowledged TCP upload described in local_camera_stream.py.
 
 While the user pauses the camera (switch.py) the entity stays registered and
 available but serves no images and requests neither snapshots nor a stream.
+After the panel ended the live view on its display, the entity keeps showing
+the last frame and requests no snapshots until the camera is opened again.
 """
 
 from __future__ import annotations
@@ -348,6 +350,11 @@ class HomeTilesLocalCamera(Camera):
             # Paused by the user: fail fast, never ask the panel for a frame
             # and never serve one captured before the pause.
             return None
+        if self._live is not None and self._live.ended:
+            # The panel ended the live view on its display: keep its last
+            # frame and never ask the panel for new stills until the camera
+            # is opened again (a new session).
+            return self._live.ended_frame or self._snapshots.fallback(monotonic())
         if self._live is not None and (frame := self._live.latest(LIVE_FRAME_FRESH_S)) is not None:
             return frame
         if not self.available or not mqtt.is_connected(self.hass):
