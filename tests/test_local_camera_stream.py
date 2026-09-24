@@ -107,7 +107,7 @@ class WireProtocolTest(unittest.TestCase):
         request = STREAM.build_stream_request(SESSION, "192.168.1.10", 8124, TOKEN)
         self.assertEqual(request, {"v": 1, "action": "stream", "session": SESSION,
                                    "host": "192.168.1.10", "port": 8124, "token": TOKEN,
-                                   "width": 640, "height": 360, "fps": 15, "quality": 65,
+                                   "width": 640, "height": 360, "fps": 25, "quality": 65,
                                    "ttl_ms": 6000})
         self.assertEqual(STREAM.build_stream_stop(SESSION),
                          {"v": 1, "action": "stream_stop", "session": SESSION})

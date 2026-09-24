@@ -103,7 +103,9 @@ ACTION_STREAM: Final = "stream"
 ACTION_STREAM_STOP: Final = "stream_stop"
 STREAM_WIDTH: Final = 640
 STREAM_HEIGHT: Final = 360
-STREAM_FPS: Final = 15
+# Requested rate for the Auto mode. The panel caps it to its own mode table
+# and lowers the JPEG quality for high rates.
+STREAM_FPS: Final = 25
 STREAM_QUALITY: Final = 65
 STREAM_TTL_MS: Final = 6000
 

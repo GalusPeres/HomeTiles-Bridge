@@ -200,7 +200,9 @@ class PopupLiveViewerTest(unittest.IsolatedAsyncioTestCase):
     async def test_live_panel_camera_session_uses_the_live_cadence(self):
         session = await self.manager.async_create_session("viewer", ENTITY, 752, 424, 24)
         self.assertIs(session.live, self.live)
-        self.assertEqual(session.fps, STREAM.STREAM_FPS)
+        # The popup asks for 24 fps; the live upload is not the limit any more.
+        self.assertEqual(session.fps, min(24, STREAM.STREAM_FPS))
+        self.assertEqual(session.fps, 24)
         self.assertEqual(session.first_image, SNAPSHOT)
         # Creating a session alone never starts the panel upload.
         self.assertEqual(self.live.viewers, 0)
