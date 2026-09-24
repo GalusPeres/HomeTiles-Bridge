@@ -164,7 +164,9 @@ from .capabilities import (
   merged_capabilities_data,
   normalise_capabilities,
   stale_internal_sensor,
+  stale_local_camera,
 )
+from .local_camera import is_local_camera_self_loop
 from .local_io import (
   LOCAL_IO_RELAY,
   LOCAL_IO_TEMPERATURE,
@@ -185,7 +187,7 @@ from .sensor_selection import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor"]
+PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor", "camera"]
 
 MEDIA_COVER_MAX_BYTES = 14000
 # Source covers from HA media_player_proxy can be 200-500 KB (HD album art).
@@ -649,6 +651,10 @@ def _remove_stale_local_io_entities(hass: HomeAssistant, entry: ConfigEntry) -> 
         and stale_internal_sensor(unique_id, merged)):
       stale.append(entity.entity_id)
     elif "_local_io_" in unique_id and unique_id not in expected:
+      stale.append(entity.entity_id)
+    elif entity.domain == "camera" and stale_local_camera(unique_id, merged):
+      # The panel withdrew its own camera (opt-in off, sensor missing or
+      # older firmware); a registry orphan would stay unavailable forever.
       stale.append(entity.entity_id)
     elif local_io_announced and (
       unique_id == legacy_temperature_id
@@ -3226,6 +3232,11 @@ class Tab5Bridge:
       blocking=False,
     )
 
+  def _is_local_camera_self_loop(self, entity_id: str) -> bool:
+    """Return whether the panel asked to stream its own built-in camera."""
+    registry_entry = er.async_get(self.hass).async_get(entity_id)
+    return is_local_camera_self_loop(registry_entry, DOMAIN, self.entry.entry_id)
+
   async def _async_handle_camera_command(self, msg: ReceiveMessage) -> None:
     """Create or stop the short-lived JPEG-frame stream used by the popup."""
     parsed = _try_parse_json(msg.payload.strip())
@@ -3249,6 +3260,25 @@ class Tab5Bridge:
         json.dumps({
           "status": "stopped",
           "entity_id": entity_id or requested_entity or "",
+          "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
+        }),
+        qos=0,
+        retain=False,
+      )
+      return
+
+    if command == "open" and entity_id and self._is_local_camera_self_loop(entity_id):
+      _LOGGER.warning(
+        "HomeTiles camera stream refused for %s: it is this panel's own camera",
+        entity_id,
+      )
+      await mqtt.async_publish(
+        self.hass,
+        status_topic,
+        json.dumps({
+          "status": "error",
+          "entity_id": entity_id,
+          "error": "camera_self_loop",
           "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
         }),
         qos=0,

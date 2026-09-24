@@ -94,6 +94,11 @@
     }
   },
   "entity": {
+    "camera": {
+      "local_camera": {
+        "name": "Kamera"
+      }
+    },
     "select": {
       "view": {
         "name": "Ansicht"

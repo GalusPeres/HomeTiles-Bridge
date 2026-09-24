@@ -12,7 +12,8 @@ def normalise_capabilities(value: Any) -> dict[str, bool]:
     if not isinstance(value, dict):
         raise ValueError("invalid_capabilities")
     result = {}
-    for key in ("battery_soc", "legacy_external_temperature", "view_navigation"):
+    for key in ("battery_soc", "legacy_external_temperature", "local_camera",
+                "view_navigation"):
         if key in value:
             if type(value[key]) is not bool:
                 raise ValueError("invalid_capabilities")
@@ -32,7 +33,8 @@ def supports(data: Mapping[str, Any], capability: str) -> bool:
     explicit = data.get(CAPABILITIES, {})
     if capability in explicit:
         return explicit[capability] is True
-    if capability == "view_navigation":
+    if capability in ("view_navigation", "local_camera"):
+        # Never inferred: only firmware that announces it can answer requests.
         return False
     # No fixed external channel exists once firmware announces local I/O,
     # including an empty list. Preserve the original topic for legacy panels.
@@ -51,3 +53,7 @@ def stale_internal_sensor(unique_id: str, data: Mapping[str, Any]) -> bool:
     return ((unique_id.endswith("_battery_soc") and not supports(data, "battery_soc"))
             or (unique_id.endswith("_external_temperature")
                 and not supports(data, "legacy_external_temperature")))
+
+
+def stale_local_camera(unique_id: str, data: Mapping[str, Any]) -> bool:
+    return unique_id.endswith("_local_camera") and not supports(data, "local_camera")

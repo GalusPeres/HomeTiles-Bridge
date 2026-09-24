@@ -98,6 +98,10 @@ The integration communicates with the display firmware via MQTT:
 | `base_topic/cmnd/scene` | Display > HA | Scene/script activation or button press |
 | `base_topic/cmnd/camera` | Display > HA | Open or close an experimental camera stream |
 | `base_topic/stat/camera` | HA > Display | Camera stream endpoint, protocol and status |
+| `base_topic/cmnd/local_camera` | HA > Display | Request one still image from the display's own camera (not retained) |
+| `base_topic/stat/local_camera` | Display > HA | Retained built-in camera status (`ready`, `disabled`, `error`) |
+| `base_topic/stat/local_camera/image/{id}` | Display > HA | Raw JPEG answer for request `{id}` (not retained) |
+| `base_topic/stat/local_camera/error/{id}` | Display > HA | Error answer for request `{id}` (not retained) |
 | `base_topic/cmnd/display_brightness` | HA > Display | Set normal display brightness (1-100%) |
 | `base_topic/stat/display_brightness` | Display > HA | Current normal display brightness (1-100%) |
 | `base_topic/cmnd/screensaver_brightness` | HA > Display | Set screensaver brightness (1-100%) |
@@ -225,6 +229,15 @@ Camera popups require HomeTiles firmware v0.6.3 or newer. Camera support is
 experimental: the bridge transcodes the selected Home Assistant camera into
 display-sized JPEG frames, so CPU usage depends on the source stream, resolution,
 frame rate and number of simultaneously open panels.
+
+A display with a built-in camera can additionally appear in Home Assistant as a
+camera entity. The entity is created only when the firmware announces
+`"local_camera": true` in its retained bridge configuration, which requires the
+user to enable the camera on the display. Images are requested on demand as
+single JPEG snapshots over MQTT; the bridge shares one request between all
+viewers, caches the last frame for at least 1.5 seconds, never retains images
+and refuses to stream a display's own camera back into that display's camera
+popup.
 
 ## Release Process
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 import unittest
 
@@ -157,6 +158,65 @@ class BridgeSourceContractTest(unittest.TestCase):
 
         self.assertIsNotNone(source)
         self.assertIn('"sensors": self.sensors', source)
+
+    def test_local_camera_platform_contract(self) -> None:
+        package = BRIDGE_SOURCE.parent
+        platforms = next(
+            node.value for node in self.tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "PLATFORMS" for target in node.targets)
+        )
+        self.assertIn("camera", ast.literal_eval(platforms))
+        self.assertTrue((package / "camera.py").is_file())
+
+        camera_tree = ast.parse((package / "camera.py").read_text(encoding="utf-8"))
+        subscriptions = [
+            node for node in ast.walk(camera_tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "async_subscribe"
+        ]
+        binary = [call for call in subscriptions
+                  if any(keyword.arg == "encoding" for keyword in call.keywords)]
+        self.assertEqual(len(binary), 1)
+        [encoding] = [keyword.value for keyword in binary[0].keywords if keyword.arg == "encoding"]
+        self.assertIsInstance(encoding, ast.Constant)
+        self.assertIsNone(encoding.value)
+        # Snapshot requests are never retained on the broker.
+        publishes = [node for node in ast.walk(camera_tree)
+                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                     and node.func.attr == "async_publish"]
+        self.assertEqual(len(publishes), 1)
+        retain = {keyword.arg: keyword.value for keyword in publishes[0].keywords}["retain"]
+        self.assertIs(retain.value, False)
+
+        for module in ("camera.py", "local_camera.py"):
+            tree = ast.parse((package / module).read_text(encoding="utf-8"))
+            for _level, message in _logger_calls(tree):
+                self.assertTrue(message.isascii(), message)
+                self.assertTrue(message.startswith("HomeTiles local camera"), message)
+
+    def test_existing_camera_stream_contract_gains_only_the_self_loop_guard(self) -> None:
+        handler = _find_function(self.tree, "_async_handle_camera_command")
+        source = ast.get_source_segment(BRIDGE_SOURCE.read_text(encoding="utf-8"), handler)
+        self.assertIsNotNone(source)
+        self.assertIn('f"{self.base_topic}/stat/camera"', source)
+        self.assertIn('"camera_self_loop"', source)
+        self.assertIn('"unknown_camera"', source)
+        self.assertNotIn("local_camera/", source)
+        self.assertLess(source.index("_is_local_camera_self_loop"),
+                        source.index("async_create_session"))
+
+    def test_local_camera_name_is_translated_everywhere(self) -> None:
+        package = BRIDGE_SOURCE.parent
+        files = [package / "strings.json", *sorted((package / "translations").glob("*.json"))]
+        self.assertGreaterEqual(len(files), 3)
+        names = {}
+        for path in files:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            names[path.name] = data["entity"]["camera"]["local_camera"]["name"]
+        self.assertEqual(names["strings.json"], names["en.json"])
+        self.assertEqual(names["de.json"], "Kamera")
+        self.assertTrue(all(isinstance(name, str) and name.strip() for name in names.values()))
 
 
 if __name__ == "__main__":

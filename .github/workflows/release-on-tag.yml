@@ -16,3 +16,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          # Tags such as v0.6.48b1 become pre-releases; HACS offers them only
+          # when "Show beta versions" is enabled for this repository.
+          prerelease: ${{ contains(github.ref_name, 'b') }}
