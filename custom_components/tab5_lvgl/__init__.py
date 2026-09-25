@@ -3487,14 +3487,10 @@ class Tab5Bridge:
     )
 
   def _resolve_target_entity(self, entity_id: Optional[str], candidates: List[str]) -> Optional[str]:
+    """Accept only a configured entity; legacy commands may omit a single target."""
     if entity_id:
       entity_id = entity_id.strip()
-      if "." in entity_id:
-        return entity_id
-      return None
-    if len(candidates) == 1:
-      return candidates[0]
-    return None
+    return resolve_control_entity(entity_id, candidates)
 
   @callback
   def _handle_state_event(self, event) -> None:
