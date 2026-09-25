@@ -79,7 +79,13 @@ class StateHistoryWiringTest(unittest.TestCase):
     self.assertIn("history_kind == STATE_HISTORY_KIND", source)
     self.assertIn("history_kind == BINARY_HISTORY_KIND", source)
     self.assertNotIn("sensor_state_kind", calls)
-    self.assertNotIn("entity_id not in self.sensors", source)
+    # The legacy numeric path answers only configured entities, and the
+    # membership check runs before any Home Assistant or Recorder read.
+    guard = source.index(
+      "if entity_id not in self.sensors and entity_id not in self.binary_sensors:"
+    )
+    self.assertLess(guard, source.index("self.hass.states.get(entity_id)"))
+    self.assertLess(guard, source.index("get_instance("))
     self.assertIn("current_numeric = _coerce_float(state.state) if state else None", source)
     self.assertIn('response["current"] = state.state', source)
 

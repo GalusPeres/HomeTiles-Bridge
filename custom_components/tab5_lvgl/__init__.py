@@ -2373,6 +2373,12 @@ class Tab5Bridge:
     if not entity_id:
       _LOGGER.warning("Tab5 history request ignored (missing entity_id)")
       return
+    # Only configured entities may be read. Binary sensors stay allowed for
+    # legacy Sensor tiles of firmware before v0.6.9. The numeric protocol has
+    # no error field, so an unconfigured entity gets no reply at all.
+    if entity_id not in self.sensors and entity_id not in self.binary_sensors:
+      _LOGGER.debug("Tab5 history request ignored (entity not configured): %s", entity_id)
+      return
 
     hours = _coerce_int(parsed.get("hours"), 24, 1, 168)
     period_minutes = _coerce_int(parsed.get("period_minutes"), 5, 1, 60)
@@ -2990,6 +2996,9 @@ class Tab5Bridge:
     if entity_id:
       if not _is_weather_entity(entity_id):
         _LOGGER.debug("Tab5 weather request ignored for non-weather entity %s", entity_id)
+        return
+      if entity_id not in self.weathers:
+        _LOGGER.debug("Tab5 weather request ignored for unconfigured entity %s", entity_id)
         return
       state = self.hass.states.get(entity_id)
       if not state:
