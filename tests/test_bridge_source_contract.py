@@ -129,6 +129,14 @@ class BridgeSourceContractTest(unittest.TestCase):
         self.assertIn("entry_device_id", _called_names(handler))
         self.assertIn("is_stale_device_entry", _called_names(handler))
 
+    def test_device_lookup_avoids_deprecated_unscoped_registry_call(self) -> None:
+        # Home Assistant removes the unscoped device_registry.async_get_device
+        # lookup in 2027.8; the Bridge must use the version-aware helper.
+        handler = _find_function(self.tree, "_async_handle_ip")
+
+        self.assertIn("find_entry_device", _called_names(handler))
+        self.assertNotIn("async_get_device", _called_names(self.tree))
+
     def test_runtime_sensor_feedback_is_filtered_and_upgrade_is_repaired(self) -> None:
         setup = _find_function(self.tree, "async_setup_entry")
         feedback = _find_function(self.tree, "_async_process_bridge_config")

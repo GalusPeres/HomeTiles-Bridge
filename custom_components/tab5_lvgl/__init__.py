@@ -158,7 +158,7 @@ from .camera_stream import (
   CameraStreamManager,
 )
 from .device_helpers import entry_device_id, entry_device_info, entry_device_name
-from .device_registry_helpers import is_stale_device_entry
+from .device_registry_helpers import find_entry_device, is_stale_device_entry
 from .capabilities import (
   CAPABILITIES,
   merged_capabilities_data,
@@ -1994,7 +1994,9 @@ class Tab5Bridge:
       _LOGGER.warning("Tab5 reported an invalid LAN IP: %s", ip)
       return
     device_reg = dr.async_get(self.hass)
-    device = device_reg.async_get_device(identifiers={(DOMAIN, self.device_id)})
+    device = find_entry_device(
+      device_reg, (DOMAIN, self.device_id), self.entry.entry_id
+    )
     if not device:
       return
     url = f"http://{ip}/"
