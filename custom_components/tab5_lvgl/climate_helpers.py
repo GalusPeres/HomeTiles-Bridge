@@ -176,7 +176,7 @@ def build_climate_service_call(
     value = _normalise_option(command_payload.get(value_key))
     if not value:
       raise ValueError(f"{value_key} is required")
-    _require_option(value, attributes.get(options_key), value_key)
+    value = _require_option(value, attributes.get(options_key), value_key)
     return service, {value_key: value}
 
   if command == "set_temperature":
@@ -275,12 +275,22 @@ def _require_range(value: float, minimum: Any, maximum: Any, field: str) -> None
     raise ValueError(f"{field} exceeds the supported maximum")
 
 
-def _require_option(value: str, options: Any, field: str) -> None:
+def _require_option(value: str, options: Any, field: str) -> str:
+  """Return the advertised option with Home Assistant's exact spelling.
+
+  Panels lowercase option names, so vendor modes such as "Silent" are matched
+  without regard to case.
+  """
   if not isinstance(options, (list, tuple, set)) or not options:
     raise ValueError(f"{field} has no advertised options")
-  allowed = {str(option).strip() for option in options}
-  if value not in allowed:
-    raise ValueError(f"{field} is not supported by the entity")
+  allowed = [str(option).strip() for option in options]
+  if value in allowed:
+    return value
+  folded = value.casefold()
+  for option in allowed:
+    if option.casefold() == folded:
+      return option
+  raise ValueError(f"{field} is not supported by the entity")
 
 
 def _require_feature(features: int, required: int, action: str) -> None:

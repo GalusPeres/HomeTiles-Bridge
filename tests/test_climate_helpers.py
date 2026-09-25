@@ -181,6 +181,28 @@ class ClimateHelpersTest(unittest.TestCase):
                 {"fan_mode": "high"}, {"supported_features": 8}
             )
 
+    def test_vendor_modes_match_without_case_and_keep_ha_spelling(self) -> None:
+        # Issue #43: panels lowercase mode names; HA needs its exact spelling.
+        attributes = {
+            "supported_features": 8 | 32,
+            "fan_modes": ["Auto", "1", "2", "Silent"],
+            "swing_modes": ["Off", "Swing Up-Down"],
+        }
+        self.assertEqual(
+            CLIMATE.build_climate_service_call({"fan_mode": "silent"}, attributes),
+            ("set_fan_mode", {"fan_mode": "Silent"}),
+        )
+        self.assertEqual(
+            CLIMATE.build_climate_service_call({"fan_mode": "2"}, attributes),
+            ("set_fan_mode", {"fan_mode": "2"}),
+        )
+        self.assertEqual(
+            CLIMATE.build_climate_service_call({"swing_mode": "swing up-down"}, attributes),
+            ("set_swing_mode", {"swing_mode": "Swing Up-Down"}),
+        )
+        with self.assertRaises(ValueError):
+            CLIMATE.build_climate_service_call({"fan_mode": "turbo"}, attributes)
+
     def test_validates_hvac_and_power_service_contract(self) -> None:
         service, data = CLIMATE.build_climate_service_call(
             {"command": "set_hvac_mode", "hvac_mode": "heat"},
