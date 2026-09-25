@@ -5122,6 +5122,14 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     return
 
   fallback = _find_entry_by_base(hass, data.get(CONF_BASE_TOPIC))
+  if fallback and not _may_adopt_entry(fallback, device_id):
+    # The base topic belongs to another panel; do not take over its entry.
+    _LOGGER.debug(
+      "HomeTiles Bridge ignored device %s: base topic already used by %s",
+      device_id,
+      fallback.title,
+    )
+    return
   if fallback:
     new_data = dict(fallback.data)
     changed = False
@@ -5262,6 +5270,18 @@ def _find_entry_by_device_id(hass: HomeAssistant, device_id: Optional[str]) -> O
     if entry.data.get(CONF_DEVICE_ID) == device_id or entry.unique_id == device_id:
       return entry
   return None
+
+
+def _may_adopt_entry(entry: ConfigEntry, device_id: Optional[str]) -> bool:
+  """Only a manual entry without a panel, or a pre-v0.3.1 tab5_lvgl_XXXX
+  entry with the same MAC suffix, may be adopted by an announcing panel."""
+  bound = str(entry.data.get(CONF_DEVICE_ID) or entry.unique_id or "")
+  if not bound:
+    return True
+  return (
+    len(bound) == 14 and bound.startswith("tab5_lvgl_")
+    and str(device_id or "").upper().endswith(bound[-4:].upper())
+  )
 
 
 def _find_entry_by_base(hass: HomeAssistant, base_topic: Optional[str]) -> Optional[ConfigEntry]:
