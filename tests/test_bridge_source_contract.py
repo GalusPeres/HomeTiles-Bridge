@@ -154,9 +154,11 @@ class BridgeSourceContractTest(unittest.TestCase):
         )
         self.assertIsNotNone(source)
         import_filter = source.rfind("filter_runtime_sensor_entities(")
-        source_import = source.rfind("SOURCE_IMPORT")
+        # An unknown panel becomes a discovery card, never a silent import.
+        discovery = source.rfind("SOURCE_INTEGRATION_DISCOVERY")
         self.assertGreater(import_filter, 0)
-        self.assertGreater(source_import, import_filter)
+        self.assertGreater(discovery, import_filter)
+        self.assertNotIn("SOURCE_IMPORT", source)
 
     def test_runtime_sensor_list_is_still_published_to_panels(self) -> None:
         publisher = _find_function(self.tree, "async_publish_config_to_device")

@@ -53,6 +53,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import discovery_flow
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
@@ -83,11 +84,13 @@ from .binary_sensor_helpers import (
   split_binary_sensor_entities,
 )
 from .control_helpers import (
+  ACTION_DOMAINS,
   SWITCH_DOMAINS,
   build_action_service_call,
   build_switch_service_call,
   build_switch_state_payload,
   entity_domain,
+  panel_entity_list,
   resolve_action_entity,
   resolve_control_entity,
 )
@@ -5050,6 +5053,10 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
   device_id = data.get(CONF_DEVICE_ID)
   entry = _find_entry_by_device_id(hass, device_id)
 
+  if entry and entry.source == config_entries.SOURCE_IGNORE:
+    # The user ignored this panel's discovery card: store nothing for it.
+    return
+
   if entry:
     runtime_sensor_ids = _runtime_managed_sensor_entity_ids(hass, entry, data)
     data[CONF_SENSORS] = filter_runtime_sensor_entities(
@@ -5076,7 +5083,7 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     # dem Panel selbst (handleSaveBridge) schon vorher etwas eingerichtet
     # haben kann. Ohne dieses Nachtragen wuerde genau dieser Fall die bereits
     # gemachte Konfiguration beim ersten echten Connect stillschweigend
-    # verwerfen, weil sonst nur der SOURCE_IMPORT-Erstell-Pfad sie uebernimmt.
+    # verwerfen, weil sonst nur der Erstell-Pfad sie uebernimmt.
     for key in (
       CONF_SENSORS, CONF_BINARY_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES,
       CONF_MEDIA_PLAYERS, CONF_CLIMATES, CONF_COVERS, CONF_CAMERAS,
@@ -5140,17 +5147,17 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     await hass.config_entries.async_reload(fallback.entry_id)
     return
 
-  _LOGGER.info("HomeTiles Bridge discovered device %s; creating entry", device_id)
+  _LOGGER.info("HomeTiles Bridge discovered device %s; waiting for confirmation", device_id)
   data[CONF_SENSORS] = filter_runtime_sensor_entities(
     data.get(CONF_SENSORS, []),
     _runtime_managed_sensor_entity_ids(hass, None, data),
   )
-  hass.async_create_task(
-    hass.config_entries.flow.async_init(
-      DOMAIN,
-      context={"source": config_entries.SOURCE_IMPORT},
-      data=data,
-    )
+  # Home Assistant shows a discovery card; the entry is created on confirm.
+  discovery_flow.async_create_flow(
+    hass,
+    DOMAIN,
+    context={"source": config_entries.SOURCE_INTEGRATION_DISCOVERY},
+    data=data,
   )
 
 
@@ -5185,25 +5192,11 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
   binary_sensors = _unique_entities(binary_sensors + legacy_binary_sensors)
   weathers = _unique_entities(weathers + legacy_weathers)
 
-  lights_raw = payload.get("lights") or []
-  if not isinstance(lights_raw, list):
-    raise ValueError("invalid_lights")
-  lights = [str(item).strip() for item in lights_raw if str(item).strip()]
-
-  switches_raw = payload.get("switches") or []
-  if not isinstance(switches_raw, list):
-    raise ValueError("invalid_switches")
-  switches = [str(item).strip() for item in switches_raw if str(item).strip()]
-
-  media_players_raw = payload.get("media_players") or []
-  if not isinstance(media_players_raw, list):
-    raise ValueError("invalid_media_players")
-  media_players = [str(item).strip() for item in media_players_raw if str(item).strip()]
-
-  climates_raw = payload.get("climates") or []
-  if not isinstance(climates_raw, list):
-    raise ValueError("invalid_climates")
-  climates = [str(item).strip() for item in climates_raw if str(item).strip()]
+  # A panel must not add entities of other domains to the shared lists.
+  lights = panel_entity_list(payload.get("lights"), CONF_LIGHTS)
+  switches = panel_entity_list(payload.get("switches"), CONF_SWITCHES)
+  media_players = panel_entity_list(payload.get("media_players"), CONF_MEDIA_PLAYERS)
+  climates = panel_entity_list(payload.get("climates"), CONF_CLIMATES)
 
   covers_raw = payload.get("covers") or []
   if not isinstance(covers_raw, list):
@@ -5212,17 +5205,15 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
   if any(not entity_id.startswith("cover.") for entity_id in covers):
     raise ValueError("invalid_covers")
 
-  cameras_raw = payload.get("cameras") or []
-  if not isinstance(cameras_raw, list):
-    raise ValueError("invalid_cameras")
-  cameras = [str(item).strip() for item in cameras_raw if str(item).strip()]
+  cameras = panel_entity_list(payload.get("cameras"), CONF_CAMERAS)
 
   scene_map_raw = payload.get("scene_map") or {}
   if not isinstance(scene_map_raw, dict):
     raise ValueError("invalid_scene_map")
   scene_map: Dict[str, str] = {}
   for alias, entity in scene_map_raw.items():
-    if not alias or not entity:
+    # Scene tiles only run scenes, scripts and buttons; drop anything else.
+    if not alias or entity_domain(entity) not in ACTION_DOMAINS:
       continue
     scene_map[str(alias).lower()] = str(entity)
 

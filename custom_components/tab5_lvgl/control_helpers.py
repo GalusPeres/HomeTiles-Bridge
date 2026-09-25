@@ -22,6 +22,27 @@ def entity_domain(entity_id: Any) -> str:
     return entity_id.split(".", 1)[0]
 
 
+# Control lists a panel may announce, with the domains the Bridge options allow.
+PANEL_LIST_DOMAINS = {
+    "lights": ("light",),
+    "switches": SWITCH_DOMAINS,
+    "media_players": ("media_player",),
+    "climates": ("climate",),
+    "cameras": ("camera",),
+}
+
+
+def panel_entity_list(raw: Any, key: str) -> list[str]:
+    """Validate a list announced by a panel; one foreign item rejects it."""
+    raw = raw or []
+    if not isinstance(raw, list):
+        raise ValueError(f"invalid_{key}")
+    items = [str(item).strip() for item in raw if str(item).strip()]
+    if any(entity_domain(item) not in PANEL_LIST_DOMAINS[key] for item in items):
+        raise ValueError(f"invalid_{key}")
+    return items
+
+
 def resolve_control_entity(entity_id: str | None, candidates: Iterable[str]) -> str | None:
     """Keep legacy single-target commands, but require a configured entity."""
     configured = list(dict.fromkeys(candidates))

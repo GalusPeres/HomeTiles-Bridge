@@ -23,6 +23,10 @@
           "base_topic": "MQTT-Basis",
           "ha_prefix": "HA-Praefix"
         }
+      },
+      "discovery_confirm": {
+        "title": "Panel gefunden",
+        "description": "**{name}** hat sich per MQTT mit der Basis {base_topic} gemeldet. Nur hinzuf\u00fcgen, wenn es dein Panel ist."
       }
     },
     "error": {

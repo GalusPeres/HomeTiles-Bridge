@@ -75,6 +75,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   _discovered_ha_prefix: Optional[str] = None
   _discovered_mqtt_creds: Optional[Dict[str, Any]] = None
   _discovered_mqtt_error: Optional[str] = None
+  # Panel data announced over MQTT, kept until the user confirms the card.
+  _discovered_data: Optional[Dict[str, Any]] = None
 
   def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
@@ -141,12 +143,30 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       errors=errors,
     )
 
-  async def async_step_import(self, import_data: Dict[str, Any]):
-    device_id = import_data.get(CONF_DEVICE_ID)
-    if device_id:
-      await self.async_set_unique_id(device_id)
+  async def async_step_integration_discovery(self, discovery_info: Dict[str, Any]):
+    """A panel announced itself over MQTT; ask the user before adding it."""
+    device_id = discovery_info.get(CONF_DEVICE_ID)
+    if not device_id:
+      return self.async_abort(reason="missing_device_id")
+    await self.async_set_unique_id(device_id)
+    self._abort_if_unique_id_configured()
+    self._discovered_data = dict(discovery_info)
+    self.context["title_placeholders"] = {"name": _entry_title(self._discovered_data)}
+    return await self.async_step_discovery_confirm()
+
+  async def async_step_discovery_confirm(self, user_input: Dict[str, Any] | None = None):
+    data = dict(self._discovered_data or {})
+    if user_input is not None:
       self._abort_if_unique_id_configured()
-    return self.async_create_entry(title=_entry_title(import_data), data=import_data)
+      return self.async_create_entry(title=_entry_title(data), data=data)
+    self._set_confirm_only()
+    return self.async_show_form(
+      step_id="discovery_confirm",
+      description_placeholders={
+        "name": _entry_title(data),
+        "base_topic": data.get(CONF_BASE_TOPIC) or "",
+      },
+    )
 
   async def async_step_zeroconf(self, discovery_info: Any):
     """Panel per mDNS gefunden, BEVOR es MQTT-Zugangsdaten hat (siehe Firmware:

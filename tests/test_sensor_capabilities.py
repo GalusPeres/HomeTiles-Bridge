@@ -61,7 +61,9 @@ class SensorCapabilitiesTest(unittest.IsolatedAsyncioTestCase):
         constants = vars(load_module("const"))
         scope = dict(constants)
         scope.update(vars(load_module("editable_helpers")))
+        scope.update(vars(load_module("control_helpers")))
         scope.update({
+            "config_entries": types.SimpleNamespace(SOURCE_IGNORE="ignore"),
             "CAPABILITIES": "capabilities",
             "normalise_capabilities": CAPS.normalise_capabilities,
             "normalise_local_io": lambda value: value,
@@ -76,7 +78,7 @@ class SensorCapabilitiesTest(unittest.IsolatedAsyncioTestCase):
             "should_import_feedback_selection": SELECTION.should_import_feedback_selection,
             "_LOGGER": logging.getLogger(__name__),
         })
-        entry = types.SimpleNamespace(entry_id="panel", data={"device_id": "mac", "sensors": [
+        entry = types.SimpleNamespace(entry_id="panel", source="user", data={"device_id": "mac", "sensors": [
             "sensor.tab5_internal_battery_soc", "sensor.room"]},
             options={"sensors": ["sensor.tab5_external_temperature", "sensor.room"]})
         updates = []
@@ -158,7 +160,9 @@ class SensorCapabilitiesTest(unittest.IsolatedAsyncioTestCase):
         constants = vars(load_module("const"))
         scope = dict(constants)
         scope.update(vars(load_module("editable_helpers")))
+        scope.update(vars(load_module("control_helpers")))
         scope.update({
+            "config_entries": types.SimpleNamespace(SOURCE_IGNORE="ignore"),
             "CAPABILITIES": "capabilities",
             "normalise_capabilities": CAPS.normalise_capabilities,
             "normalise_local_io": lambda value: value,
@@ -172,7 +176,7 @@ class SensorCapabilitiesTest(unittest.IsolatedAsyncioTestCase):
             "should_import_feedback_selection": SELECTION.should_import_feedback_selection,
             "_LOGGER": logging.getLogger(__name__),
         })
-        entry = types.SimpleNamespace(entry_id="panel", data={"device_id": "mac"}, options={})
+        entry = types.SimpleNamespace(entry_id="panel", source="user", data={"device_id": "mac"}, options={})
         updates = []
         def update(item, **fields):
             updates.append(fields)

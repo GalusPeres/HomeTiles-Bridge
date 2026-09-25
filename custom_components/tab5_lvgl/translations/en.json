@@ -23,6 +23,10 @@
           "base_topic": "MQTT base topic",
           "ha_prefix": "HA entity prefix"
         }
+      },
+      "discovery_confirm": {
+        "title": "Panel discovered",
+        "description": "**{name}** announced itself over MQTT with base topic {base_topic}. Only add it if it is your panel."
       }
     },
     "error": {
