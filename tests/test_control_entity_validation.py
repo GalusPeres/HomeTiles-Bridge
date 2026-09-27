@@ -22,7 +22,7 @@ MODULE_CONSTANTS = {"LIGHT_SERVICE_FIELDS", "MEDIA_COMMAND_ALIASES"}
 HANDLERS = {
     "_resolve_target_entity", "_async_handle_light_command",
     "_async_handle_climate_command", "_async_handle_media_command",
-    "_async_handle_camera_command",
+    "_async_handle_camera_command", "_async_publish_camera_status",
 }
 
 
@@ -98,6 +98,7 @@ class ControlEntityValidationTest(unittest.IsolatedAsyncioTestCase):
             cameras=["camera.door"],
             base_topic="hometiles/panel",
             device_id="panel",
+            _command_channel=None,
         )
         self.bridge._resolve_target_entity = (
             lambda entity_id, candidates: self.methods["_resolve_target_entity"](
@@ -105,6 +106,9 @@ class ControlEntityValidationTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.bridge._is_local_camera_self_loop = lambda _entity: False
+        self.bridge._async_publish_camera_status = (
+            lambda payload: self.methods["_async_publish_camera_status"](self.bridge, payload)
+        )
 
     async def command(self, kind, payload):
         await self.methods[f"_async_handle_{kind}_command"](

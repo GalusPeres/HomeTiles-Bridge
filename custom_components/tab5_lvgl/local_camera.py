@@ -150,6 +150,26 @@ def build_pause_request(paused: bool) -> dict[str, Any]:
 
 # --- Payload parsing --------------------------------------------------------
 
+async def async_publish_local_camera_command(
+    hass: Any, bridge: Any, paired: bool, base_topic: str, payload: str,
+    publish: Callable[..., Awaitable[Any]],
+) -> bool:
+    """Send a snapshot, stream or pause request to the panel's own camera.
+
+    Stream requests carry a token, so a panel paired for encrypted commands
+    (command_channel.py) receives every request sealed through its running
+    Bridge. Without one the request is dropped, never sent unencrypted.
+    """
+    sealed_publish = getattr(bridge, "async_publish_local_camera_command", None)
+    if sealed_publish is not None:
+        await sealed_publish(payload)
+        return True
+    if paired:
+        return False
+    await publish(hass, local_camera_command_topic(base_topic), payload, qos=0, retain=False)
+    return True
+
+
 def valid_jpeg(payload: Any, max_bytes: int) -> bool:
     """Accept only a complete baseline JPEG container within the size limit."""
     if not isinstance(payload, (bytes, bytearray)):

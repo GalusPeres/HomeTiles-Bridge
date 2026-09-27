@@ -55,6 +55,7 @@ Configure via the Home Assistant UI:
 - **Panel Settings** - MQTT base topic, HA prefix, device metadata
 - **Entity Configuration** - Sensors, binary sensors, weather, lights, switchable entities, covers, climate devices, media players, scenes/scripts/buttons
 - **Energy Dashboard** - Electricity, gas and water from the HA Energy Dashboard
+- **Security (encrypted commands)** - Optional. Create a pairing code on the display (Settings > System > Security > Set up encryption) and enter it here. The Bridge then runs only encrypted, authenticated commands from that display and sends camera stream tokens encrypted; states and camera images stay unencrypted. Without a code, and with older firmware, everything works unencrypted as before. Protocol: [command-encryption.md](https://github.com/GalusPeres/HomeTiles/blob/main/docs-dev/command-encryption.md)
 
 ### Compatible Switch and Scene entities (v0.6.42)
 
@@ -98,6 +99,9 @@ The integration communicates with the display firmware via MQTT:
 | `base_topic/cmnd/scene` | Display > HA | Scene/script activation or button press |
 | `base_topic/cmnd/camera` | Display > HA | Open or close an experimental camera stream |
 | `base_topic/stat/camera` | HA > Display | Camera stream endpoint, protocol and status |
+| `base_topic/secure/panel` | Display > HA | Encrypted commands and session requests once paired (replaces the `cmnd/*` topics above) |
+| `base_topic/secure/bridge` | HA > Display | Encrypted session answers, camera replies and built-in camera requests once paired |
+| `base_topic/stat/secure` | Display > HA | Retained pairing status (`pending`/`active` and the public key id) |
 | `base_topic/cmnd/local_camera` | HA > Display | Request one still image from the display's own camera (not retained) |
 | `base_topic/cmnd/local_camera` (`"action":"stream"`) | HA > Display | Start or keep alive the live stream (not retained): `{"v":1,"action":"stream","session":"<32 hex>","host":"<Bridge IPv4>","port":8124,"token":"<32 hex>","width":640,"height":360,"fps":15,"quality":65,"ttl_ms":6000}`, re-sent every 2 s while viewers exist |
 | `base_topic/cmnd/local_camera` (`"action":"stream_stop"`) | HA > Display | Stop the live stream (not retained): `{"v":1,"action":"stream_stop","session":"<32 hex>"}` |

@@ -191,10 +191,20 @@ class BridgeSourceContractTest(unittest.TestCase):
         [encoding] = [keyword.value for keyword in binary[0].keywords if keyword.arg == "encoding"]
         self.assertIsInstance(encoding, ast.Constant)
         self.assertIsNone(encoding.value)
-        # Snapshot requests are never retained on the broker.
+        # Snapshot requests are never retained on the broker. camera.py hands
+        # them to the one publisher in local_camera.py, which seals them for a
+        # paired panel and otherwise publishes them plain and not retained.
         publishes = [node for node in ast.walk(camera_tree)
                      if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                      and node.func.attr == "async_publish"]
+        self.assertEqual(publishes, [])
+        helper_tree = ast.parse((package / "local_camera.py").read_text(encoding="utf-8"))
+        helper = next(node for node in ast.walk(helper_tree)
+                      if isinstance(node, ast.AsyncFunctionDef)
+                      and node.name == "async_publish_local_camera_command")
+        publishes = [node for node in ast.walk(helper)
+                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                     and node.func.id == "publish"]
         self.assertEqual(len(publishes), 1)
         retain = {keyword.arg: keyword.value for keyword in publishes[0].keywords}["retain"]
         self.assertIs(retain.value, False)
@@ -209,7 +219,14 @@ class BridgeSourceContractTest(unittest.TestCase):
         handler = _find_function(self.tree, "_async_handle_camera_command")
         source = ast.get_source_segment(BRIDGE_SOURCE.read_text(encoding="utf-8"), handler)
         self.assertIsNotNone(source)
-        self.assertIn('f"{self.base_topic}/stat/camera"', source)
+        # Every reply goes through one publisher, which seals it for a paired
+        # panel (command_channel.py) and keeps the plain topic otherwise.
+        self.assertIn("self._async_publish_camera_status(", source)
+        self.assertNotIn("mqtt.async_publish", source)
+        publisher = ast.get_source_segment(
+            BRIDGE_SOURCE.read_text(encoding="utf-8"),
+            _find_function(self.tree, "_async_publish_camera_status"))
+        self.assertIn('f"{self.base_topic}/stat/camera"', publisher)
         self.assertIn('"camera_self_loop"', source)
         self.assertIn('"unknown_camera"', source)
         self.assertNotIn("local_camera/", source)

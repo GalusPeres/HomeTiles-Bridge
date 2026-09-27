@@ -12,6 +12,9 @@ CONF_MANUFACTURER = "manufacturer"
 CONF_MODEL = "model"
 CONF_DEVICE_NAME = "device_name"
 CONF_LOCAL_IO = "local_io"
+# Pairing code of the encrypted command channel (command_channel.py); absent
+# means unencrypted commands exactly as before.
+CONF_COMMAND_PAIRING = "command_pairing_code"
 
 CONF_ENERGY_ELECTRICITY = "energy_electricity"
 CONF_ENERGY_GAS = "energy_gas"
