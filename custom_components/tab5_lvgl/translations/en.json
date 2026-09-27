@@ -21,7 +21,11 @@
           "mqtt_username": "MQTT username",
           "mqtt_password": "MQTT password",
           "base_topic": "MQTT base topic",
-          "ha_prefix": "HA entity prefix"
+          "ha_prefix": "HA entity prefix",
+          "panel_password": "Panel Web Admin password (only if set)"
+        },
+        "data_description": {
+          "panel_password": "Leave empty if the panel has no Web Admin password. It is used only for this pairing and is not stored."
         }
       },
       "discovery_confirm": {
@@ -33,7 +37,11 @@
       "topic_already_configured": "A panel with this MQTT topic is already configured.",
       "cannot_connect": "Could not reach the panel. Check that it's still on the network and try again.",
       "mqtt_host_required": "Enter an MQTT host or IP address.",
-      "invalid_port": "Enter a valid MQTT port between 1 and 65535."
+      "invalid_port": "Enter a valid MQTT port between 1 and 65535.",
+      "invalid_panel_password": "The panel rejected the Web Admin password.",
+      "panel_password_required": "The panel's Web Admin is protected by a password. Enter the Web Admin password.",
+      "panel_locked": "Too many wrong passwords. Wait a few minutes and try again.",
+      "panel_identity_failed": "The device could not prove that it is the panel with this password. No credentials were sent."
     },
     "abort": {
       "missing_device_id": "The discovered device did not send a valid identifier.",

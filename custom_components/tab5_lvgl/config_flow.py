@@ -20,6 +20,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import get_url
 
 from .binary_sensor_helpers import split_binary_sensor_entities
+from .panel_auth import ERROR_CANNOT_CONNECT, async_push_credentials
 from .control_helpers import ACTION_DOMAINS, SWITCH_DOMAINS, build_action_map, entity_domain
 from .editable_helpers import (EDITABLE_LISTS, EDITABLE_DOMAINS, NUMBER_DOMAINS, SELECT_DOMAINS, DATETIME_DOMAINS, editable_selection, domain_of, build_editable_payload, build_editable_service_call, add_number_history, MAX_CONTROL_BYTES)
 from .const import (
@@ -56,6 +57,9 @@ CONF_PROVISION_MQTT_HOST = "mqtt_host"
 CONF_PROVISION_MQTT_PORT = "mqtt_port"
 CONF_PROVISION_MQTT_USERNAME = "mqtt_username"
 CONF_PROVISION_MQTT_PASSWORD = "mqtt_password"
+# Optional Web Admin password of the panel. Used only for the pairing push and
+# never stored in the config entry or logged.
+CONF_PROVISION_PANEL_PASSWORD = "panel_password"
 
 
 # ---------------------------------------------------------------------------
@@ -219,19 +223,20 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       errors.update(mqtt_errors)
 
       if not errors:
-        pushed = await _push_credentials_to_device(
+        push_error = await _push_credentials_to_device(
           self.hass,
           self._discovered_host,
           creds,
           topics[CONF_BASE_TOPIC],
           topics[CONF_HA_PREFIX],
+          str(user_input.get(CONF_PROVISION_PANEL_PASSWORD) or ""),
         )
-        if not pushed:
-          _LOGGER.warning("Tab5 LVGL: Zugangsdaten-Push an %s (%s) fehlgeschlagen",
-                           self._discovered_device_id, self._discovered_host)
-          errors["base"] = "cannot_connect"
+        if push_error:
+          _LOGGER.warning("HomeTiles Bridge could not send MQTT credentials to %s (%s): %s",
+                          self._discovered_device_id, self._discovered_host, push_error)
+          errors["base"] = push_error
         else:
-          _LOGGER.info("Tab5 LVGL: Zugangsdaten erfolgreich an %s (%s) gepusht",
+          _LOGGER.info("HomeTiles Bridge sent MQTT credentials to %s (%s)",
                        self._discovered_device_id, self._discovered_host)
           data: Dict[str, Any] = dict(topics)
           data[CONF_DEVICE_ID] = self._discovered_device_id
@@ -258,6 +263,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         vol.Optional(CONF_PROVISION_MQTT_PASSWORD, default=mqtt_defaults.get("password", "")): _password_schema(),
         vol.Required(CONF_BASE_TOPIC, default=base_default): str,
         vol.Required(CONF_HA_PREFIX, default=prefix_default): str,
+        # Never prefilled: the panel password is typed for each pairing.
+        vol.Optional(CONF_PROVISION_PANEL_PASSWORD, default=""): _password_schema(),
       }),
       description_placeholders={
         "name": self._discovered_name or self._discovered_device_id or "",
@@ -848,11 +855,16 @@ async def _push_credentials_to_device(
   creds: Dict[str, Any],
   base_topic: str,
   ha_prefix: str,
-) -> bool:
-  """Schiebt die Broker-Zugangsdaten per POST /mqtt (bestehender Admin-Endpoint,
-  siehe web_admin_handlers.cpp:handleSaveMQTT) auf das Panel und stoesst danach
-  einen Neustart an (POST /restart) -- ohne den bleibt mqtt_enabled auf dem
-  Boot-Latch stehen und die neuen Zugangsdaten wirken nie (siehe network_manager.cpp)."""
+  panel_password: str = "",
+) -> Optional[str]:
+  """Send the broker credentials with POST /mqtt (Web Admin endpoint, see
+  web_admin_handlers.cpp:handleSaveMQTT) and restart the panel with POST
+  /restart; without the restart mqtt_enabled keeps its boot value and the new
+  credentials never take effect (see network_manager.cpp).
+
+  A panel with the optional Web Admin password is logged in first (see
+  panel_auth.py). Returns None on success or a config flow error code.
+  """
   session = async_get_clientsession(hass)
   timeout = aiohttp.ClientTimeout(total=5)
   form = {
@@ -864,15 +876,9 @@ async def _push_credentials_to_device(
     "ha_prefix": ha_prefix,
   }
   try:
-    async with session.post(f"http://{device_host}/mqtt", data=form, timeout=timeout, allow_redirects=False) as resp:
-      if resp.status not in (200, 303):
-        return False
-    async with session.post(f"http://{device_host}/restart", data={}, timeout=timeout, allow_redirects=False) as resp:
-      if resp.status not in (200, 303):
-        return False
+    return await async_push_credentials(session, device_host, form, panel_password, timeout)
   except (aiohttp.ClientError, asyncio.TimeoutError):
-    return False
-  return True
+    return ERROR_CANNOT_CONNECT
 
 
 def _entry_title(data: Dict[str, Any]) -> str:
