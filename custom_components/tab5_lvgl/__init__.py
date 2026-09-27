@@ -23,10 +23,6 @@ from homeassistant.components.weather.const import DATA_COMPONENT as WEATHER_DAT
 from homeassistant.components.mqtt.models import ReceiveMessage
 from homeassistant.components.recorder import get_instance
 try:
-  from homeassistant.components.recorder.history import get_significant_states
-except ImportError:  # pragma: no cover - older HA fallback
-  get_significant_states = None
-try:
   from homeassistant.components.recorder.history import get_last_state_changes
 except ImportError:  # pragma: no cover - older HA fallback
   get_last_state_changes = None
@@ -131,6 +127,7 @@ from .const import (
   CONFIG_TOPIC_ROOT,
   CONFIG_TOPIC_SUB,
   DEFAULT_BASE,
+  DISCOVERY_ADOPT_ENTRY,
   DEFAULT_PREFIX,
   DOMAIN,
   ENERGY_REQUEST_SUFFIX,
@@ -171,11 +168,21 @@ from .capabilities import (
 )
 from .command_channel import (
   BridgeChannel,
+  Keys as CommandKeys,
   entry_pairing_code,
   parse_status as parse_command_status,
   status_topic as command_status_topic,
 )
+from .announcement_guard import (
+  DiscoveryLimiter,
+  MAX_ANNOUNCEMENT_BYTES,
+  SIGNATURE_VALID,
+  announcement_matches_topic,
+  check_signature,
+)
 from .local_camera import is_local_camera_self_loop, local_camera_command_topic
+from .numeric_history import fetch_numeric_history_values
+from .request_limits import RequestGate
 from .local_io import (
   LOCAL_IO_RELAY,
   LOCAL_IO_TEMPERATURE,
@@ -199,6 +206,8 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor", "camera"]
 
 MEDIA_COVER_MAX_BYTES = 14000
+# Panel history requests are a few hundred bytes of JSON.
+HISTORY_REQUEST_MAX_BYTES = 2048
 # Source covers from HA media_player_proxy can be 200-500 KB (HD album art).
 # Pillow prepares one 240x240 cover for both the compact tile and the larger
 # popup. Older firmware accepts the same payload fields and JPEG format and
@@ -400,12 +409,24 @@ async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
     )
 
   async def _handle_bridge_config(msg: ReceiveMessage) -> None:
-    try:
-      payload = json.loads(msg.payload)
-    except (ValueError, TypeError):
-      _LOGGER.warning("Tab5 LVGL: Ungültige Bridge-Konfiguration erhalten: %s", msg.payload)
+    raw_payload = msg.payload
+    if not raw_payload:
+      return  # A cleared retained announcement.
+    if len(raw_payload) > MAX_ANNOUNCEMENT_BYTES:
+      if _announcement_log_due(hass, "oversized"):
+        _LOGGER.warning("HomeTiles Bridge ignored an oversized announcement on %s", msg.topic)
       return
-    await _async_process_bridge_config(hass, payload)
+    try:
+      payload = json.loads(raw_payload)
+    except (ValueError, TypeError):
+      if _announcement_log_due(hass, "invalid"):
+        _LOGGER.warning("HomeTiles Bridge ignored an invalid announcement on %s", msg.topic)
+      return
+    if not isinstance(payload, dict):
+      return
+    await _async_process_bridge_config(
+      hass, payload, topic=msg.topic, raw_payload=raw_payload,
+    )
 
   if "_config_unsub" not in domain_data:
     domain_data["_config_unsub"] = await mqtt.async_subscribe(
@@ -1118,6 +1139,7 @@ class Tab5Bridge:
       self._command_channel = BridgeChannel(pairing_code, self.base_topic, clock=monotonic)
     self.command_status: Dict[str, Any] = {"state": "unknown", "kid": None}
     self._secure_log_at: Dict[str, float] = {}
+    self._history_gate = RequestGate(monotonic)
     self._unsub_request = None
     self._unsub_history = None
     self._unsub_weather = None
@@ -1420,7 +1442,7 @@ class Tab5Bridge:
       self._unsub_history = await mqtt.async_subscribe(
         self.hass,
         self.history_request_topic,
-        self._async_handle_history_request,
+        self._async_on_history_request,
       )
       _LOGGER.debug("Tab5 subscribed to history topic %s", self.history_request_topic)
     if self.weather_request_topic:
@@ -2523,6 +2545,26 @@ class Tab5Bridge:
       retain=False,
     )
 
+  async def _async_on_history_request(self, msg: ReceiveMessage) -> None:
+    """Bound history requests before they reach the Recorder."""
+    # The panel never retains a request; a retained one would be answered
+    # again after every Home Assistant restart.
+    if getattr(msg, "retain", False):
+      return
+    if len(msg.payload or "") > HISTORY_REQUEST_MAX_BYTES:
+      return
+    if not self._history_gate.try_acquire():
+      if self._secure_log_due("history_limited", 60.0):
+        _LOGGER.warning(
+          "Tab5 history requests for %s are arriving too fast; extra requests are ignored",
+          self.device_id or self.base_topic,
+        )
+      return
+    try:
+      await self._async_handle_history_request(msg)
+    finally:
+      self._history_gate.release()
+
   async def _async_handle_history_request(self, msg: ReceiveMessage) -> None:
     """Handle history requests from the Tab5 popup."""
     if not self.history_response_topic:
@@ -2585,85 +2627,27 @@ class Tab5Bridge:
       return values
 
     def _fetch_history_values() -> List[Optional[float]]:
-      if points <= 0 or (state_changes_during_period is None and get_significant_states is None):
+      if points <= 0 or (state_changes_during_period is None and get_last_state_changes is None):
         return _empty_values_with_current()
-
-      history = None
-      if state_changes_during_period is not None:
-        try:
-          history = state_changes_during_period(
-            self.hass,
-            start,
-            end,
-            entity_id,
-            include_start_time_state=True,
-            minimal_response=True,
-            no_attributes=True,
-          )
-        except TypeError:
-          history = state_changes_during_period(self.hass, start, end, entity_id)
-      elif get_significant_states is not None:
-        try:
-          history = get_significant_states(
-            self.hass,
-            start,
-            end,
-            [entity_id],
-            include_start_time_state=True,
-            minimal_response=True,
-            no_attributes=True,
-          )
-        except TypeError:
-          history = get_significant_states(self.hass, start, end, [entity_id])
-
-      states = history.get(entity_id, []) if history else []
-      if not states:
-        return _empty_values_with_current()
-
-      bucket_seconds = max(period_minutes, 1) * 60
-      sums = [0.0] * points
-      counts = [0] * points
-      mins: List[Optional[float]] = [None] * points
-      maxs: List[Optional[float]] = [None] * points
-      lasts: List[Optional[float]] = [None] * points
-
-      for state in states:
-        state_time = getattr(state, "last_changed", None) or getattr(state, "last_updated", None)
-        if state_time is None:
-          continue
-        idx = int((state_time - start).total_seconds() / bucket_seconds)
-        if idx < 0:
-          continue
-        if idx >= points:
-          idx = points - 1
-        value = _coerce_float(getattr(state, "state", None))
-        if value is None:
-          continue
-        counts[idx] += 1
-        sums[idx] += value
-        if mins[idx] is None or value < mins[idx]:
-          mins[idx] = value
-        if maxs[idx] is None or value > maxs[idx]:
-          maxs[idx] = value
-        lasts[idx] = value
-
-      values: List[Optional[float]] = []
-      for idx in range(points):
-        value: Optional[float] = None
-        if counts[idx] > 0:
-          if stat == "min":
-            value = mins[idx]
-          elif stat == "max":
-            value = maxs[idx]
-          elif stat == "last":
-            value = lasts[idx]
-          else:
-            value = sums[idx] / counts[idx]
-        values.append(round(value, 3) if value is not None else None)
-
+      # Paged, newest first and capped (numeric_history.py): a busy sensor
+      # cannot make one request load a week of raw rows at once.
+      values, rows_read, complete = fetch_numeric_history_values(
+        self.hass,
+        entity_id,
+        start,
+        end,
+        points,
+        period_minutes,
+        stat,
+        state_changes_during_period=state_changes_during_period,
+        get_last_state_changes=get_last_state_changes,
+      )
+      if not complete:
+        _LOGGER.debug(
+          "Tab5 history for %s limited to the newest %d rows", entity_id, rows_read
+        )
       if not any(v is not None for v in values):
         return _empty_values_with_current()
-
       return values
 
     values = await get_instance(self.hass).async_add_executor_job(_fetch_history_values)
@@ -5185,7 +5169,13 @@ def _extract_weather_payload(state: State, hass: Optional[HomeAssistant] = None)
   return payload
 
 
-async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, Any]) -> None:
+async def _async_process_bridge_config(
+  hass: HomeAssistant,
+  payload: Dict[str, Any],
+  *,
+  topic: Optional[str] = None,
+  raw_payload: Any = None,
+) -> None:
   try:
     data = _payload_to_entry_data(payload)
   except ValueError as err:
@@ -5193,6 +5183,14 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     return
 
   device_id = data.get(CONF_DEVICE_ID)
+  if topic is not None and not announcement_matches_topic(topic, device_id):
+    # Every panel announces under its own id; anything else is a forgery or
+    # a stray message and must not reach another panel's entry.
+    if _announcement_log_due(hass, "topic"):
+      _LOGGER.warning(
+        "HomeTiles Bridge ignored an announcement for another device id on %s", topic,
+      )
+    return
   entry = _find_entry_by_device_id(hass, device_id)
 
   if entry and entry.source == config_entries.SOURCE_IGNORE:
@@ -5200,6 +5198,8 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     return
 
   if entry:
+    if not _announcement_trusted(hass, entry, data, topic, raw_payload):
+      return
     runtime_sensor_ids = _runtime_managed_sensor_entity_ids(hass, entry, data)
     data[CONF_SENSORS] = filter_runtime_sensor_entities(
       data.get(CONF_SENSORS, []), runtime_sensor_ids
@@ -5273,28 +5273,25 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     )
     return
   if fallback:
-    new_data = dict(fallback.data)
-    changed = False
-    if device_id and new_data.get(CONF_DEVICE_ID) != device_id:
-      new_data[CONF_DEVICE_ID] = device_id
-      changed = True
-    if CONF_LOCAL_IO in data and new_data.get(CONF_LOCAL_IO) != data[CONF_LOCAL_IO]:
-      new_data[CONF_LOCAL_IO] = data[CONF_LOCAL_IO]
-      changed = True
-    if CAPABILITIES in data and new_data.get(CAPABILITIES) != data[CAPABILITIES]:
-      new_data[CAPABILITIES] = data[CAPABILITIES]
-      changed = True
-    if not changed:
+    if entry_pairing_code(fallback) and not _announcement_trusted(
+      hass, fallback, data, topic, raw_payload,
+    ):
       return
+    # Any MQTT client can announce this base topic, so binding a panel to an
+    # existing entry waits for the user (config_flow adopt_confirm step).
+    data[DISCOVERY_ADOPT_ENTRY] = fallback.entry_id
 
-    _LOGGER.info("HomeTiles Bridge adopted device %s into the existing entry", device_id)
-    hass.config_entries.async_update_entry(
-      fallback,
-      data=new_data,
-      title=_entry_title(new_data),
-      unique_id=device_id or fallback.unique_id,
-    )
-    await hass.config_entries.async_reload(fallback.entry_id)
+  domain_data = hass.data.setdefault(DOMAIN, {"entries": {}})
+  limiter = domain_data.get("_discovery_limiter")
+  if limiter is None:
+    limiter = domain_data["_discovery_limiter"] = DiscoveryLimiter(monotonic)
+  if not limiter.allow(device_id, _pending_discovery_flows(hass)):
+    # Bounded discovery cards: a flood of forged announcements cannot bury
+    # the user in setup cards.
+    if _announcement_log_due(hass, "discovery"):
+      _LOGGER.warning(
+        "HomeTiles Bridge ignored announcements from new panels: too many in a short time",
+      )
     return
 
   _LOGGER.info("HomeTiles Bridge discovered device %s; waiting for confirmation", device_id)
@@ -5309,6 +5306,69 @@ async def _async_process_bridge_config(hass: HomeAssistant, payload: Dict[str, A
     context={"source": config_entries.SOURCE_INTEGRATION_DISCOVERY},
     data=data,
   )
+
+
+def _announcement_log_due(hass: HomeAssistant, reason: str, interval: float = 300.0) -> bool:
+  """Rate-limit warnings about announcements that anyone on MQTT can send."""
+  seen = hass.data.setdefault(DOMAIN, {"entries": {}}).setdefault("_announcement_log", {})
+  now = monotonic()
+  last = seen.get(reason)
+  if last is not None and now - last < interval:
+    return False
+  seen[reason] = now
+  return True
+
+
+def _announcement_trusted(
+  hass: HomeAssistant,
+  entry: ConfigEntry,
+  data: Dict[str, Any],
+  topic: Optional[str],
+  raw_payload: Any,
+) -> bool:
+  """May this announcement update the entry of the panel it names?"""
+  code = entry_pairing_code(entry)
+  if code:
+    # A paired panel signs its announcement with the pairing code.
+    signature = check_signature(CommandKeys(code).announce, topic or "", raw_payload)
+    if signature != SIGNATURE_VALID:
+      if _announcement_log_due(hass, f"signature_{entry.entry_id}"):
+        _LOGGER.warning(
+          "HomeTiles Bridge ignored an unsigned or wrongly signed announcement for %s; "
+          "if the panel shows a new pairing code, enter it under Configure > Security",
+          entry.title,
+        )
+      return False
+  stored = dict(entry.data or {})
+  stored.update(entry.options or {})
+  entry_base = _normalise_topic(stored.get(CONF_BASE_TOPIC), DEFAULT_BASE)
+  if data.get(CONF_BASE_TOPIC) != entry_base:
+    # The entry keeps listening on its own base topic; an announcement with
+    # another one cannot change its entities or selections.
+    if _announcement_log_due(hass, f"base_{entry.entry_id}"):
+      _LOGGER.warning(
+        "HomeTiles Bridge ignored an announcement for %s with base topic %s instead of %s",
+        entry.title, data.get(CONF_BASE_TOPIC), entry_base,
+      )
+    return False
+  return True
+
+
+def _pending_discovery_flows(hass: HomeAssistant) -> int:
+  """Discovery cards of this integration that still wait for the user."""
+  flow_manager = getattr(hass.config_entries, "flow", None)
+  progress = getattr(flow_manager, "async_progress_by_handler", None)
+  if progress is None:
+    return 0
+  source = config_entries.SOURCE_INTEGRATION_DISCOVERY
+  try:
+    flows = progress(DOMAIN, match_context={"source": source})
+  except TypeError:
+    flows = [
+      flow for flow in progress(DOMAIN)
+      if (flow.get("context") or {}).get("source") == source
+    ]
+  return len(flows)
 
 
 def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:

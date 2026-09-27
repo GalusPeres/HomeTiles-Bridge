@@ -57,6 +57,10 @@ Configure via the Home Assistant UI:
 - **Energy Dashboard** - Electricity, gas and water from the HA Energy Dashboard
 - **Security (encrypted commands)** - Optional. Create a pairing code on the display (Settings > System > Security > Set up encryption) and enter it here. The Bridge then runs only encrypted, authenticated commands from that display and sends camera stream tokens encrypted; states and camera images stay unencrypted. Without a code, and with older firmware, everything works unencrypted as before. Protocol: [command-encryption.md](https://github.com/GalusPeres/HomeTiles/blob/main/docs-dev/command-encryption.md)
 
+### Announcements and discovery
+
+Any client on the MQTT broker can publish on the announcement topic, so the Bridge accepts an announcement only under the panel's own `tab5_lvgl/config/{id}/bridge` topic and, for an existing entry, only with that entry's base topic. A panel paired for encrypted commands signs its announcement; its entry then ignores unsigned or wrongly signed ones. New panels always get a discovery card (at most three waiting, five new panels per ten minutes), and linking a panel to an existing entry that has no panel yet also asks for confirmation. History requests are limited to two at a time and 30 per minute per panel, and a numeric graph reads at most 20,160 Recorder rows.
+
 ### Compatible Switch and Scene entities (v0.6.42)
 
 Select the entity in **Entity Configuration**, then assign it to an existing tile in HomeTiles Web Admin. No extra tile type or popup is needed.

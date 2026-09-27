@@ -21,6 +21,7 @@ from homeassistant.helpers.network import get_url
 
 from .binary_sensor_helpers import split_binary_sensor_entities
 from .panel_auth import ERROR_CANNOT_CONNECT, async_push_credentials
+from .capabilities import CAPABILITIES
 from .command_channel import check_pairing_code, entry_pairing_code, key_id_for_code
 from .control_helpers import ACTION_DOMAINS, SWITCH_DOMAINS, build_action_map, entity_domain
 from .editable_helpers import (EDITABLE_LISTS, EDITABLE_DOMAINS, NUMBER_DOMAINS, SELECT_DOMAINS, DATETIME_DOMAINS, editable_selection, domain_of, build_editable_payload, build_editable_service_call, add_number_history, MAX_CONTROL_BYTES)
@@ -39,6 +40,7 @@ from .const import (
   CONF_ENERGY_WATER,
   CONF_HA_PREFIX,
   CONF_LIGHTS,
+  CONF_LOCAL_IO,
   CONF_MANUFACTURER,
   CONF_MEDIA_PLAYERS,
   CONF_MODEL,
@@ -50,6 +52,7 @@ from .const import (
   CONF_WEATHERS,
   DEFAULT_BASE,
   DEFAULT_PREFIX,
+  DISCOVERY_ADOPT_ENTRY,
   DOMAIN,
 )
 
@@ -86,6 +89,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   _discovered_mqtt_error: Optional[str] = None
   # Panel data announced over MQTT, kept until the user confirms the card.
   _discovered_data: Optional[Dict[str, Any]] = None
+  # Existing entry the announcing panel would be linked to (adopt_confirm).
+  _adopt_entry_id: Optional[str] = None
 
   def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
@@ -160,8 +165,61 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     await self.async_set_unique_id(device_id)
     self._abort_if_unique_id_configured()
     self._discovered_data = dict(discovery_info)
+    self._adopt_entry_id = self._discovered_data.pop(DISCOVERY_ADOPT_ENTRY, None)
     self.context["title_placeholders"] = {"name": _entry_title(self._discovered_data)}
+    if self._adopt_entry_id:
+      return await self.async_step_adopt_confirm()
     return await self.async_step_discovery_confirm()
+
+  def _adoptable_entry(self) -> Optional[config_entries.ConfigEntry]:
+    """The entry the announcing panel asks to be linked to, while still free."""
+    entry = self.hass.config_entries.async_get_entry(self._adopt_entry_id or "")
+    if entry is None or entry.domain != DOMAIN:
+      return None
+    data = self._discovered_data or {}
+    if _entry_base_topic(entry) != data.get(CONF_BASE_TOPIC):
+      return None
+    bound = str(entry.data.get(CONF_DEVICE_ID) or entry.unique_id or "")
+    if bound and not (
+      len(bound) == 14 and bound.startswith("tab5_lvgl_")
+      and str(data.get(CONF_DEVICE_ID) or "").upper().endswith(bound[-4:].upper())
+    ):
+      return None
+    return entry
+
+  async def async_step_adopt_confirm(self, user_input: Dict[str, Any] | None = None):
+    """Link an announcing panel to an existing entry with its base topic.
+
+    Any MQTT client can announce a base topic, so the user confirms before a
+    manually added entry (or one from firmware before v0.3.1) is bound to
+    this panel's device id.
+    """
+    entry = self._adoptable_entry()
+    if entry is None:
+      return self.async_abort(reason="adopt_target_changed")
+    data = dict(self._discovered_data or {})
+    if user_input is not None:
+      self._abort_if_unique_id_configured()
+      new_data = dict(entry.data)
+      new_data[CONF_DEVICE_ID] = data[CONF_DEVICE_ID]
+      for key in (CONF_LOCAL_IO, CAPABILITIES):
+        if key in data:
+          new_data[key] = data[key]
+      _LOGGER.info("HomeTiles Bridge linked device %s to the existing entry", data[CONF_DEVICE_ID])
+      self.hass.config_entries.async_update_entry(
+        entry, data=new_data, title=_entry_title(new_data), unique_id=data[CONF_DEVICE_ID],
+      )
+      await self.hass.config_entries.async_reload(entry.entry_id)
+      return self.async_abort(reason="panel_linked")
+    self._set_confirm_only()
+    return self.async_show_form(
+      step_id="adopt_confirm",
+      description_placeholders={
+        "name": _entry_title(data),
+        "base_topic": data.get(CONF_BASE_TOPIC) or "",
+        "entry": entry.title,
+      },
+    )
 
   async def async_step_discovery_confirm(self, user_input: Dict[str, Any] | None = None):
     data = dict(self._discovered_data or {})

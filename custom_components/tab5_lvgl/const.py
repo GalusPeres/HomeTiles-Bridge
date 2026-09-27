@@ -15,6 +15,9 @@ CONF_LOCAL_IO = "local_io"
 # Pairing code of the encrypted command channel (command_channel.py); absent
 # means unencrypted commands exactly as before.
 CONF_COMMAND_PAIRING = "command_pairing_code"
+# Discovery data key: the existing entry a newly announcing panel would be
+# linked to once the user confirms (config_flow.async_step_adopt_confirm).
+DISCOVERY_ADOPT_ENTRY = "adopt_entry_id"
 
 CONF_ENERGY_ELECTRICITY = "energy_electricity"
 CONF_ENERGY_GAS = "energy_gas"

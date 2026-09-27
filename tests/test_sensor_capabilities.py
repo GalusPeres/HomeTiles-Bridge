@@ -12,6 +12,8 @@ from test_view_navigation import ROOT, load_module
 
 CAPS = load_module("capabilities")
 SELECTION = load_module("sensor_selection")
+CHANNEL = load_module("command_channel")
+GUARD = load_module("announcement_guard")
 
 
 def extract(filename, names, scope):
@@ -76,6 +78,11 @@ class SensorCapabilitiesTest(unittest.IsolatedAsyncioTestCase):
             "filter_runtime_sensor_entities": SELECTION.filter_runtime_sensor_entities,
             "clean_stored_sensor_selections": SELECTION.clean_stored_sensor_selections,
             "should_import_feedback_selection": SELECTION.should_import_feedback_selection,
+            "entry_pairing_code": CHANNEL.entry_pairing_code,
+            "CommandKeys": CHANNEL.Keys,
+            "check_signature": GUARD.check_signature,
+            "SIGNATURE_VALID": GUARD.SIGNATURE_VALID,
+            "monotonic": lambda: 0.0,
             "_LOGGER": logging.getLogger(__name__),
         })
         entry = types.SimpleNamespace(entry_id="panel", source="user", data={"device_id": "mac", "sensors": [
@@ -87,7 +94,8 @@ class SensorCapabilitiesTest(unittest.IsolatedAsyncioTestCase):
             for key, value in fields.items(): setattr(item, key, value)
         hass = types.SimpleNamespace(config_entries=types.SimpleNamespace(async_update_entry=update))
         scope["_find_entry_by_device_id"] = lambda *args: entry
-        extract("__init__.py", {"_payload_to_entry_data", "_async_process_bridge_config"}, scope)
+        extract("__init__.py", {"_payload_to_entry_data", "_async_process_bridge_config",
+                                "_announcement_trusted", "_announcement_log_due"}, scope)
         payload = {"device_id": "mac", "model": "waveshare_touch_lcd_4_3",
                    "sensors": ["sensor.tab5_internal_battery_soc", "sensor.tab5_external_temperature", "sensor.room"],
                    "configured_sensors": ["sensor.room"], "local_io": [],
@@ -174,6 +182,11 @@ class SensorCapabilitiesTest(unittest.IsolatedAsyncioTestCase):
             "filter_runtime_sensor_entities": SELECTION.filter_runtime_sensor_entities,
             "clean_stored_sensor_selections": SELECTION.clean_stored_sensor_selections,
             "should_import_feedback_selection": SELECTION.should_import_feedback_selection,
+            "entry_pairing_code": CHANNEL.entry_pairing_code,
+            "CommandKeys": CHANNEL.Keys,
+            "check_signature": GUARD.check_signature,
+            "SIGNATURE_VALID": GUARD.SIGNATURE_VALID,
+            "monotonic": lambda: 0.0,
             "_LOGGER": logging.getLogger(__name__),
         })
         entry = types.SimpleNamespace(entry_id="panel", source="user", data={"device_id": "mac"}, options={})
@@ -183,7 +196,8 @@ class SensorCapabilitiesTest(unittest.IsolatedAsyncioTestCase):
             for key, value in fields.items(): setattr(item, key, value)
         hass = types.SimpleNamespace(config_entries=types.SimpleNamespace(async_update_entry=update))
         scope["_find_entry_by_device_id"] = lambda *args: entry
-        extract("__init__.py", {"_payload_to_entry_data", "_async_process_bridge_config"}, scope)
+        extract("__init__.py", {"_payload_to_entry_data", "_async_process_bridge_config",
+                                "_announcement_trusted", "_announcement_log_due"}, scope)
         payload = {"device_id": "mac", "model": "guition_jc8012p4a1_v2", "sensors": [], "local_io": [],
                    "capabilities": {"battery_soc": False, "local_camera": True}}
         await scope["_async_process_bridge_config"](hass, payload)

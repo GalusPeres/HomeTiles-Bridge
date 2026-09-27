@@ -31,6 +31,10 @@
       "discovery_confirm": {
         "title": "Panel gefunden",
         "description": "**{name}** hat sich per MQTT mit der Basis {base_topic} gemeldet. Nur hinzuf\u00fcgen, wenn es dein Panel ist."
+      },
+      "adopt_confirm": {
+        "title": "Panel verkn\u00fcpfen",
+        "description": "**{name}** hat sich per MQTT mit der Basis {base_topic} gemeldet, die der Eintrag **{entry}** nutzt. Nur verkn\u00fcpfen, wenn es dein Panel ist."
       }
     },
     "error": {
@@ -48,7 +52,9 @@
       "mqtt_not_configured": "In Home Assistant ist keine MQTT-Integration eingerichtet. Bitte zuerst die MQTT-Integration konfigurieren.",
       "unsupported_broker": "Der konfigurierte MQTT-Broker verlangt TLS oder ein Client-Zertifikat - das Panel unterst\u00fctzt das nicht. Bitte die Broker-Zugangsdaten manuell im Web-Interface des Panels eintragen.",
       "mqtt_read_failed": "Die MQTT-Zugangsdaten konnten nicht gelesen werden.",
-      "already_configured": "Dieses Panel ist bereits konfiguriert."
+      "already_configured": "Dieses Panel ist bereits konfiguriert.",
+      "panel_linked": "Das Panel wurde mit dem bestehenden Eintrag verkn\u00fcpft.",
+      "adopt_target_changed": "Der Eintrag ist inzwischen einem anderen Panel zugeordnet oder nutzt eine andere Basis."
     }
   },
   "options": {
