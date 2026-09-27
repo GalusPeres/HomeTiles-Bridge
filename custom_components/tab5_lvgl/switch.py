@@ -11,7 +11,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 
 from .capabilities import merged_capabilities_data, supports
-from .const import LOCAL_CAMERA_MAX_BYTES, TOPIC_DISPLAY_ROTATE, TOPIC_DISPLAY_SLEEP
+from .command_channel import entry_pairing_code
+from .const import DOMAIN, LOCAL_CAMERA_MAX_BYTES, TOPIC_DISPLAY_ROTATE, TOPIC_DISPLAY_SLEEP
 from .device_helpers import (
     command_topic,
     entry_base_topic,
@@ -20,9 +21,9 @@ from .device_helpers import (
     state_topic,
 )
 from .local_camera import (
+    async_publish_local_camera_command,
     build_pause_request,
     camera_allowed,
-    local_camera_command_topic,
     local_camera_status_topic,
     local_camera_unique_id,
     parse_connected,
@@ -75,7 +76,9 @@ class HomeTilesLocalCameraSwitch(SwitchEntity):
     def __init__(self, entry: ConfigEntry, base_topic: str) -> None:
         self._device_info = entry_device_info(entry)
         self._attr_unique_id = local_camera_unique_id(entry_device_id(entry))
-        self._topic_cmd = local_camera_command_topic(base_topic)
+        self._entry_id = entry.entry_id
+        self._paired = entry_pairing_code(entry) is not None
+        self._base_topic = base_topic
         self._topic_status = local_camera_status_topic(base_topic)
         self._topic_available = state_topic(base_topic, "connected")
         self._subscriptions = []
@@ -136,10 +139,13 @@ class HomeTilesLocalCameraSwitch(SwitchEntity):
 
     async def _async_publish_pause(self, paused: bool) -> None:
         # A command, never retained state: the panel keeps the pause itself.
-        await mqtt.async_publish(
-            self.hass, self._topic_cmd,
+        data = getattr(self.hass, "data", None)
+        domain_data = data.get(DOMAIN, {}) if isinstance(data, dict) else {}
+        bridge = domain_data.get("entries", {}).get(self._entry_id)
+        await async_publish_local_camera_command(
+            self.hass, bridge, self._paired, self._base_topic,
             json.dumps(build_pause_request(paused), separators=(",", ":")),
-            qos=0, retain=False)
+            mqtt.async_publish)
         # Optimistic; the next retained status confirms or corrects it.
         self._attr_is_on = not paused
         self.async_write_ha_state()

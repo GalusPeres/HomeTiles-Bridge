@@ -23,6 +23,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .capabilities import merged_capabilities_data, supports
+from .command_channel import entry_pairing_code
 from .const import (
     DOMAIN,
     LOCAL_CAMERA_FRAME_INTERVAL_S,
@@ -37,7 +38,7 @@ from .jpeg_rotate import rotate_jpeg
 from .local_camera import (
     LocalCameraSnapshots,
     RateLimitedWarnings,
-    local_camera_command_topic,
+    async_publish_local_camera_command,
     local_camera_error_prefix,
     local_camera_image_prefix,
     local_camera_status_topic,
@@ -88,6 +89,7 @@ class HomeTilesLocalCamera(Camera):
         super().__init__()
         self.content_type = "image/jpeg"
         self._entry_id = entry.entry_id
+        self._paired = entry_pairing_code(entry) is not None
         self._attr_device_info = entry_device_info(entry)
         self._attr_unique_id = local_camera_unique_id(entry_device_id(entry))
         self._base = base_topic
@@ -271,9 +273,10 @@ class HomeTilesLocalCamera(Camera):
 
     async def _async_publish_request(self, request: dict) -> None:
         # Snapshot and stream requests are commands, never retained state.
-        await mqtt.async_publish(
-            self.hass, local_camera_command_topic(self._base),
-            json.dumps(request, separators=(",", ":")), qos=0, retain=False)
+        bridge = self._domain_data().get("entries", {}).get(self._entry_id)
+        await async_publish_local_camera_command(
+            self.hass, bridge, self._paired, self._base,
+            json.dumps(request, separators=(",", ":")), mqtt.async_publish)
 
     # Live stream ---------------------------------------------------------
 

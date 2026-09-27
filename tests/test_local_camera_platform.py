@@ -356,14 +356,17 @@ class CameraCommandSelfLoopTest(unittest.IsolatedAsyncioTestCase):
             "_LOGGER": logging.getLogger(__name__),
             "is_local_camera_self_loop": local_camera.is_local_camera_self_loop,
         }
-        methods = bridge_methods({"_is_local_camera_self_loop", "_async_handle_camera_command"}, scope)
+        methods = bridge_methods({"_is_local_camera_self_loop", "_async_handle_camera_command",
+                                  "_async_publish_camera_status"}, scope)
         manager = types.SimpleNamespace(async_create_session=self.create_session)
         bridge = types.SimpleNamespace(
             hass=types.SimpleNamespace(data={"tab5_lvgl": {"camera_stream_manager": manager}}),
             entry=types.SimpleNamespace(entry_id="e1"), base_topic=BASE, device_id="mac",
             cameras=["camera.panel_camera", "camera.kitchen_panel_camera"], _device_ip=None,
+            _command_channel=None,
             _resolve_target_entity=lambda requested, allowed: requested if requested in allowed else None)
         bridge._is_local_camera_self_loop = lambda entity_id: methods["_is_local_camera_self_loop"](bridge, entity_id)
+        bridge._async_publish_camera_status = lambda payload: methods["_async_publish_camera_status"](bridge, payload)
         self.handle = lambda payload: methods["_async_handle_camera_command"](
             bridge, types.SimpleNamespace(payload=payload))
 

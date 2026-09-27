@@ -169,7 +169,13 @@ from .capabilities import (
   stale_internal_sensor,
   stale_local_camera,
 )
-from .local_camera import is_local_camera_self_loop
+from .command_channel import (
+  BridgeChannel,
+  entry_pairing_code,
+  parse_status as parse_command_status,
+  status_topic as command_status_topic,
+)
+from .local_camera import is_local_camera_self_loop, local_camera_command_topic
 from .local_io import (
   LOCAL_IO_RELAY,
   LOCAL_IO_TEMPERATURE,
@@ -1010,6 +1016,18 @@ def _resolve_bridge(hass: HomeAssistant, entry_id: Optional[str]) -> Optional["T
   return next(iter(entries.values()))
 
 
+class _OpenedCommand:
+  """A decrypted panel command, shaped like the MQTT message the handlers read."""
+
+  __slots__ = ("topic", "payload", "qos", "retain")
+
+  def __init__(self, topic: str, payload: str) -> None:
+    self.topic = topic
+    self.payload = payload
+    self.qos = 0
+    self.retain = False
+
+
 class Tab5Bridge:
   """Copies Home Assistant state to the Tab5 MQTT topics."""
 
@@ -1090,6 +1108,16 @@ class Tab5Bridge:
     self._unsub_climate = None
     self._unsub_cover = None
     self._unsub_camera = None
+    self._unsub_secure = None
+    self._unsub_secure_status = None
+    # Encrypted panel commands (command_channel.py); None keeps the plain
+    # command topics exactly as before.
+    self._command_channel: Optional[BridgeChannel] = None
+    pairing_code = entry_pairing_code(entry)
+    if pairing_code:
+      self._command_channel = BridgeChannel(pairing_code, self.base_topic, clock=monotonic)
+    self.command_status: Dict[str, Any] = {"state": "unknown", "kid": None}
+    self._secure_log_at: Dict[str, float] = {}
     self._unsub_request = None
     self._unsub_history = None
     self._unsub_weather = None
@@ -1276,6 +1304,27 @@ class Tab5Bridge:
       f"{self.base_topic}/stat/ip",
       self._async_handle_ip,
     )
+    self._unsub_secure_status = await mqtt.async_subscribe(
+      self.hass,
+      command_status_topic(self.base_topic),
+      self._async_handle_secure_status,
+    )
+    if self._command_channel is not None:
+      await self._async_setup_secure_commands()
+    else:
+      await self._async_setup_plain_commands()
+
+    if self.tracked_entities:
+      self._unsub_state = async_track_state_change_event(
+        self.hass,
+        self.tracked_entities,
+        self._handle_state_event,
+      )
+    self._runtime_setup_complete = True
+    await self._async_setup_requests()
+
+  async def _async_setup_plain_commands(self) -> None:
+    """Subscribe the unencrypted command topics of an unpaired panel."""
     self._unsub_scene = await mqtt.async_subscribe(
       self.hass,
       f"{self.base_topic}/cmnd/scene",
@@ -1321,14 +1370,29 @@ class Tab5Bridge:
       self._async_handle_camera_command,
     )
 
-    if self.tracked_entities:
-      self._unsub_state = async_track_state_change_event(
-        self.hass,
-        self.tracked_entities,
-        self._handle_state_event,
-      )
-    self._runtime_setup_complete = True
+  async def _async_setup_secure_commands(self) -> None:
+    """A paired panel sends its commands only sealed on {base}/secure/panel.
 
+    The plain command topics stay unsubscribed, so a forged unencrypted
+    command is never executed. The rekey asks the panel for a new session,
+    because a restarted Bridge no longer knows the previous one.
+    """
+    channel = self._command_channel
+    self._unsub_secure = await mqtt.async_subscribe(
+      self.hass,
+      channel.panel_topic,
+      self._async_handle_secure_panel_message,
+    )
+    rekey = channel.rekey(force=True)
+    if rekey:
+      await mqtt.async_publish(self.hass, rekey[0], rekey[1], qos=0, retain=False)
+    _LOGGER.info(
+      "HomeTiles encrypted commands enabled for %s (key id %s)",
+      self.base_topic, channel.keys.key_id,
+    )
+
+  async def _async_setup_requests(self) -> None:
+    """Prime the icon cache and subscribe the panel's request topics."""
     self._prime_icon_cache()
 
     _LOGGER.info(
@@ -1421,6 +1485,12 @@ class Tab5Bridge:
     if self._unsub_camera:
       self._unsub_camera()
       self._unsub_camera = None
+    if self._unsub_secure:
+      self._unsub_secure()
+      self._unsub_secure = None
+    if self._unsub_secure_status:
+      self._unsub_secure_status()
+      self._unsub_secure_status = None
     camera_stream_manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
     if camera_stream_manager and self.device_id:
       await camera_stream_manager.async_stop_device(self.device_id)
@@ -1974,6 +2044,109 @@ class Tab5Bridge:
       len(cover_payload["entity_picture_data"]),
     )
 
+
+  def _command_handlers(self) -> Dict[str, Any]:
+    """Command leaf -> handler, shared by plain and sealed commands."""
+    return {
+      "scene": self._async_handle_scene_command,
+      "light": self._async_handle_light_command,
+      "switch": self._async_handle_switch_command,
+      "value": self._async_handle_value_command,
+      "media": self._async_handle_media_command,
+      "climate": self._async_handle_climate_command,
+      "cover": self._async_handle_cover_command,
+      "camera": self._async_handle_camera_command,
+    }
+
+  def _secure_log_due(self, reason: str, interval: float = 60.0) -> bool:
+    now = monotonic()
+    last = self._secure_log_at.get(reason)
+    if last is not None and now - last < interval:
+      return False
+    self._secure_log_at[reason] = now
+    return True
+
+  async def _async_handle_secure_panel_message(self, msg: ReceiveMessage) -> None:
+    """Open a sealed panel message and run the command it carries."""
+    channel = self._command_channel
+    if channel is None or getattr(msg, "retain", False):
+      return
+    action, value = channel.handle_panel_message(msg.payload)
+    if action == "reply":
+      topic, payload = value
+      await mqtt.async_publish(self.hass, topic, payload, qos=0, retain=False)
+      return
+    if action != "command":
+      if value in ("rejected", "other_key"):
+        # Wrong code on one side, or somebody else publishing on this topic.
+        if self._secure_log_due(value):
+          _LOGGER.warning(
+            "HomeTiles encrypted command for %s ignored (%s)", self.base_topic,
+            "authentication failed" if value == "rejected" else "other pairing code",
+          )
+      elif self._secure_log_due(str(value), 10.0):
+        _LOGGER.debug("HomeTiles encrypted message for %s ignored (%s)", self.base_topic, value)
+      return
+    leaf, body = value
+    handler = self._command_handlers().get(leaf)
+    try:
+      text = body.decode("utf-8")
+    except UnicodeDecodeError:
+      return
+    if handler is not None:
+      await handler(_OpenedCommand(f"{self.base_topic}/cmnd/{leaf}", text))
+
+  async def _async_handle_secure_status(self, msg: ReceiveMessage) -> None:
+    """Track the panel's retained pairing status (it grants nothing)."""
+    self.command_status = parse_command_status(msg.payload)
+    channel = self._command_channel
+    kid = self.command_status["kid"]
+    if channel is None or kid is None:
+      return
+    if kid != channel.keys.key_id:
+      if self._secure_log_due("status_kid"):
+        _LOGGER.warning(
+          "HomeTiles panel %s uses another pairing code; enter the code shown on the panel",
+          self.base_topic,
+        )
+      return
+    if channel.session is None:
+      rekey = channel.rekey()
+      if rekey:
+        await mqtt.async_publish(self.hass, rekey[0], rekey[1], qos=0, retain=False)
+
+  async def _async_publish_sealed_data(self, kind: str, text: str) -> bool:
+    """Send a stream-token message to a paired panel; never unencrypted."""
+    channel = self._command_channel
+    sealed = channel.seal_data(kind, text.encode("utf-8"))
+    if sealed is None:
+      rekey = channel.rekey()
+      if rekey:
+        await mqtt.async_publish(self.hass, rekey[0], rekey[1], qos=0, retain=False)
+      if self._secure_log_due(f"no_session_{kind}", 10.0):
+        _LOGGER.debug("HomeTiles %s message for %s dropped: no encrypted session", kind, self.base_topic)
+      return False
+    await mqtt.async_publish(self.hass, sealed[0], sealed[1], qos=0, retain=False)
+    return True
+
+  async def _async_publish_camera_status(self, payload: Dict[str, Any]) -> None:
+    """Answer a camera command; the answer can carry a stream token."""
+    text = json.dumps(payload)
+    if self._command_channel is not None:
+      await self._async_publish_sealed_data("camera", text)
+      return
+    await mqtt.async_publish(
+      self.hass, f"{self.base_topic}/stat/camera", text, qos=0, retain=False,
+    )
+
+  async def async_publish_local_camera_command(self, text: str) -> None:
+    """Snapshot, stream and pause requests for the panel's own camera."""
+    if self._command_channel is not None:
+      await self._async_publish_sealed_data("local_camera", text)
+      return
+    await mqtt.async_publish(
+      self.hass, local_camera_command_topic(self.base_topic), text, qos=0, retain=False,
+    )
 
   async def _async_handle_connected(self, msg: ReceiveMessage) -> None:
     """Handle Tab5 connection event."""
@@ -3264,23 +3437,16 @@ class Tab5Bridge:
     raw_entity = parsed.get("entity_id") or parsed.get("entity")
     requested_entity = str(raw_entity).strip() if raw_entity is not None else None
     entity_id = self._resolve_target_entity(requested_entity, self.cameras)
-    status_topic = f"{self.base_topic}/stat/camera"
     manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
 
     if command in ("close", "stop"):
       if manager and self.device_id:
         await manager.async_stop_device(self.device_id)
-      await mqtt.async_publish(
-        self.hass,
-        status_topic,
-        json.dumps({
-          "status": "stopped",
-          "entity_id": entity_id or requested_entity or "",
-          "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
-        }),
-        qos=0,
-        retain=False,
-      )
+      await self._async_publish_camera_status({
+        "status": "stopped",
+        "entity_id": entity_id or requested_entity or "",
+        "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
+      })
       return
 
     if command == "open" and entity_id and self._is_local_camera_self_loop(entity_id):
@@ -3288,33 +3454,21 @@ class Tab5Bridge:
         "HomeTiles camera stream refused for %s: it is this panel's own camera",
         entity_id,
       )
-      await mqtt.async_publish(
-        self.hass,
-        status_topic,
-        json.dumps({
-          "status": "error",
-          "entity_id": entity_id,
-          "error": "camera_self_loop",
-          "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
-        }),
-        qos=0,
-        retain=False,
-      )
+      await self._async_publish_camera_status({
+        "status": "error",
+        "entity_id": entity_id,
+        "error": "camera_self_loop",
+        "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
+      })
       return
 
     if command != "open" or not entity_id or manager is None or not self.device_id:
-      await mqtt.async_publish(
-        self.hass,
-        status_topic,
-        json.dumps({
-          "status": "error",
-          "entity_id": requested_entity or "",
-          "error": "unknown_camera",
-          "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
-        }),
-        qos=0,
-        retain=False,
-      )
+      await self._async_publish_camera_status({
+        "status": "error",
+        "entity_id": requested_entity or "",
+        "error": "unknown_camera",
+        "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
+      })
       return
 
     try:
@@ -3330,17 +3484,11 @@ class Tab5Bridge:
 
       async def _async_notify_panel_end(stopped_entity: str = entity_id) -> None:
         # The camera's panel ended the live view: this popup shows "stopped".
-        await mqtt.async_publish(
-          self.hass,
-          status_topic,
-          json.dumps({
-            "status": "stopped",
-            "entity_id": stopped_entity,
-            "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
-          }),
-          qos=0,
-          retain=False,
-        )
+        await self._async_publish_camera_status({
+          "status": "stopped",
+          "entity_id": stopped_entity,
+          "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
+        })
 
       session.on_panel_end = _async_notify_panel_end
       _LOGGER.info(
@@ -3395,13 +3543,7 @@ class Tab5Bridge:
         "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
       }
 
-    await mqtt.async_publish(
-      self.hass,
-      status_topic,
-      json.dumps(response_payload),
-      qos=0,
-      retain=False,
-    )
+    await self._async_publish_camera_status(response_payload)
 
   async def _async_handle_media_command(self, msg: ReceiveMessage) -> None:
     """Execute media player commands originating from the Tab5."""

@@ -21,6 +21,7 @@ from homeassistant.helpers.network import get_url
 
 from .binary_sensor_helpers import split_binary_sensor_entities
 from .panel_auth import ERROR_CANNOT_CONNECT, async_push_credentials
+from .command_channel import check_pairing_code, entry_pairing_code, key_id_for_code
 from .control_helpers import ACTION_DOMAINS, SWITCH_DOMAINS, build_action_map, entity_domain
 from .editable_helpers import (EDITABLE_LISTS, EDITABLE_DOMAINS, NUMBER_DOMAINS, SELECT_DOMAINS, DATETIME_DOMAINS, editable_selection, domain_of, build_editable_payload, build_editable_service_call, add_number_history, MAX_CONTROL_BYTES)
 from .const import (
@@ -29,6 +30,7 @@ from .const import (
   CONF_BINARY_SENSORS,
   CONF_CAMERAS,
   CONF_CLIMATES,
+  CONF_COMMAND_PAIRING,
   CONF_COVERS,
   CONF_DEVICE_ID,
   CONF_DEVICE_NAME,
@@ -60,6 +62,9 @@ CONF_PROVISION_MQTT_PASSWORD = "mqtt_password"
 # Optional Web Admin password of the panel. Used only for the pairing push and
 # never stored in the config entry or logged.
 CONF_PROVISION_PANEL_PASSWORD = "panel_password"
+# Options step "security": the code is stored as CONF_COMMAND_PAIRING.
+CONF_PAIRING_CODE = "pairing_code"
+CONF_REMOVE_PAIRING = "remove_pairing"
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +296,7 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
   async def async_step_init(self, user_input: Dict[str, Any] | None = None):
     return self.async_show_menu(
       step_id="init",
-      menu_options=["panel", "entities", "energy"],
+      menu_options=["panel", "entities", "energy", "security"],
     )
 
   # ---- Section 1: Panel settings ----
@@ -324,6 +329,48 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
         vol.Optional(CONF_MANUFACTURER, default=current.get(CONF_MANUFACTURER, "")): str,
         vol.Optional(CONF_MODEL, default=current.get(CONF_MODEL, "")): str,
       }),
+      errors=errors,
+    )
+
+  # ---- Encrypted panel commands (command_channel.py) ----
+
+  async def async_step_security(self, user_input: Dict[str, Any] | None = None):
+    errors: Dict[str, str] = {}
+    current = dict(self.config_entry.data)
+    stored_code = entry_pairing_code(self.config_entry)
+
+    if user_input is not None:
+      updated = dict(current)
+      if user_input.get(CONF_REMOVE_PAIRING):
+        updated.pop(CONF_COMMAND_PAIRING, None)
+      elif (user_input.get(CONF_PAIRING_CODE) or "").strip():
+        bridge = self.hass.data.get(DOMAIN, {}).get("entries", {}).get(self.config_entry.entry_id)
+        code, error = check_pairing_code(
+          user_input.get(CONF_PAIRING_CODE), getattr(bridge, "command_status", None)
+        )
+        if error:
+          errors[CONF_PAIRING_CODE] = error
+        else:
+          updated[CONF_COMMAND_PAIRING] = code
+      if not errors:
+        if updated != current:
+          # The update listener reloads the entry with the new channel.
+          self.hass.config_entries.async_update_entry(self.config_entry, data=updated)
+        options = {
+          key: value for key, value in (self.config_entry.options or {}).items()
+          if key != CONF_COMMAND_PAIRING
+        }
+        return self.async_create_entry(title="", data=options)
+
+    return self.async_show_form(
+      step_id="security",
+      data_schema=vol.Schema({
+        vol.Optional(CONF_PAIRING_CODE, default=""): str,
+        vol.Optional(CONF_REMOVE_PAIRING, default=False): bool,
+      }),
+      description_placeholders={
+        "key_id": key_id_for_code(stored_code) if stored_code else "-",
+      },
       errors=errors,
     )
 
