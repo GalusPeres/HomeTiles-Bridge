@@ -21,7 +21,11 @@
           "mqtt_username": "MQTT-Benutzername",
           "mqtt_password": "MQTT-Passwort",
           "base_topic": "MQTT-Basis",
-          "ha_prefix": "HA-Praefix"
+          "ha_prefix": "HA-Praefix",
+          "panel_password": "Panel Web Admin password (only if set)"
+        },
+        "data_description": {
+          "panel_password": "Leave empty if the panel has no Web Admin password. It is used only for this pairing and is not stored."
         }
       },
       "discovery_confirm": {
@@ -33,7 +37,11 @@
       "topic_already_configured": "Ein Panel mit diesem MQTT-Topic ist bereits konfiguriert.",
       "cannot_connect": "Das Panel war nicht erreichbar. Bitte pr\u00fcfen, ob es noch im Netzwerk ist, und erneut versuchen.",
       "mqtt_host_required": "Bitte einen MQTT Host oder eine IP-Adresse eintragen.",
-      "invalid_port": "Bitte einen g\u00fcltigen MQTT Port zwischen 1 und 65535 eintragen."
+      "invalid_port": "Bitte einen g\u00fcltigen MQTT Port zwischen 1 und 65535 eintragen.",
+      "invalid_panel_password": "The panel rejected the Web Admin password.",
+      "panel_password_required": "The panel's Web Admin is protected by a password. Enter the Web Admin password.",
+      "panel_locked": "Too many wrong passwords. Wait a few minutes and try again.",
+      "panel_identity_failed": "The device could not prove that it is the panel with this password. No credentials were sent."
     },
     "abort": {
       "missing_device_id": "Das gefundene Ger\u00e4t hat keine g\u00fcltige Kennung gesendet.",
