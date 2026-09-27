@@ -5,7 +5,7 @@ repository. The pairing code is shown on the panel and entered in the Bridge
 options (Security); both sides derive the same keys from it:
 
   HKDF-SHA256(salt="HomeTiles command pairing v1", ikm=<25 code symbols>,
-              info="panel-to-bridge" | "bridge-to-panel" (32 bytes) |
+              info="panel-to-bridge" | "bridge-to-panel" | "announce" (32 bytes) |
                    "key-id" (8 bytes))
 
 Envelope, published on {base}/secure/panel (from the panel) and
@@ -113,6 +113,8 @@ class Keys:
     ikm = canonical.encode("ascii")
     self.panel_to_bridge = _hkdf(ikm, b"panel-to-bridge", 32)
     self.bridge_to_panel = _hkdf(ikm, b"bridge-to-panel", 32)
+    # Signs the panel's announcement (announcement_guard.py).
+    self.announce = _hkdf(ikm, b"announce", 32)
     self.key_id = _hkdf(ikm, b"key-id", 8).hex()
 
   def __repr__(self) -> str:  # Never expose key material in logs or tracebacks.
