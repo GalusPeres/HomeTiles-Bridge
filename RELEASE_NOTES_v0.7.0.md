@@ -1,4 +1,4 @@
-# HomeTiles Bridge v0.6.48
+# HomeTiles Bridge v0.7.0
 
 Adds built-in display cameras to Home Assistant, improves camera sharing and climate controls, and tightens panel discovery and command validation.
 
@@ -25,4 +25,4 @@ Camera support remains experimental and hardware validation varies by display. I
 
 This release promotes the committed v0.6.48b12 functionality without additional runtime changes. Automated tests use Home Assistant stubs and do not establish compatibility with every camera or Home Assistant installation.
 
-**Full Changelog:** https://github.com/GalusPeres/HomeTiles-Bridge/compare/v0.6.47...v0.6.48
+**Full Changelog:** https://github.com/GalusPeres/HomeTiles-Bridge/compare/v0.6.47...v0.7.0
