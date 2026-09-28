@@ -22,6 +22,7 @@ The pairing code and the keys are never logged.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import hashlib
 import hmac
 import json
@@ -333,8 +334,10 @@ class BridgeChannel:
 
 def entry_pairing_code(entry: Any) -> Optional[str]:
   """The stored pairing code of a config entry (options override data)."""
+  # Home Assistant hands out entry data and options as read-only
+  # MappingProxyType, which is a Mapping but not a dict.
   for source in (getattr(entry, "options", None), getattr(entry, "data", None)):
-    if isinstance(source, dict) and source.get(CONF_PAIRING_KEY):
+    if isinstance(source, Mapping) and source.get(CONF_PAIRING_KEY):
       return normalize_code(source.get(CONF_PAIRING_KEY))
   return None
 

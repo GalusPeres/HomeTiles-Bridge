@@ -6,6 +6,7 @@ import ast
 import json
 import logging
 import types
+from types import MappingProxyType
 import unittest
 
 try:
@@ -138,6 +139,12 @@ class PairingCodeTest(unittest.TestCase):
         entry = types.SimpleNamespace(data={}, options={})
         self.assertIsNone(CC.entry_pairing_code(entry))
         entry = types.SimpleNamespace(data={"command_pairing_code": "broken"}, options=None)
+        self.assertIsNone(CC.entry_pairing_code(entry))
+        # Home Assistant stores entry data and options as read-only mappings.
+        entry = types.SimpleNamespace(data=MappingProxyType({"command_pairing_code": CODE}),
+                                      options=MappingProxyType({}))
+        self.assertEqual(CC.entry_pairing_code(entry), "ABCDEFGHJKMNPQRSTVWXYZ012")
+        entry = types.SimpleNamespace(data=MappingProxyType({}), options=MappingProxyType({}))
         self.assertIsNone(CC.entry_pairing_code(entry))
 
 
