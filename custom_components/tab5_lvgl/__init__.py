@@ -35,6 +35,14 @@ try:
 except ImportError:  # pragma: no cover - older HA fallback
   statistics_during_period = None
 try:
+  from homeassistant.components.recorder.statistics import (
+    get_display_unit as get_statistics_display_unit,
+    get_metadata as get_statistics_metadata,
+  )
+except ImportError:  # pragma: no cover - older HA fallback
+  get_statistics_display_unit = None
+  get_statistics_metadata = None
+try:
   from homeassistant.components.energy.data import async_get_manager as async_get_energy_manager
 except ImportError:  # pragma: no cover - energy component not available
   async_get_energy_manager = None
@@ -2619,6 +2627,7 @@ class Tab5Bridge:
 
     state = self.hass.states.get(entity_id)
     current_numeric = _coerce_float(state.state) if state else None
+    state_unit = state.attributes.get("unit_of_measurement") if state else None
 
     def _empty_values_with_current() -> List[Optional[float]]:
       values: List[Optional[float]] = [None] * points
@@ -2629,8 +2638,9 @@ class Tab5Bridge:
     def _fetch_history_values() -> List[Optional[float]]:
       if points <= 0 or (state_changes_during_period is None and get_last_state_changes is None):
         return _empty_values_with_current()
-      # Paged, newest first and capped (numeric_history.py): a busy sensor
-      # cannot make one request load a week of raw rows at once.
+      # Statistics when the sensor has them, otherwise paged state rows with
+      # a cap (numeric_history.py): a busy sensor cannot make one request
+      # load a week of raw rows at once.
       values, rows_read, complete = fetch_numeric_history_values(
         self.hass,
         entity_id,
@@ -2641,6 +2651,10 @@ class Tab5Bridge:
         stat,
         state_changes_during_period=state_changes_during_period,
         get_last_state_changes=get_last_state_changes,
+        statistics_during_period=statistics_during_period,
+        get_metadata=get_statistics_metadata,
+        get_display_unit=get_statistics_display_unit,
+        state_unit=state_unit,
       )
       if not complete:
         _LOGGER.debug(

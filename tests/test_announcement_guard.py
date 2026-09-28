@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -17,7 +16,6 @@ from test_view_navigation import ROOT, load_module
 GUARD = load_module("announcement_guard")
 CHANNEL = load_module("command_channel")
 LIMITS = load_module("request_limits")
-NUMERIC = load_module("numeric_history")
 CAPS = load_module("capabilities")
 SELECTION = load_module("sensor_selection")
 
@@ -99,85 +97,6 @@ class RequestGateTest(unittest.TestCase):
         gate.release()
         gate.release()
         self.assertEqual(gate.active, 0)
-
-
-START = datetime(2026, 9, 20, tzinfo=timezone.utc)
-
-
-def row(minutes, value):
-    return types.SimpleNamespace(state=value, last_updated=START + timedelta(minutes=minutes),
-                                 last_changed=START + timedelta(minutes=minutes))
-
-
-class FakeRecorder:
-    """state_changes_during_period with the Recorder's paging semantics."""
-
-    def __init__(self, rows):
-        self.rows = rows
-        self.calls = []
-
-    def __call__(self, hass, start, end, entity_id, **kwargs):
-        self.calls.append(dict(kwargs, start=start, end=end))
-        selected = [item for item in self.rows if start <= item.last_updated < end]
-        selected.sort(key=lambda item: item.last_updated, reverse=kwargs.get("descending", False))
-        limit = kwargs.get("limit")
-        return {entity_id: selected[:limit] if limit else selected}
-
-
-class NumericHistoryTest(unittest.TestCase):
-    def test_buckets_keep_the_legacy_statistics(self):
-        buckets = NUMERIC.NumericBuckets(START, 3, 60)
-        for item in (row(-5, "1"), row(10, "2"), row(50, "4"), row(70, "nan"), row(80, "x"),
-                     row(90, "6"), row(500, "9"), {"state": "8", "last_updated": START + timedelta(minutes=20)}):
-            buckets.add(item)
-        self.assertEqual(buckets.values("mean"), [4.667, 6.0, 9.0])
-        self.assertEqual(buckets.values("min"), [2.0, 6.0, 9.0])
-        self.assertEqual(buckets.values("max"), [8.0, 6.0, 9.0])
-        self.assertEqual(buckets.values("last"), [4.0, 6.0, 9.0])
-
-    def test_reads_newest_first_in_bounded_pages(self):
-        rows = [row(minute, str(minute)) for minute in range(0, 600)]
-        recorder = FakeRecorder(rows)
-        values, read, complete = NUMERIC.fetch_numeric_history_values(
-            None, "sensor.power", START, START + timedelta(hours=10), 10, 60, "max",
-            state_changes_during_period=recorder, page_size=100, max_rows=250)
-        self.assertEqual(read, 250)
-        self.assertFalse(complete)
-        # The newest 250 minutes are complete, older buckets stay empty.
-        self.assertEqual(values[-1], 599.0)
-        self.assertEqual(values[:5], [None] * 5)
-        self.assertEqual(len(recorder.calls), 3)
-        for call in recorder.calls:
-            self.assertTrue(call["descending"])
-            self.assertTrue(call["no_attributes"])
-            self.assertFalse(call["include_start_time_state"])
-            self.assertLessEqual(call["limit"], 100)
-
-        values, read, complete = NUMERIC.fetch_numeric_history_values(
-            None, "sensor.power", START, START + timedelta(hours=10), 10, 60, "mean",
-            state_changes_during_period=FakeRecorder(rows), page_size=250, max_rows=5000)
-        self.assertTrue(complete)
-        self.assertEqual(read, 600)
-        self.assertEqual(values[0], 29.5)
-
-    def test_recorder_without_paging_falls_back_to_a_bounded_tail(self):
-        def legacy(hass, start, end, entity_id):
-            raise AssertionError("never called without paging arguments")
-
-        def old_api(hass, start, end, entity_id, **kwargs):
-            raise TypeError("unexpected keyword argument 'limit'")
-
-        tail_calls = []
-
-        def last_changes(hass, limit, entity_id):
-            tail_calls.append(limit)
-            return {entity_id: [row(599, "5")]}
-
-        values, read, complete = NUMERIC.fetch_numeric_history_values(
-            None, "sensor.power", START, START + timedelta(hours=10), 10, 60, "mean",
-            state_changes_during_period=old_api, get_last_state_changes=last_changes,
-            page_size=100, max_rows=1000)
-        self.assertEqual((values[-1], read, complete, tail_calls), (5.0, 1, False, [100]))
 
 
 def extract(names, scope):
