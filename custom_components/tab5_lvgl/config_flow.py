@@ -72,6 +72,39 @@ CONF_PROVISION_PANEL_PASSWORD = "panel_password"
 CONF_REMOVE_PAIRING = "remove_pairing"
 # Result of the user's answer on a pairing card (pairing.ANSWER_*).
 _PAIRING_RESULTS = {"paired": "pairing_done", "waiting": "pairing_confirmed", "rejected": "pairing_rejected"}
+# Pairing card title in Home Assistant's language (English otherwise). A
+# flow_title with an ICU select would fail Home Assistant's placeholder check.
+_PAIRING_CARD_TITLES = {
+  "de": "{display} f\u00fcr Verschl\u00fcsselung koppeln \u00b7 {number}",
+  "en": "Pair {display} for encryption \u00b7 {number}",
+}
+
+
+# State of the pairing in the options menu ("Security: encrypted").
+_SECURITY_STATES = {
+  "de": {"paired": "verschl\u00fcsselt", "removing": "wird ausgeschaltet", "off": "nicht verschl\u00fcsselt"},
+  "en": {"paired": "encrypted", "removing": "turning off", "off": "not encrypted"},
+}
+
+
+def _language(hass: Any) -> str:
+  """Home Assistant's language for texts the Bridge builds itself; English otherwise."""
+  language = str(getattr(hass.config, "language", None) or "en").split("-")[0].lower()
+  return language if language in _PAIRING_CARD_TITLES else "en"
+
+
+def _pairing_card_title(hass: Any, display: str, number: str) -> str:
+  return _PAIRING_CARD_TITLES[_language(hass)].format(display=display, number=number)
+
+
+def _security_state(hass: Any, entry: Any) -> str:
+  if entry_pairing_key(entry) is not None:
+    state = "paired"
+  elif entry_removing_key(entry) is not None:
+    state = "removing"
+  else:
+    state = "off"
+  return _SECURITY_STATES[_language(hass)][state]
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +295,10 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     number = self._pairing_number()
     if entry is None or number is None:
       return self.async_abort(reason="pairing_expired")
-    self.context["title_placeholders"] = {"name": f"{entry.title} ({number})"}
+    # A card under Discovered usually means a new device; this title says that
+    # an existing display is paired. As plain text it also shows before the
+    # browser has loaded the integration's new translations.
+    self.context["title_placeholders"] = {"name": _pairing_card_title(self.hass, entry.title, number)}
     return await self.async_step_pairing_confirm()
 
   async def async_step_pairing_confirm(self, user_input: Dict[str, Any] | None = None):
@@ -421,6 +457,7 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
     return self.async_show_menu(
       step_id="init",
       menu_options=["panel", "entities", "energy", "security"],
+      description_placeholders={"security": _security_state(self.hass, self.config_entry)},
     )
 
   # ---- Section 1: Panel settings ----

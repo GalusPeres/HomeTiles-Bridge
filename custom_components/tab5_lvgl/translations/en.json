@@ -38,10 +38,10 @@
       },
       "pairing_confirm": {
         "title": "Pair display",
-        "description": "**{name}** wants to pair with the Bridge.\n\nNumber: **{number}**\n\nOnly confirm if the display shows exactly this number right now, then confirm on the display too. Once paired, the Bridge runs only encrypted commands from this display.",
+        "description": "Encrypts the existing display **{name}**. No new device is added.\n\n# {number}\n\nConfirm only if the display shows this number.",
         "menu_options": {
-          "pairing_accept": "The numbers match: pair",
-          "pairing_reject": "Reject"
+          "pairing_accept": "Numbers match: encrypt",
+          "pairing_reject": "Reject (stays unencrypted)"
         }
       }
     },
@@ -63,10 +63,10 @@
       "already_configured": "This panel is already configured.",
       "panel_linked": "The panel was linked to the existing entry.",
       "adopt_target_changed": "The entry now belongs to another panel or uses another base topic.",
-      "pairing_done": "Paired. The display now sends its commands encrypted.",
-      "pairing_confirmed": "Confirmed. Now confirm the number on the display too.",
-      "pairing_rejected": "Pairing rejected. The display stays unencrypted.",
-      "pairing_expired": "This pairing attempt has ended (cancelled or older than 2 minutes). Start pairing again on the display."
+      "pairing_done": "Paired. The display now sends encrypted commands.",
+      "pairing_confirmed": "Confirmed. Now confirm on the display too.",
+      "pairing_rejected": "Rejected. The display stays connected unencrypted.",
+      "pairing_expired": "This pairing has ended. Start it again on the display."
     }
   },
   "options": {
@@ -76,7 +76,7 @@
           "panel": "Panel settings",
           "entities": "Entity configuration",
           "energy": "Energy Dashboard",
-          "security": "Security (encrypted commands)"
+          "security": "Security: {security}"
         }
       },
       "panel": {
@@ -119,22 +119,22 @@
         }
       },
       "security": {
-        "title": "Encrypted commands",
-        "description": "This display is paired (key id {key_id}). The Bridge runs only encrypted commands from it, and camera stream tokens travel encrypted as well. States and camera images stay unencrypted.\n\nTo remove the pairing, tick the box. The display turns encryption off by itself as soon as it is connected to the Bridge.",
+        "title": "Encryption",
+        "description": "This display is encrypted (key id {key_id}).",
         "data": {
-          "remove_pairing": "Remove pairing (commands unencrypted again)"
+          "remove_pairing": "Remove pairing (unencrypted again)"
         }
       }
     },
     "error": {
       "invalid_scene_map": "Aliases must follow the pattern alias=entity_id (one per line).",
       "invalid_editable_entities": "Choose compatible Number, Select or Date/Time entities.",
-      "pairing_nothing_selected": "Nothing was changed. To remove the pairing, tick the box."
+      "pairing_nothing_selected": "Nothing changed. Tick the box to remove the pairing."
     },
     "abort": {
-      "pairing_removed": "Pairing removed. The Bridge runs unencrypted commands from this display again. The display turns encryption off by itself as soon as it is connected to the Bridge.",
-      "pairing_not_paired": "This display is not paired. To pair it, choose Settings → System → Security → Pair on the display. Home Assistant then shows a card under Discovered with a six-digit number to compare.",
-      "pairing_removing": "The pairing is removed. The display turns encryption off by itself as soon as it is connected to the Bridge; its unencrypted commands already work."
+      "pairing_removed": "Pairing removed. The display turns encryption off when it connects.",
+      "pairing_not_paired": "Not encrypted. To pair, choose Settings → System → Security → Pair on the display.",
+      "pairing_removing": "Pairing removed. The display turns encryption off when it connects."
     }
   },
   "entity": {
@@ -151,6 +151,11 @@
     "switch": {
       "local_camera": {
         "name": "Camera"
+      }
+    },
+    "binary_sensor": {
+      "encryption": {
+        "name": "Encryption"
       }
     }
   },

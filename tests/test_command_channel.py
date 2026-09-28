@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import string
 import types
 from types import MappingProxyType
 import unittest
@@ -764,6 +765,27 @@ class FlowTextsTest(unittest.TestCase):
             self.assertEqual(set(card["menu_options"]), {"pairing_accept", "pairing_reject"}, path)
             for reason in ("pairing_done", "pairing_confirmed", "pairing_rejected", "pairing_expired"):
                 self.assertTrue(data["config"]["abort"][reason].strip(), path)
+            # The number stands large on a line of its own, as on the display.
+            self.assertIn("\n\n# {number}\n\n", card["description"], path)
+
+    def test_translations_pass_home_assistant_placeholder_check(self):
+        # Home Assistant parses every string with string.Formatter and drops
+        # (with an error in the log) those whose placeholders differ from English.
+        def placeholders(value):
+            return {field for _text, field, _spec, _conv in string.Formatter().parse(value) if field is not None}
+
+        def flatten(prefix, value):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    yield from flatten(f"{prefix}.{key}", item)
+            else:
+                yield prefix, value
+
+        english = dict(flatten("", json.loads((ROOT / "translations" / "en.json").read_text(encoding="utf-8"))))
+        for path in [ROOT / "strings.json", *sorted((ROOT / "translations").glob("*.json"))]:
+            for key, value in flatten("", json.loads(path.read_text(encoding="utf-8"))):
+                self.assertIn(key, english, path)
+                self.assertEqual(placeholders(value), placeholders(english[key]), (path, key))
 
     def test_security_step_only_removes(self):
         source = (ROOT / "config_flow.py").read_text(encoding="utf-8")
@@ -790,8 +812,10 @@ def pairing_flow_class():
     names = {"_pairing_bridge", "_pairing_number", "_async_start_pairing_card", "async_step_pairing_confirm",
              "async_step_pairing_accept", "async_step_pairing_reject", "_async_answer_pairing", "async_step_ignore"}
     functions = [node for node in flow.body if getattr(node, "name", None) in names]
-    results = next(node for node in tree.body if isinstance(node, ast.Assign)
-                   and getattr(node.targets[0], "id", None) == "_PAIRING_RESULTS")
+    helpers = [node for node in tree.body
+               if (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None)
+                   in ("_PAIRING_RESULTS", "_PAIRING_CARD_TITLES"))
+               or (isinstance(node, ast.FunctionDef) and node.name in ("_language", "_pairing_card_title"))]
     discovery = next(node for node in flow.body if getattr(node, "name", None) == "async_step_integration_discovery")
     # Its first statement sends pairing data to the card; the panel card is left out.
     head = ast.AsyncFunctionDef(name="async_step_integration_discovery", args=discovery.args,
@@ -800,7 +824,7 @@ def pairing_flow_class():
     cls = ast.ClassDef(name="Flow", bases=[ast.Name("FlowBase", ast.Load())], keywords=[],
                        body=[*functions, head], decorator_list=[], type_params=[])
     module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
-                              results, cls], type_ignores=[])
+                              *helpers, cls], type_ignores=[])
 
     class FlowBase:
         _pairing_entry_id = None
@@ -850,6 +874,7 @@ class PairingCardTest(unittest.IsolatedAsyncioTestCase):
         entry = types.SimpleNamespace(entry_id="entry1", title="Kitchen")
         self.hass = types.SimpleNamespace(
             data={"tab5_lvgl": {"entries": {"entry1": self.bridge}}},
+            config=types.SimpleNamespace(language="en"),
             config_entries=types.SimpleNamespace(async_get_entry=lambda entry_id: entry if entry_id == "entry1" else None))
 
     async def open_card(self):
@@ -862,8 +887,9 @@ class PairingCardTest(unittest.IsolatedAsyncioTestCase):
         flow, result = await self.open_card()
         self.assertEqual(result, ("menu", "pairing_confirm", ["pairing_accept", "pairing_reject"],
                                   {"name": "Kitchen", "number": NUMBER}))
+        # The card says that an existing display is paired, not that a device is added.
         self.assertEqual(flow.context, {"unique_id": "pairing_entry1",
-                                        "title_placeholders": {"name": f"Kitchen ({NUMBER})"}})
+                                        "title_placeholders": {"name": f"Pair Kitchen for encryption \u00b7 {NUMBER}"}})
         self.assertEqual(await flow.async_step_pairing_accept(), ("abort", "pairing_confirmed"))
         self.assertEqual(self.bridge.answers, [(ATTEMPT, True, "card")])
         for outcome, reason in (("paired", "pairing_done"), ("rejected", "pairing_rejected"),
@@ -873,6 +899,15 @@ class PairingCardTest(unittest.IsolatedAsyncioTestCase):
         self.bridge.outcome = "rejected"
         self.assertEqual(await flow.async_step_pairing_reject(), ("abort", "pairing_rejected"))
         self.assertEqual(self.bridge.answers[-1], (ATTEMPT, False, "card"))
+
+    async def test_card_title_follows_the_language_of_home_assistant(self):
+        for language, title in (("de", f"Kitchen f\u00fcr Verschl\u00fcsselung koppeln \u00b7 {NUMBER}"),
+                                ("de-CH", f"Kitchen f\u00fcr Verschl\u00fcsselung koppeln \u00b7 {NUMBER}"),
+                                ("fr", f"Pair Kitchen for encryption \u00b7 {NUMBER}"),
+                                (None, f"Pair Kitchen for encryption \u00b7 {NUMBER}")):
+            self.hass.config.language = language
+            flow, _result = await self.open_card()
+            self.assertEqual(flow.context["title_placeholders"], {"name": title}, language)
 
     async def test_ended_attempts_show_no_number(self):
         self.bridge.number = None
