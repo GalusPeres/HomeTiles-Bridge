@@ -30,17 +30,14 @@ PANEL_KEY = "3ce896914535a84f25b6bcbb18bae3e2e0bbdefa5b03712b2fbaf16e51d084de"
 BRIDGE_KEY = "5631cdca5a6fbae0a0fdfc738926f75254f40065c9e64322430aba78be18278d"
 KEY_ID = "20a8108ed11215c5"
 SESSION = "00112233445566778899aabbccddeeff"
-# Envelope vectors of the firmware test tools/tests/network/test-command-channel-core.mjs,
-# sealed with fixed direction keys; pairing v2 left the envelope unchanged.
-ENVELOPE_PANEL_KEY = "5e41f54d08a53a373dc49a8cb476f5ff8b311c4ec725bb221e545ae1047afc09"
-ENVELOPE_BRIDGE_KEY = "5e0380b97a923649ffb7578e7ef4c7f852fa194a4586a7bd140a48bcfbd51c02"
-ENVELOPE_KEY_ID = "8982fb24a78d94e1"
+# Envelope vectors shared with the firmware (docs-dev/command-encryption.md),
+# sealed with the channel keys above on the base topic "hometiles".
 ENVELOPE_PANEL_TOPIC = "hometiles/secure/panel"
 ENVELOPE_BRIDGE_TOPIC = "hometiles/secure/bridge"
 FIRMWARE_COMMAND = (
-    '{"v":1,"k":"8982fb24a78d94e1","n":"0102030405060708090a0b0c","d":"7832dd1bd249db728b0a50bc7f872a71128e0ceb'
-    '9914732336b5052b125d2e15b17d8e61b37b8088f840f1bf08fff2509452d86153ead2e27de853dc2e18ceb8216139e4dd9f2ca29e'
-    'cc3c75b9e87b874ff98daef024584a856613fa5f1d52fbb43bb25a9350ab84ebf6299d"}'
+    '{"v":1,"k":"20a8108ed11215c5","n":"0102030405060708090a0b0c","d":"d6897ddce5bea6e0aa22053a5ef1bd4bfde4f4955a'
+    '583f8114a4389b1d8763a81913cd4023b4686a4f505a521561c61f493950b10c113309dfcdf4e97cdb40c2355f680ae55b1a36c7740244'
+    '160c7facdae9637913ba13e9598e1f05642507bc34fa264f166e670e20a04aab"}'
 )
 COMMAND_PLAINTEXT = (
     b"cmd 00112233445566778899aabbccddeeff 42 light\n"
@@ -55,12 +52,12 @@ PAIR_BRIDGE_TOPIC = "hometiles/test/pair/bridge"
 UNPAIR_PLAINTEXT = b"unpair 0123456789abcdef0123456789abcdef 1 -\n"
 UNPAIR_NONCE = bytes.fromhex("000102030405060708090a0b")
 UNPAIR_FROM_PANEL = (
-    '{"v":1,"k":"8982fb24a78d94e1","n":"000102030405060708090a0b","d":"57bf95048efe6d21a8392023d835128bca899f9577'
-    '00cb026d090ecb5c811a72707dfb8b90c495763ea5ab124daac7347b8d1d772ea4ace283bbb02a"}'
+    '{"v":1,"k":"20a8108ed11215c5","n":"000102030405060708090a0b","d":"11a6abad551643a47b5deb36c6616860a1b94678af'
+    '75e8ac6bfee025bc2f3e4c190eac833e0cb381557d3e5bda1967f7f79b5700e0ab459406d83fef"}'
 )
 UNPAIR_FROM_BRIDGE = (
-    '{"v":1,"k":"8982fb24a78d94e1","n":"000102030405060708090a0b","d":"f0304f27341f5bebe38670e0476e55fefa34e2b11a'
-    '21a4224f5e66be62a63afaa85712b16a9618140eb3fecc7d8cb5b0b9332900c520448e4f1e7977"}'
+    '{"v":1,"k":"20a8108ed11215c5","n":"000102030405060708090a0b","d":"2df48e85bda4d37632843fde4a78d178089f741c47'
+    'e3291ce1d451a60cc7473dd4676251129cc80d9219d7433ce992181d00bc712a5ce6e994abb98f"}'
 )
 
 
@@ -198,14 +195,14 @@ NEEDS_CRYPTOGRAPHY = unittest.skipIf(
 @NEEDS_CRYPTOGRAPHY
 class EnvelopeTest(unittest.TestCase):
     def setUp(self):
-        self.keys = types.SimpleNamespace(panel_to_bridge=bytes.fromhex(ENVELOPE_PANEL_KEY),
-                                          bridge_to_panel=bytes.fromhex(ENVELOPE_BRIDGE_KEY))
+        self.keys = CC.Keys(PAIRING_KEY)
 
     def test_firmware_command_envelope_is_byte_identical(self):
-        sealed = CC.seal(self.keys.panel_to_bridge, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, COMMAND_PLAINTEXT,
+        sealed = CC.seal(self.keys.panel_to_bridge, KEY_ID, ENVELOPE_PANEL_TOPIC, COMMAND_PLAINTEXT,
                          bytes(range(1, 13)))
         self.assertEqual(sealed, FIRMWARE_COMMAND)
-        status, plaintext = CC.open_envelope(self.keys.panel_to_bridge, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, FIRMWARE_COMMAND)
+        status, plaintext = CC.open_envelope(self.keys.panel_to_bridge, KEY_ID, ENVELOPE_PANEL_TOPIC,
+                                             FIRMWARE_COMMAND)
         self.assertEqual((status, plaintext), (CC.OPEN_OK, COMMAND_PLAINTEXT))
         message = CC.parse_plaintext(plaintext)
         self.assertEqual((message.kind, message.session, message.seq, message.name),
@@ -214,25 +211,28 @@ class EnvelopeTest(unittest.TestCase):
 
     def test_topic_key_and_tampering_are_rejected(self):
         key = self.keys.panel_to_bridge
-        self.assertEqual(CC.open_envelope(key, ENVELOPE_KEY_ID, "other/secure/panel", FIRMWARE_COMMAND)[0],
+        self.assertEqual(CC.open_envelope(key, KEY_ID, "other/secure/panel", FIRMWARE_COMMAND)[0],
                          CC.OPEN_REJECTED)
         # A Bridge message reflected back to the Bridge uses the other key.
-        reflected = CC.seal(self.keys.bridge_to_panel, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, COMMAND_PLAINTEXT)
-        self.assertEqual(CC.open_envelope(key, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, reflected)[0], CC.OPEN_REJECTED)
+        reflected = CC.seal(self.keys.bridge_to_panel, KEY_ID, ENVELOPE_PANEL_TOPIC, COMMAND_PLAINTEXT)
+        self.assertEqual(CC.open_envelope(key, KEY_ID, ENVELOPE_PANEL_TOPIC, reflected)[0], CC.OPEN_REJECTED)
         tampered = json.loads(FIRMWARE_COMMAND)
         tampered["d"] = ("0" if tampered["d"][0] != "0" else "1") + tampered["d"][1:]
-        self.assertEqual(CC.open_envelope(key, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, json.dumps(tampered))[0], CC.OPEN_REJECTED)
+        self.assertEqual(CC.open_envelope(key, KEY_ID, ENVELOPE_PANEL_TOPIC, json.dumps(tampered))[0],
+                         CC.OPEN_REJECTED)
         other = dict(json.loads(FIRMWARE_COMMAND), k="0" * 16)
-        self.assertEqual(CC.open_envelope(key, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, json.dumps(other))[0], CC.OPEN_OTHER_KEY)
-        for malformed in ("", "not json", "[]", '{"v":2}', '{"v":1,"k":"8982fb24a78d94e1","n":"00","d":"00"}',
+        self.assertEqual(CC.open_envelope(key, KEY_ID, ENVELOPE_PANEL_TOPIC, json.dumps(other))[0],
+                         CC.OPEN_OTHER_KEY)
+        for malformed in ("", "not json", "[]", '{"v":2}', '{"v":1,"k":"20a8108ed11215c5","n":"00","d":"00"}',
                           b"\xff\xfe", "x" * 10000, None):
-            self.assertEqual(CC.open_envelope(key, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, malformed)[0], CC.OPEN_MALFORMED, malformed)
+            self.assertEqual(CC.open_envelope(key, KEY_ID, ENVELOPE_PANEL_TOPIC, malformed)[0], CC.OPEN_MALFORMED,
+                             malformed)
 
     def test_unpair_envelopes_are_byte_identical(self):
-        self.assertEqual(CC.seal(self.keys.panel_to_bridge, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, UNPAIR_PLAINTEXT, UNPAIR_NONCE),
-                         UNPAIR_FROM_PANEL)
-        self.assertEqual(CC.seal(self.keys.bridge_to_panel, ENVELOPE_KEY_ID, ENVELOPE_BRIDGE_TOPIC, UNPAIR_PLAINTEXT, UNPAIR_NONCE),
-                         UNPAIR_FROM_BRIDGE)
+        self.assertEqual(CC.seal(self.keys.panel_to_bridge, KEY_ID, ENVELOPE_PANEL_TOPIC, UNPAIR_PLAINTEXT,
+                                 UNPAIR_NONCE), UNPAIR_FROM_PANEL)
+        self.assertEqual(CC.seal(self.keys.bridge_to_panel, KEY_ID, ENVELOPE_BRIDGE_TOPIC, UNPAIR_PLAINTEXT,
+                                 UNPAIR_NONCE), UNPAIR_FROM_BRIDGE)
         self.assertEqual(CC.build_plaintext("unpair", "0123456789abcdef0123456789abcdef", 1, None),
                          UNPAIR_PLAINTEXT)
         message = CC.parse_plaintext(UNPAIR_PLAINTEXT)
