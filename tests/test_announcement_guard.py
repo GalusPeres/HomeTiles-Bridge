@@ -266,7 +266,7 @@ class HistoryGateWiringTest(unittest.IsolatedAsyncioTestCase):
             await self.release.wait()
 
         self.bridge = types.SimpleNamespace(
-            _history_gate=LIMITS.RequestGate(Clock(), max_active=2, max_per_window=30),
+            _history_gate=LIMITS.RequestGate(Clock(), max_active=2, max_per_window=30, max_waiting=1),
             _async_handle_history_request=handle, _secure_log_at={}, device_id="panel", base_topic="hometiles")
         self.bridge._secure_log_due = lambda reason, interval=60.0: scope["_secure_log_due"](
             self.bridge, reason, interval)
@@ -280,14 +280,20 @@ class HistoryGateWiringTest(unittest.IsolatedAsyncioTestCase):
         first = asyncio.create_task(self.on_request('{"entity_id":"sensor.a"}'))
         second = asyncio.create_task(self.on_request('{"entity_id":"sensor.b"}'))
         await asyncio.sleep(0)
+        # A third graph tile waits in line instead of being dropped.
+        third = asyncio.create_task(self.on_request('{"entity_id":"sensor.c"}'))
+        await asyncio.sleep(0)
+        self.assertEqual(self.bridge._history_gate.waiting, 1)
+        # Only a full line drops requests.
         with self.assertLogs("test_announcement_guard", "WARNING"):
-            await self.on_request('{"entity_id":"sensor.c"}')
+            await self.on_request('{"entity_id":"sensor.flood"}')
         self.assertEqual(self.handled, ['{"entity_id":"sensor.a"}', '{"entity_id":"sensor.b"}'])
         self.release.set()
-        await asyncio.gather(first, second)
-        self.assertEqual(self.bridge._history_gate.active, 0)
+        await asyncio.wait_for(asyncio.gather(first, second, third), 1)
+        self.assertEqual(self.handled[2], '{"entity_id":"sensor.c"}')
+        self.assertEqual((self.bridge._history_gate.active, self.bridge._history_gate.waiting), (0, 0))
         await self.on_request('{"entity_id":"sensor.d"}')
-        self.assertEqual(len(self.handled), 3)
+        self.assertEqual(len(self.handled), 4)
 
 
 class SourceContractTest(unittest.TestCase):

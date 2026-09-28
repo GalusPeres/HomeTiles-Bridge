@@ -2561,7 +2561,8 @@ class Tab5Bridge:
       return
     if len(msg.payload or "") > HISTORY_REQUEST_MAX_BYTES:
       return
-    if not self._history_gate.try_acquire():
+    # Every graph tile of a view asks at once; extra requests wait in line.
+    if not await self._history_gate.acquire():
       if self._secure_log_due("history_limited", 60.0):
         _LOGGER.warning(
           "Tab5 history requests for %s are arriving too fast; extra requests are ignored",
