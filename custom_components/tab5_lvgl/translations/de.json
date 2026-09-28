@@ -74,8 +74,8 @@
       "init": {
         "menu_options": {
           "panel": "Panel-Einstellungen",
-          "entities": "Entity-Konfiguration",
-          "energy": "Energie Dashboard",
+          "entities": "Entity-Konfiguration (alle Displays)",
+          "energy": "Energie Dashboard (alle Displays)",
           "security": "Sicherheit: {security}"
         }
       },
