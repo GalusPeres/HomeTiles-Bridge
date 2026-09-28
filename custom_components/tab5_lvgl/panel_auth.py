@@ -4,8 +4,8 @@ The pairing push (POST /mqtt and /restart) runs against the panel's Web
 Admin. Since firmware with the optional Web Admin password, a protected panel
 answers those requests only for a logged-in session:
 
-  GET  /api/auth/challenge -> {"enabled": true, "salt": hex, "nonce": hex}
-  key   = SHA-256(salt || UTF-8 password)
+  GET  /api/auth/challenge -> {"enabled": true, "salt": hex, "nonce": hex, "iter": n}
+  key   = PBKDF2-HMAC-SHA256(UTF-8 password, salt, n iterations, 32 bytes)
   proof = HMAC-SHA256(key, nonce)
   POST /api/auth/login {"nonce": hex, "proof": hex}
        -> {"csrf": hex, "server_proof": hex} plus an ht_session cookie
@@ -18,11 +18,19 @@ so a device that merely claims to be the panel does not receive them.
 Older firmware has no /api/auth/challenge (HTTP 404) and a panel without a
 password answers {"enabled": false}; both keep the unauthenticated push.
 
+The key is deliberately slow to derive: the login travels over plain http://,
+so a recorded login must not allow fast offline guessing of the password. The
+panel stores only salt, iterations and key and never derives it; the Bridge
+does it once per pairing, off the event loop, and accepts only iteration counts
+between KDF_MIN_ITERATIONS and KDF_MAX_ITERATIONS, so a device posing as the
+panel cannot stall Home Assistant.
+
 The password, the derived key and the proofs are never logged or stored.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -41,13 +49,22 @@ ERROR_PASSWORD_REQUIRED = "panel_password_required"
 ERROR_LOCKED = "panel_locked"
 ERROR_IDENTITY = "panel_identity_failed"
 
+KDF_MIN_ITERATIONS = 10_000
+KDF_MAX_ITERATIONS = 1_000_000
+
 _HEX_16 = re.compile(r"[0-9a-fA-F]{32}\Z")
 _HEX_32 = re.compile(r"[0-9a-fA-F]{64}\Z")
 _COOKIE = re.compile(r"(?:^|[;,]\s*)" + SESSION_COOKIE + r"=([0-9a-fA-F]{32})(?=;|,|\s|$)")
 
 
-def derive_key(salt: bytes, password: str) -> bytes:
-  return hashlib.sha256(salt + password.encode("utf-8")).digest()
+def derive_key(salt: bytes, password: str, iterations: int) -> bytes:
+  return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations, 32)
+
+
+def _iterations(value: object) -> Optional[int]:
+  if isinstance(value, bool) or not isinstance(value, int):
+    return None
+  return value if KDF_MIN_ITERATIONS <= value <= KDF_MAX_ITERATIONS else None
 
 
 def login_proof(key: bytes, nonce: bytes) -> bytes:
@@ -110,11 +127,12 @@ async def async_login(session: Any, host: str, password: str, timeout: Any) -> P
       return PanelLogin()
     salt_hex = str(challenge.get("salt") or "")
     nonce_hex = str(challenge.get("nonce") or "")
-    if not _HEX_16.match(salt_hex) or not _HEX_32.match(nonce_hex):
+    iterations = _iterations(challenge.get("iter"))
+    if not _HEX_16.match(salt_hex) or not _HEX_32.match(nonce_hex) or iterations is None:
       return PanelLogin(error=ERROR_IDENTITY, protected=True)
 
     nonce = bytes.fromhex(nonce_hex)
-    key = derive_key(bytes.fromhex(salt_hex), password)
+    key = await asyncio.to_thread(derive_key, bytes.fromhex(salt_hex), password, iterations)
     proof = login_proof(key, nonce)
     async with session.post(f"{base}/api/auth/login", json={"nonce": nonce_hex, "proof": proof.hex()},
                             timeout=timeout, allow_redirects=False) as response:

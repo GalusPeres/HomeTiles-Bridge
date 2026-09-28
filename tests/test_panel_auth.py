@@ -18,9 +18,10 @@ AUTH = load_module("panel_auth")
 SALT = "a1" * 16
 NONCE = "5c" * 32
 PASSWORD = "Pässwort-123"
-KEY = "1a1168e2a2b908f40f849a0828d7dc2120d5e3355a33cb614f66600d2a7ca954"
-PROOF = "a4b17028d639885824c1cd3e586a1203edb2648daafad81c14c4f203e92f32f9"
-SERVER_PROOF = "1ead99615ad5e76301fc20b5f87d4410bccd52b7df60f7464ea1b38160e8abe5"
+ITERATIONS = 100000
+KEY = "1ca04c9ba257bbc2be95d76f4ee7385ad79143f23050d4c5c56ec3e3fd5fddc0"
+PROOF = "028c2df33691a772cb260751e39bcda9716901c5bb6650ac66970e4513fe5afe"
+SERVER_PROOF = "5f38e5560475a83b44fa1014b30cb16f703442a6aab247dcf692795a23875007"
 SESSION = "0123456789abcdef0123456789abcdef"
 CSRF = "fedcba9876543210fedcba9876543210"
 
@@ -54,8 +55,10 @@ class FakeResponse:
 class FakePanel:
   """Minimal HTTP model of the firmware's auth endpoints and push routes."""
 
-  def __init__(self, *, firmware="protected", login_status=200, server_proof=SERVER_PROOF):
+  def __init__(self, *, firmware="protected", login_status=200, server_proof=SERVER_PROOF,
+               iterations=ITERATIONS):
     self.firmware = firmware
+    self.iterations = iterations
     self.login_status = login_status
     self.server_proof = server_proof
     self.requests = []
@@ -67,7 +70,7 @@ class FakePanel:
         return FakeResponse(404)
       if self.firmware == "open":
         return FakeResponse(200, {"enabled": False})
-      return FakeResponse(200, {"enabled": True, "salt": SALT, "nonce": NONCE})
+      return FakeResponse(200, {"enabled": True, "salt": SALT, "nonce": NONCE, "iter": self.iterations})
     return FakeResponse(404)
 
   def post(self, url, **kwargs):
@@ -92,12 +95,13 @@ FORM = {"mqtt_host": "192.168.1.2", "mqtt_port": "1883", "mqtt_user": "u",
 
 class PanelAuthTest(unittest.IsolatedAsyncioTestCase):
   def test_derivation_matches_the_firmware_vector(self):
-    key = AUTH.derive_key(bytes.fromhex(SALT), PASSWORD)
+    key = AUTH.derive_key(bytes.fromhex(SALT), PASSWORD, ITERATIONS)
     self.assertEqual(key.hex(), KEY)
     proof = AUTH.login_proof(key, bytes.fromhex(NONCE))
     self.assertEqual(proof.hex(), PROOF)
     self.assertEqual(AUTH.server_proof(key, bytes.fromhex(NONCE), proof).hex(), SERVER_PROOF)
-    self.assertEqual(KEY, hashlib.sha256(bytes.fromhex(SALT) + PASSWORD.encode()).hexdigest())
+    self.assertEqual(KEY, hashlib.pbkdf2_hmac("sha256", PASSWORD.encode(), bytes.fromhex(SALT),
+                                              ITERATIONS, 32).hex())
     self.assertEqual(PROOF, hmac.new(bytes.fromhex(KEY), bytes.fromhex(NONCE), hashlib.sha256).hexdigest())
 
   def test_session_cookie_parsing(self):
@@ -143,6 +147,14 @@ class PanelAuthTest(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(await self.push(fake, PASSWORD), "panel_identity_failed")
     # A device that cannot prove the password never receives the broker login.
     self.assertFalse(any(url.endswith("/mqtt") for _, url, _ in fake.requests))
+
+  async def test_iteration_count_is_bounded(self):
+    # A device posing as the panel cannot make the Bridge derive for minutes,
+    # nor make it accept a fast key.
+    for iterations in (None, "100000", True, 9999, 1000001, 10 ** 12):
+      fake = FakePanel(iterations=iterations)
+      self.assertEqual(await self.push(fake, PASSWORD), "panel_identity_failed", iterations)
+      self.assertEqual([url.rsplit("/", 1)[1] for _, url, _ in fake.requests], ["challenge"])
 
   async def test_password_and_secrets_are_never_logged(self):
     with self.assertLogs(AUTH._LOGGER, level=logging.DEBUG) as logs:
