@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 import types
 import unittest
 
@@ -97,6 +98,38 @@ class RequestGateTest(unittest.TestCase):
         gate.release()
         gate.release()
         self.assertEqual(gate.active, 0)
+
+
+class RequestLineTest(unittest.IsolatedAsyncioTestCase):
+    async def test_graph_tiles_of_a_view_wait_in_line(self):
+        # Every graph tile of a view asks at once, from old and new firmware.
+        gate = LIMITS.RequestGate(Clock(), max_active=2, max_per_window=30)
+        running, order, peak = [], [], []
+
+        async def request(name):
+            self.assertTrue(await gate.acquire())
+            running.append(name)
+            order.append(name)
+            peak.append(len(running))
+            await asyncio.sleep(0)
+            running.remove(name)
+            gate.release()
+
+        names = [f"sensor.tile{index}" for index in range(8)]
+        await asyncio.wait_for(asyncio.gather(*(request(name) for name in names)), 1)
+        self.assertEqual(order, names)
+        self.assertEqual(max(peak), 2)
+        self.assertEqual((gate.active, gate.waiting), (0, 0))
+
+    async def test_a_full_window_resumes_by_itself(self):
+        gate = LIMITS.RequestGate(time.monotonic, max_active=5, max_per_window=2, window_s=0.05)
+        for _ in range(2):
+            self.assertTrue(await gate.acquire())
+            gate.release()
+        started = time.monotonic()
+        self.assertTrue(await asyncio.wait_for(gate.acquire(), 1))
+        self.assertGreaterEqual(time.monotonic() - started, 0.03)
+        gate.release()
 
 
 def extract(names, scope):
@@ -227,6 +260,17 @@ class AnnouncementProcessingTest(unittest.IsolatedAsyncioTestCase):
         good = good_body[:-1] + f',"sig":"{good_sig}"}}'
         await self.announce(json.loads(good), raw=good)
         self.assertEqual(entry.data["model"], "tab5")
+
+    async def test_old_firmware_updates_an_entry_without_the_new_fields(self):
+        # An entry from before the security work and a panel with firmware
+        # v0.1.0: short device id, no signature, no pairing code, no local I/O.
+        entry = self.entry(device_id="tab5_lvgl_1A2B", base_topic="tab5", ha_prefix="homeassistant")
+        with self.assertNoLogs("test_announcement_guard", "WARNING"):
+            await self.announce({"device_id": "tab5_lvgl_1A2B", "base_topic": "tab5",
+                                 "ha_prefix": "homeassistant", "sensors": ["sensor.outdoor"]})
+        self.assertEqual(entry.data["sensors"], ["sensor.outdoor"])
+        self.assertNotIn("command_pairing_code", entry.data)
+        self.assertEqual(self.flows, [])
 
     async def test_existing_manual_entry_is_linked_only_after_confirmation(self):
         entry = self.entry(base_topic="hometiles")
