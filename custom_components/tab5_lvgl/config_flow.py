@@ -399,7 +399,8 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
 
     if user_input is not None:
       updated = dict(current)
-      if user_input.get(CONF_REMOVE_PAIRING):
+      remove = bool(user_input.get(CONF_REMOVE_PAIRING))
+      if remove:
         updated.pop(CONF_COMMAND_PAIRING, None)
       elif (user_input.get(CONF_PAIRING_CODE) or "").strip():
         bridge = self.hass.data.get(DOMAIN, {}).get("entries", {}).get(self.config_entry.entry_id)
@@ -410,15 +411,23 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
           errors[CONF_PAIRING_CODE] = error
         else:
           updated[CONF_COMMAND_PAIRING] = code
+      else:
+        # An empty form changes nothing; say so instead of a plain success.
+        errors["base"] = "pairing_code_empty"
       if not errors:
-        if updated != current:
-          # The update listener reloads the entry with the new channel.
-          self.hass.config_entries.async_update_entry(self.config_entry, data=updated)
         options = {
           key: value for key, value in (self.config_entry.options or {}).items()
           if key != CONF_COMMAND_PAIRING
         }
-        return self.async_create_entry(title="", data=options)
+        # The update listener reloads the entry with the new channel.
+        self.hass.config_entries.async_update_entry(self.config_entry, data=updated, options=options)
+        # A result naming the key id shows which panel entry holds the code.
+        if remove:
+          return self.async_abort(reason="pairing_removed")
+        return self.async_abort(
+          reason="pairing_saved",
+          description_placeholders={"key_id": key_id_for_code(updated[CONF_COMMAND_PAIRING]) or "-"},
+        )
 
     return self.async_show_form(
       step_id="security",

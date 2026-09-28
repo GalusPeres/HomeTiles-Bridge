@@ -108,7 +108,7 @@
       },
       "security": {
         "title": "Encrypted commands",
-        "description": "On the display, create the pairing code under Settings → System → Security → Set up encryption and enter it here. The Bridge then runs only encrypted commands from this display, and camera stream tokens travel encrypted as well. States and camera images stay unencrypted.\n\nCurrent pairing (key id): {key_id}",
+        "description": "On the display, create the pairing code under Settings → System → Security → Set up encryption and enter it here. The Bridge then runs only encrypted commands from this display, and camera stream tokens travel encrypted as well. States and camera images stay unencrypted.\n\nCurrent pairing (key id, \"-\" = not paired): {key_id}",
         "data": {
           "pairing_code": "Pairing code from the display",
           "remove_pairing": "Remove pairing (commands unencrypted again)"
@@ -120,7 +120,12 @@
       "invalid_editable_entities": "Choose compatible Number, Select or Date/Time entities.",
       "invalid_pairing_code": "The code has 25 characters (for example ABCDE-FGHJK-MNPQR-STVWX-YZ012).",
       "pairing_not_started": "The display shows no pairing code or is not reachable. Create the code on the display first (new firmware required).",
-      "pairing_code_mismatch": "The code does not match the code shown on the display."
+      "pairing_code_mismatch": "The code does not match the code shown on the display.",
+      "pairing_code_empty": "Enter the pairing code from the display or choose \"Remove pairing\". Nothing was changed."
+    },
+    "abort": {
+      "pairing_saved": "Pairing saved (key id {key_id}). The display connects to the Bridge encrypted within a few seconds.",
+      "pairing_removed": "Pairing removed. The Bridge runs unencrypted commands from this display again. Also turn off encryption on the display under Settings → System → Security."
     }
   },
   "entity": {

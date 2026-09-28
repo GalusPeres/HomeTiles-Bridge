@@ -108,7 +108,7 @@
       },
       "security": {
         "title": "Verschl\u00fcsselte Befehle",
-        "description": "Auf dem Display unter Einstellungen \u2192 System \u2192 Sicherheit \u2192 Verschl\u00fcsselung einrichten den Kopplungscode erzeugen und hier eingeben. Danach f\u00fchrt die Bridge nur noch verschl\u00fcsselte Befehle dieses Displays aus; Kamera-Stream-Tokens werden ebenfalls verschl\u00fcsselt \u00fcbertragen. Zust\u00e4nde und Kamerabilder bleiben unverschl\u00fcsselt.\n\nAktuelle Kopplung (Schl\u00fcssel-ID): {key_id}",
+        "description": "Auf dem Display unter Einstellungen \u2192 System \u2192 Sicherheit \u2192 Verschl\u00fcsselung einrichten den Kopplungscode erzeugen und hier eingeben. Danach f\u00fchrt die Bridge nur noch verschl\u00fcsselte Befehle dieses Displays aus; Kamera-Stream-Tokens werden ebenfalls verschl\u00fcsselt \u00fcbertragen. Zust\u00e4nde und Kamerabilder bleiben unverschl\u00fcsselt.\n\nAktuelle Kopplung (Schl\u00fcssel-ID, \u201e-\u201c = nicht gekoppelt): {key_id}",
         "data": {
           "pairing_code": "Kopplungscode vom Display",
           "remove_pairing": "Kopplung entfernen (Befehle wieder unverschl\u00fcsselt)"
@@ -120,7 +120,12 @@
       "invalid_editable_entities": "Bitte passende Zahlen-, Auswahl- oder Datum-/Uhrzeit-Entit\u00e4ten ausw\u00e4hlen.",
       "invalid_pairing_code": "Der Code muss aus 25 Zeichen bestehen (z. B. ABCDE-FGHJK-MNPQR-STVWX-YZ012).",
       "pairing_not_started": "Das Display zeigt keinen Kopplungscode an oder ist nicht erreichbar. Code zuerst auf dem Display erzeugen (neue Firmware erforderlich).",
-      "pairing_code_mismatch": "Der Code passt nicht zum Code, den das Display anzeigt."
+      "pairing_code_mismatch": "Der Code passt nicht zum Code, den das Display anzeigt.",
+      "pairing_code_empty": "Bitte den Kopplungscode vom Display eingeben oder \u201eKopplung entfernen\u201c w\u00e4hlen. Es wurde nichts ge\u00e4ndert."
+    },
+    "abort": {
+      "pairing_saved": "Kopplung gespeichert (Schl\u00fcssel-ID {key_id}). Das Display verbindet sich in wenigen Sekunden verschl\u00fcsselt mit der Bridge.",
+      "pairing_removed": "Kopplung entfernt. Die Bridge f\u00fchrt wieder unverschl\u00fcsselte Befehle dieses Displays aus. Auf dem Display unter Einstellungen \u2192 System \u2192 Sicherheit die Verschl\u00fcsselung ebenfalls ausschalten."
     }
   },
   "entity": {

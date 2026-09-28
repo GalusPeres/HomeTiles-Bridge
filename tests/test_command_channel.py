@@ -482,8 +482,12 @@ class OptionsFlowContractTest(unittest.TestCase):
             step = options["step"]["security"]
             self.assertEqual(set(step["data"]), {"pairing_code", "remove_pairing"}, path)
             self.assertIn("{key_id}", step["description"], path)
-            for error in ("invalid_pairing_code", "pairing_not_started", "pairing_code_mismatch"):
+            for error in ("invalid_pairing_code", "pairing_not_started", "pairing_code_mismatch",
+                          "pairing_code_empty"):
                 self.assertIn(error, options["error"], path)
+            # The result names the stored key id, so it is clear which panel entry holds the code.
+            self.assertIn("{key_id}", options["abort"]["pairing_saved"], path)
+            self.assertTrue(options["abort"]["pairing_removed"].strip(), path)
 
     def test_security_step_validates_before_storing(self):
         source = (ROOT / "config_flow.py").read_text(encoding="utf-8")
@@ -495,6 +499,11 @@ class OptionsFlowContractTest(unittest.TestCase):
         self.assertLess(segment.index("check_pairing_code("), segment.index("updated[CONF_COMMAND_PAIRING] = code"))
         self.assertIn("updated.pop(CONF_COMMAND_PAIRING, None)", segment)
         self.assertNotIn("_LOGGER", segment)
+        # An empty form is not reported as a success.
+        self.assertIn('errors["base"] = "pairing_code_empty"', segment)
+        self.assertIn('reason="pairing_saved"', segment)
+        self.assertIn('reason="pairing_removed"', segment)
+        self.assertNotIn("async_create_entry", segment)
 
 
 if __name__ == "__main__":

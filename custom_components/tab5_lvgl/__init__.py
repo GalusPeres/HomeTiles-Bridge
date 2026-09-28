@@ -1416,6 +1416,7 @@ class Tab5Bridge:
     rekey = channel.rekey(force=True)
     if rekey:
       await mqtt.async_publish(self.hass, rekey[0], rekey[1], qos=0, retain=False)
+      _LOGGER.debug("HomeTiles encrypted rekey sent to %s", self.base_topic)
     _LOGGER.info(
       "HomeTiles encrypted commands enabled for %s (key id %s)",
       self.base_topic, channel.keys.key_id,
@@ -2101,10 +2102,16 @@ class Tab5Bridge:
     channel = self._command_channel
     if channel is None or getattr(msg, "retain", False):
       return
+    previous_session = channel.session
     action, value = channel.handle_panel_message(msg.payload)
     if action == "reply":
       topic, payload = value
       await mqtt.async_publish(self.hass, topic, payload, qos=0, retain=False)
+      # A hello gets a new session; a command for an unknown session a rekey.
+      _LOGGER.debug(
+        "HomeTiles encrypted %s sent to %s",
+        "session" if channel.session != previous_session else "rekey", self.base_topic,
+      )
       return
     if action != "command":
       if value in ("rejected", "other_key"):
@@ -2144,6 +2151,7 @@ class Tab5Bridge:
       rekey = channel.rekey()
       if rekey:
         await mqtt.async_publish(self.hass, rekey[0], rekey[1], qos=0, retain=False)
+        _LOGGER.debug("HomeTiles encrypted rekey sent to %s", self.base_topic)
 
   async def _async_publish_sealed_data(self, kind: str, text: str) -> bool:
     """Send a stream-token message to a paired panel; never unencrypted."""
