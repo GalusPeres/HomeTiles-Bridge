@@ -35,6 +35,14 @@
       "adopt_confirm": {
         "title": "Panel verkn\u00fcpfen",
         "description": "**{name}** hat sich per MQTT mit der Basis {base_topic} gemeldet, die der Eintrag **{entry}** nutzt. Nur verkn\u00fcpfen, wenn es dein Panel ist."
+      },
+      "pairing_confirm": {
+        "title": "Display koppeln",
+        "description": "**{name}** m\u00f6chte sich mit der Bridge koppeln.\n\nZahl: **{number}**\n\nNur best\u00e4tigen, wenn das Display gerade genau diese Zahl zeigt, und danach auch am Display best\u00e4tigen. Gekoppelt f\u00fchrt die Bridge nur noch verschl\u00fcsselte Befehle dieses Displays aus.",
+        "menu_options": {
+          "pairing_accept": "Zahlen stimmen \u00fcberein: koppeln",
+          "pairing_reject": "Ablehnen"
+        }
       }
     },
     "error": {
@@ -54,7 +62,11 @@
       "mqtt_read_failed": "Die MQTT-Zugangsdaten konnten nicht gelesen werden.",
       "already_configured": "Dieses Panel ist bereits konfiguriert.",
       "panel_linked": "Das Panel wurde mit dem bestehenden Eintrag verkn\u00fcpft.",
-      "adopt_target_changed": "Der Eintrag ist inzwischen einem anderen Panel zugeordnet oder nutzt eine andere Basis."
+      "adopt_target_changed": "Der Eintrag ist inzwischen einem anderen Panel zugeordnet oder nutzt eine andere Basis.",
+      "pairing_done": "Gekoppelt. Das Display sendet seine Befehle jetzt verschl\u00fcsselt.",
+      "pairing_confirmed": "Best\u00e4tigt. Best\u00e4tige die Zahl jetzt auch am Display.",
+      "pairing_rejected": "Kopplung abgelehnt. Das Display bleibt unverschl\u00fcsselt.",
+      "pairing_expired": "Dieser Kopplungsversuch ist beendet (abgebrochen oder \u00e4lter als 2 Minuten). Starte das Koppeln am Display neu."
     }
   },
   "options": {
@@ -108,9 +120,8 @@
       },
       "security": {
         "title": "Verschl\u00fcsselte Befehle",
-        "description": "Auf dem Display unter Einstellungen \u2192 System \u2192 Sicherheit \u2192 Verschl\u00fcsselung einrichten den Kopplungscode erzeugen und hier eingeben. Danach f\u00fchrt die Bridge nur noch verschl\u00fcsselte Befehle dieses Displays aus; Kamera-Stream-Tokens werden ebenfalls verschl\u00fcsselt \u00fcbertragen. Zust\u00e4nde und Kamerabilder bleiben unverschl\u00fcsselt.\n\nAktuelle Kopplung (Schl\u00fcssel-ID, \u201e-\u201c = nicht gekoppelt): {key_id}",
+        "description": "Dieses Display ist gekoppelt (Schl\u00fcssel-ID {key_id}). Die Bridge f\u00fchrt nur noch verschl\u00fcsselte Befehle dieses Displays aus; Kamera-Stream-Tokens werden ebenfalls verschl\u00fcsselt \u00fcbertragen. Zust\u00e4nde und Kamerabilder bleiben unverschl\u00fcsselt.\n\nZum Entfernen das H\u00e4kchen setzen. Das Display schaltet die Verschl\u00fcsselung selbst aus, sobald es mit der Bridge verbunden ist.",
         "data": {
-          "pairing_code": "Kopplungscode vom Display",
           "remove_pairing": "Kopplung entfernen (Befehle wieder unverschl\u00fcsselt)"
         }
       }
@@ -118,14 +129,12 @@
     "error": {
       "invalid_scene_map": "Alias muss dem Muster alias=entity_id folgen (eine Zeile pro Alias).",
       "invalid_editable_entities": "Bitte passende Zahlen-, Auswahl- oder Datum-/Uhrzeit-Entit\u00e4ten ausw\u00e4hlen.",
-      "invalid_pairing_code": "Der Code muss aus 25 Zeichen bestehen (z. B. ABCDE-FGHJK-MNPQR-STVWX-YZ012).",
-      "pairing_not_started": "Das Display zeigt keinen Kopplungscode an oder ist nicht erreichbar. Code zuerst auf dem Display erzeugen (neue Firmware erforderlich).",
-      "pairing_code_mismatch": "Der Code passt nicht zum Code, den das Display anzeigt.",
-      "pairing_code_empty": "Bitte den Kopplungscode vom Display eingeben oder \u201eKopplung entfernen\u201c w\u00e4hlen. Es wurde nichts ge\u00e4ndert."
+      "pairing_nothing_selected": "Nichts ge\u00e4ndert. Zum Entfernen der Kopplung das H\u00e4kchen setzen."
     },
     "abort": {
-      "pairing_saved": "Kopplung gespeichert (Schl\u00fcssel-ID {key_id}). Das Display verbindet sich in wenigen Sekunden verschl\u00fcsselt mit der Bridge.",
-      "pairing_removed": "Kopplung entfernt. Die Bridge f\u00fchrt wieder unverschl\u00fcsselte Befehle dieses Displays aus. Das Display schaltet die Verschl\u00fcsselung selbst aus, sobald es mit der Bridge verbunden ist."
+      "pairing_removed": "Kopplung entfernt. Die Bridge f\u00fchrt wieder unverschl\u00fcsselte Befehle dieses Displays aus. Das Display schaltet die Verschl\u00fcsselung selbst aus, sobald es mit der Bridge verbunden ist.",
+      "pairing_not_paired": "Dieses Display ist nicht gekoppelt. Zum Koppeln am Display Einstellungen \u2192 System \u2192 Sicherheit \u2192 Koppeln w\u00e4hlen. Home Assistant zeigt dann unter \u201eEntdeckt\u201c eine Karte mit einer sechsstelligen Zahl zum Vergleichen.",
+      "pairing_removing": "Die Kopplung ist entfernt. Das Display schaltet die Verschl\u00fcsselung selbst aus, sobald es mit der Bridge verbunden ist; unverschl\u00fcsselte Befehle funktionieren schon jetzt."
     }
   },
   "entity": {

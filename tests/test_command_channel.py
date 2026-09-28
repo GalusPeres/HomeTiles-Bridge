@@ -17,17 +17,26 @@ except BaseException as error:  # A broken system build can panic in its Rust bi
     ChaCha20Poly1305 = None
 
 from test_view_navigation import ROOT, load_module
+from test_pairing import ATTEMPT, KEY, NUMBER, Panel as PairingPanel, Random as PairingRandom
 
 CC = load_module("command_channel")
 LOCAL_CAMERA = load_module("local_camera")
+PAIRING = load_module("pairing")
 
-# Shared with the firmware test tools/tests/network/test-command-channel-core.mjs:
-# both implementations must derive and seal exactly these values.
-CODE = "ABCDE-FGHJK-MNPQR-STVWX-YZ012"
-PANEL_KEY = "5e41f54d08a53a373dc49a8cb476f5ff8b311c4ec725bb221e545ae1047afc09"
-BRIDGE_KEY = "5e0380b97a923649ffb7578e7ef4c7f852fa194a4586a7bd140a48bcfbd51c02"
-KEY_ID = "8982fb24a78d94e1"
+# The pairing key of the pairing v2 vectors (test_pairing.py) and the channel
+# keys both implementations derive from it.
+PAIRING_KEY = bytes.fromhex(KEY)
+PANEL_KEY = "3ce896914535a84f25b6bcbb18bae3e2e0bbdefa5b03712b2fbaf16e51d084de"
+BRIDGE_KEY = "5631cdca5a6fbae0a0fdfc738926f75254f40065c9e64322430aba78be18278d"
+KEY_ID = "20a8108ed11215c5"
 SESSION = "00112233445566778899aabbccddeeff"
+# Envelope vectors of the firmware test tools/tests/network/test-command-channel-core.mjs,
+# sealed with fixed direction keys; pairing v2 left the envelope unchanged.
+ENVELOPE_PANEL_KEY = "5e41f54d08a53a373dc49a8cb476f5ff8b311c4ec725bb221e545ae1047afc09"
+ENVELOPE_BRIDGE_KEY = "5e0380b97a923649ffb7578e7ef4c7f852fa194a4586a7bd140a48bcfbd51c02"
+ENVELOPE_KEY_ID = "8982fb24a78d94e1"
+ENVELOPE_PANEL_TOPIC = "hometiles/secure/panel"
+ENVELOPE_BRIDGE_TOPIC = "hometiles/secure/bridge"
 FIRMWARE_COMMAND = (
     '{"v":1,"k":"8982fb24a78d94e1","n":"0102030405060708090a0b0c","d":"7832dd1bd249db728b0a50bc7f872a71128e0ceb'
     '9914732336b5052b125d2e15b17d8e61b37b8088f840f1bf08fff2509452d86153ead2e27de853dc2e18ceb8216139e4dd9f2ca29e'
@@ -37,10 +46,12 @@ COMMAND_PLAINTEXT = (
     b"cmd 00112233445566778899aabbccddeeff 42 light\n"
     b'{"entity_id":"light.kitchen","state":"toggle"}'
 )
-BASE = "hometiles"
-PANEL_TOPIC = "hometiles/secure/panel"
-BRIDGE_TOPIC = "hometiles/secure/bridge"
-# Shared with the firmware as well: an unpair in each direction.
+BASE = "hometiles/test"
+PANEL_TOPIC = "hometiles/test/secure/panel"
+BRIDGE_TOPIC = "hometiles/test/secure/bridge"
+PAIR_PANEL_TOPIC = "hometiles/test/pair/panel"
+PAIR_BRIDGE_TOPIC = "hometiles/test/pair/bridge"
+# Envelope vectors as well: an unpair in each direction.
 UNPAIR_PLAINTEXT = b"unpair 0123456789abcdef0123456789abcdef 1 -\n"
 UNPAIR_NONCE = bytes.fromhex("000102030405060708090a0b")
 UNPAIR_FROM_PANEL = (
@@ -85,7 +96,7 @@ class Random:
 
 
 def new_channel(clock=None):
-    return CC.BridgeChannel(CODE, BASE, clock=clock or Clock(), random=Random())
+    return CC.BridgeChannel(PAIRING_KEY, BASE, clock=clock or Clock(), random=Random())
 
 
 def hello(challenge: str = "ffeeddccbbaa99887766554433221100") -> str:
@@ -100,75 +111,84 @@ def establish(channel, challenge: str = "ffeeddccbbaa99887766554433221100") -> s
     return header[1]
 
 
-class PairingCodeTest(unittest.TestCase):
-    def test_keys_match_the_firmware_vector(self):
-        keys = CC.Keys(CODE)
+class PairingKeyTest(unittest.TestCase):
+    def test_keys_match_the_pairing_vector(self):
+        keys = CC.Keys(PAIRING_KEY)
         self.assertEqual(keys.panel_to_bridge.hex(), PANEL_KEY)
         self.assertEqual(keys.bridge_to_panel.hex(), BRIDGE_KEY)
         self.assertEqual(keys.key_id, KEY_ID)
         self.assertNotIn(PANEL_KEY, repr(keys))
         self.assertNotIn(BRIDGE_KEY, repr(keys))
-
-    def test_code_input_is_tolerant_like_the_firmware(self):
-        canonical = "ABCDEFGHJKMNPQRSTVWXYZ012"
-        self.assertEqual(CC.normalize_code(CODE), canonical)
-        self.assertEqual(CC.normalize_code(" abcde fghjk mnpqr stvwx yz012 "), canonical)
-        # O reads as 0, I and L as 1.
-        self.assertEqual(CC.normalize_code("ABCDE-FGHJK-MNPQR-STVWX-YZOI2"), canonical)
-        self.assertEqual(CC.normalize_code("abcde-fghjk-mnpqr-stvwx-yzol2"), canonical)
-        for invalid in ("ABCDE-FGHJK-MNPQR-STVWX-YZ01", "ABCDE-FGHJK-MNPQR-STVWX-YZ0123",
-                        "ABCDE-FGHJK-MNPQR-STVWX-YZ01U", "", None, 12345):
-            self.assertIsNone(CC.normalize_code(invalid), invalid)
-        self.assertEqual(CC.format_code(canonical), CODE)
-        self.assertEqual(CC.key_id_for_code(CODE.lower()), KEY_ID)
-        self.assertIsNone(CC.key_id_for_code("nope"))
-
-    def test_entered_code_is_checked_against_the_panel_status(self):
-        pending = {"state": "pending", "kid": KEY_ID}
-        self.assertEqual(CC.check_pairing_code(CODE.lower(), pending), ("ABCDEFGHJKMNPQRSTVWXYZ012", None))
-        self.assertEqual(CC.check_pairing_code(CODE, {"state": "active", "kid": KEY_ID})[1], None)
-        self.assertEqual(CC.check_pairing_code("ABCDE", pending), (None, "invalid_pairing_code"))
-        # Old firmware, pairing off on the panel, or no retained status yet.
-        for status in (None, {"state": "off", "kid": None}, {"state": "unknown", "kid": None}):
-            self.assertEqual(CC.check_pairing_code(CODE, status), (None, "pairing_not_started"))
-        self.assertEqual(CC.check_pairing_code(CODE, {"state": "pending", "kid": "0" * 16}),
-                         (None, "pairing_code_mismatch"))
+        for invalid in (b"", PAIRING_KEY[:31], PAIRING_KEY + b"\x00", KEY, None):
+            with self.assertRaises(ValueError):
+                CC.Keys(invalid)
+        self.assertEqual(CC.key_id_for_key(PAIRING_KEY), KEY_ID)
+        self.assertIsNone(CC.key_id_for_key(None))
 
     def test_status_parsing(self):
         self.assertEqual(CC.parse_status(""), {"state": "off", "kid": None})
         self.assertEqual(CC.parse_status(b""), {"state": "off", "kid": None})
-        self.assertEqual(CC.parse_status('{"v":1,"state":"pending","kid":"8982FB24A78D94E1"}'),
-                         {"state": "pending", "kid": KEY_ID})
+        self.assertEqual(CC.parse_status('{"v":1,"state":"active","kid":"20A8108ED11215C5"}'),
+                         {"state": "active", "kid": KEY_ID})
         self.assertEqual(CC.parse_status('{"state":"active","kid":"xyz"}'), {"state": "active", "kid": None})
+        # Pairing v2 has no "pending" state any more.
+        self.assertEqual(CC.parse_status('{"state":"pending","kid":"20a8108ed11215c5"}'),
+                         {"state": "unknown", "kid": KEY_ID})
         self.assertEqual(CC.parse_status("not json"), {"state": "unknown", "kid": None})
         self.assertEqual(CC.parse_status('{"state":"hacked"}'), {"state": "unknown", "kid": None})
         self.assertEqual(CC.parse_status("x" * 300), {"state": "off", "kid": None})
 
-    def test_stored_code_prefers_options(self):
-        entry = types.SimpleNamespace(data={"command_pairing_code": CODE}, options={})
-        self.assertEqual(CC.entry_pairing_code(entry), "ABCDEFGHJKMNPQRSTVWXYZ012")
+    def test_stored_key_prefers_options(self):
+        entry = types.SimpleNamespace(data={"command_pairing_key": KEY}, options={})
+        self.assertEqual(CC.entry_pairing_key(entry), PAIRING_KEY)
+        entry = types.SimpleNamespace(data={"command_pairing_key": KEY}, options={"command_pairing_key": "ab" * 32})
+        self.assertEqual(CC.entry_pairing_key(entry), bytes([0xAB]) * 32)
         entry = types.SimpleNamespace(data={}, options={})
-        self.assertIsNone(CC.entry_pairing_code(entry))
-        entry = types.SimpleNamespace(data={"command_pairing_code": "broken"}, options=None)
-        self.assertIsNone(CC.entry_pairing_code(entry))
+        self.assertIsNone(CC.entry_pairing_key(entry))
+        for broken in ("broken", KEY.upper(), KEY[:-2], 12):
+            entry = types.SimpleNamespace(data={"command_pairing_key": broken}, options=None)
+            self.assertIsNone(CC.entry_pairing_key(entry), broken)
         # Home Assistant stores entry data and options as read-only mappings.
-        entry = types.SimpleNamespace(data=MappingProxyType({"command_pairing_code": CODE}),
+        entry = types.SimpleNamespace(data=MappingProxyType({"command_pairing_key": KEY}),
                                       options=MappingProxyType({}))
-        self.assertEqual(CC.entry_pairing_code(entry), "ABCDEFGHJKMNPQRSTVWXYZ012")
+        self.assertEqual(CC.entry_pairing_key(entry), PAIRING_KEY)
         entry = types.SimpleNamespace(data=MappingProxyType({}), options=MappingProxyType({}))
-        self.assertIsNone(CC.entry_pairing_code(entry))
+        self.assertIsNone(CC.entry_pairing_key(entry))
 
-    def test_removed_code_waits_for_the_panel(self):
+    def test_removed_key_waits_for_the_panel(self):
         removing = types.SimpleNamespace(
-            data=MappingProxyType({"base_topic": BASE, "command_pairing_removing": CODE}), options=MappingProxyType({}))
-        self.assertIsNone(CC.entry_pairing_code(removing))
-        self.assertEqual(CC.entry_removing_code(removing), "ABCDEFGHJKMNPQRSTVWXYZ012")
-        # A new code wins over a removal still in progress.
+            data=MappingProxyType({"base_topic": BASE, "command_pairing_removing": KEY}), options=MappingProxyType({}))
+        self.assertIsNone(CC.entry_pairing_key(removing))
+        self.assertEqual(CC.entry_removing_key(removing), PAIRING_KEY)
+        # A new pairing wins over a removal still in progress.
         paired = types.SimpleNamespace(
-            data=MappingProxyType({"command_pairing_code": CODE, "command_pairing_removing": CODE}), options={})
-        self.assertIsNone(CC.entry_removing_code(paired))
+            data=MappingProxyType({"command_pairing_key": KEY, "command_pairing_removing": KEY}), options={})
+        self.assertIsNone(CC.entry_removing_key(paired))
         self.assertEqual(CC.without_pairing(removing.data), {"base_topic": BASE})
         self.assertEqual(CC.without_pairing(None), {})
+
+    def test_code_of_the_betas_is_dropped(self):
+        # v0.7.1b1/b2 stored a typed code; it is neither a key nor kept.
+        legacy = types.SimpleNamespace(
+            data=MappingProxyType({"base_topic": BASE, "command_pairing_code": "ABCDEFGHJKMNPQRSTVWXYZ012"}),
+            options=MappingProxyType({}))
+        self.assertTrue(CC.has_legacy_code(legacy))
+        self.assertIsNone(CC.entry_pairing_key(legacy))
+        self.assertEqual(CC.without_pairing(legacy.data), {"base_topic": BASE})
+        self.assertFalse(CC.has_legacy_code(types.SimpleNamespace(data={"base_topic": BASE}, options=None)))
+        self.assertEqual(CC.with_pairing_key(legacy.data, PAIRING_KEY),
+                         {"base_topic": BASE, "command_pairing_key": KEY})
+        with self.assertRaises(ValueError):
+            CC.with_pairing_key({}, b"short")
+
+    def test_setup_drops_the_code_before_the_bridge_reads_the_entry(self):
+        source = (ROOT / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        setup = next(node for node in tree.body
+                     if isinstance(node, ast.AsyncFunctionDef) and node.name == "async_setup_entry")
+        segment = ast.get_source_segment(source, setup)
+        self.assertLess(segment.index("if has_legacy_code(entry):"), segment.index("bridge = Tab5Bridge(hass, entry)"))
+        self.assertLess(segment.index("bridge = Tab5Bridge(hass, entry)"), segment.index("add_update_listener"))
 
 
 NEEDS_CRYPTOGRAPHY = unittest.skipIf(
@@ -178,13 +198,14 @@ NEEDS_CRYPTOGRAPHY = unittest.skipIf(
 @NEEDS_CRYPTOGRAPHY
 class EnvelopeTest(unittest.TestCase):
     def setUp(self):
-        self.keys = CC.Keys(CODE)
+        self.keys = types.SimpleNamespace(panel_to_bridge=bytes.fromhex(ENVELOPE_PANEL_KEY),
+                                          bridge_to_panel=bytes.fromhex(ENVELOPE_BRIDGE_KEY))
 
     def test_firmware_command_envelope_is_byte_identical(self):
-        sealed = CC.seal(self.keys.panel_to_bridge, KEY_ID, PANEL_TOPIC, COMMAND_PLAINTEXT,
+        sealed = CC.seal(self.keys.panel_to_bridge, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, COMMAND_PLAINTEXT,
                          bytes(range(1, 13)))
         self.assertEqual(sealed, FIRMWARE_COMMAND)
-        status, plaintext = CC.open_envelope(self.keys.panel_to_bridge, KEY_ID, PANEL_TOPIC, FIRMWARE_COMMAND)
+        status, plaintext = CC.open_envelope(self.keys.panel_to_bridge, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, FIRMWARE_COMMAND)
         self.assertEqual((status, plaintext), (CC.OPEN_OK, COMMAND_PLAINTEXT))
         message = CC.parse_plaintext(plaintext)
         self.assertEqual((message.kind, message.session, message.seq, message.name),
@@ -193,24 +214,24 @@ class EnvelopeTest(unittest.TestCase):
 
     def test_topic_key_and_tampering_are_rejected(self):
         key = self.keys.panel_to_bridge
-        self.assertEqual(CC.open_envelope(key, KEY_ID, "other/secure/panel", FIRMWARE_COMMAND)[0],
+        self.assertEqual(CC.open_envelope(key, ENVELOPE_KEY_ID, "other/secure/panel", FIRMWARE_COMMAND)[0],
                          CC.OPEN_REJECTED)
         # A Bridge message reflected back to the Bridge uses the other key.
-        reflected = CC.seal(self.keys.bridge_to_panel, KEY_ID, PANEL_TOPIC, COMMAND_PLAINTEXT)
-        self.assertEqual(CC.open_envelope(key, KEY_ID, PANEL_TOPIC, reflected)[0], CC.OPEN_REJECTED)
+        reflected = CC.seal(self.keys.bridge_to_panel, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, COMMAND_PLAINTEXT)
+        self.assertEqual(CC.open_envelope(key, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, reflected)[0], CC.OPEN_REJECTED)
         tampered = json.loads(FIRMWARE_COMMAND)
         tampered["d"] = ("0" if tampered["d"][0] != "0" else "1") + tampered["d"][1:]
-        self.assertEqual(CC.open_envelope(key, KEY_ID, PANEL_TOPIC, json.dumps(tampered))[0], CC.OPEN_REJECTED)
+        self.assertEqual(CC.open_envelope(key, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, json.dumps(tampered))[0], CC.OPEN_REJECTED)
         other = dict(json.loads(FIRMWARE_COMMAND), k="0" * 16)
-        self.assertEqual(CC.open_envelope(key, KEY_ID, PANEL_TOPIC, json.dumps(other))[0], CC.OPEN_OTHER_KEY)
+        self.assertEqual(CC.open_envelope(key, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, json.dumps(other))[0], CC.OPEN_OTHER_KEY)
         for malformed in ("", "not json", "[]", '{"v":2}', '{"v":1,"k":"8982fb24a78d94e1","n":"00","d":"00"}',
                           b"\xff\xfe", "x" * 10000, None):
-            self.assertEqual(CC.open_envelope(key, KEY_ID, PANEL_TOPIC, malformed)[0], CC.OPEN_MALFORMED, malformed)
+            self.assertEqual(CC.open_envelope(key, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, malformed)[0], CC.OPEN_MALFORMED, malformed)
 
     def test_unpair_envelopes_are_byte_identical(self):
-        self.assertEqual(CC.seal(self.keys.panel_to_bridge, KEY_ID, PANEL_TOPIC, UNPAIR_PLAINTEXT, UNPAIR_NONCE),
+        self.assertEqual(CC.seal(self.keys.panel_to_bridge, ENVELOPE_KEY_ID, ENVELOPE_PANEL_TOPIC, UNPAIR_PLAINTEXT, UNPAIR_NONCE),
                          UNPAIR_FROM_PANEL)
-        self.assertEqual(CC.seal(self.keys.bridge_to_panel, KEY_ID, BRIDGE_TOPIC, UNPAIR_PLAINTEXT, UNPAIR_NONCE),
+        self.assertEqual(CC.seal(self.keys.bridge_to_panel, ENVELOPE_KEY_ID, ENVELOPE_BRIDGE_TOPIC, UNPAIR_PLAINTEXT, UNPAIR_NONCE),
                          UNPAIR_FROM_BRIDGE)
         self.assertEqual(CC.build_plaintext("unpair", "0123456789abcdef0123456789abcdef", 1, None),
                          UNPAIR_PLAINTEXT)
@@ -297,7 +318,7 @@ class BridgeChannelTest(unittest.TestCase):
         self.assertEqual(channel.handle_panel_message(panel_seal(f"hello {SESSION} 0 {'ff' * 16}\n".encode())),
                          ("ignore", "invalid_hello"))
         self.assertEqual(channel.handle_panel_message(panel_seal(b"hello - 0 light\n")), ("ignore", "invalid_hello"))
-        self.assertEqual(channel.handle_panel_message(FIRMWARE_COMMAND.replace(KEY_ID, "0" * 16)),
+        self.assertEqual(channel.handle_panel_message(json.dumps(dict(json.loads(hello()), k="0" * 16))),
                          ("ignore", "other_key"))
         self.assertEqual(channel.handle_panel_message(panel_seal(b"hello - 0 x\n", topic="other/secure/panel")),
                          ("ignore", "rejected"))
@@ -337,7 +358,7 @@ class BridgeChannelTest(unittest.TestCase):
 
     def test_removing_channel_only_carries_the_unpair(self):
         clock = Clock()
-        channel = CC.BridgeChannel(CODE, BASE, clock=clock, random=Random(), removing=True)
+        channel = CC.BridgeChannel(PAIRING_KEY, BASE, clock=clock, random=Random(), removing=True)
         self.assertIsNone(channel.seal_unpair())  # No session yet.
         session = establish(channel)
         topic, payload = channel.seal_unpair()
@@ -367,6 +388,9 @@ def bridge_class(scope):
         "_secure_log_due", "_async_handle_secure_panel_message", "_async_handle_secure_status",
         "_async_publish_sealed_data", "_async_publish_camera_status", "async_publish_local_camera_command",
         "_async_send_start_rekey", "_drop_pairing", "_notify_pairing",
+        "_async_handle_pair_message", "pairing_number", "async_answer_pairing", "_async_pairing_tick",
+        "_schedule_pairing_tick", "_async_apply_pairing_events", "_show_pairing_card", "_close_pairing_card",
+        "_store_pairing",
     }
     functions = [node for node in bridge.body if getattr(node, "name", None) in names]
     opened = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "_OpenedCommand")
@@ -397,6 +421,9 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         self.timers = []
         self.notifications = []
         self.updates = []
+        self.cards = []
+        self.flows = []
+        self.aborted = []
 
         def call_later(hass, delay, action):
             self.timers.append((delay, action))
@@ -414,35 +441,53 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
             "async_call_later": call_later, "SECURE_START_REKEY_DELAY_S": 3.0,
             "persistent_notification": types.SimpleNamespace(async_create=notify),
             "without_pairing": CC.without_pairing, "DOMAIN": "tab5_lvgl",
+            "with_pairing_key": CC.with_pairing_key, "CommandKeys": CC.Keys, "PAIRING_TICK_S": 1.0,
+            "discovery_flow": types.SimpleNamespace(
+                async_create_flow=lambda hass, domain, context, data: self.cards.append((domain, context, data))),
+            "config_entries": types.SimpleNamespace(SOURCE_INTEGRATION_DISCOVERY="integration_discovery"),
+            "DISCOVERY_PAIRING_ENTRY": "pairing_entry_id", "DISCOVERY_PAIRING_ATTEMPT": "pairing_attempt",
+            "PAIRING_UNIQUE_ID_PREFIX": "pairing_",
         }
         self.Bridge = bridge_class(scope)
         self.handled = []
 
-    async def fire_timers(self):
-        timers, self.timers = self.timers, []
-        for delay, action in timers:
-            self.assertEqual(delay, 3.0)
+    async def fire_timers(self, delay=3.0):
+        """Run the timers with this delay (3 s: start rekey, 1 s: pairing tick)."""
+        due = [action for when, action in self.timers if when == delay]
+        self.timers = [(when, action) for when, action in self.timers if when != delay]
+        for action in due:
             await action(None)
 
     def make(self, paired: bool, removing: bool = False):
         bridge = self.Bridge()
         stored = {"base_topic": BASE}
         if paired:
-            stored["command_pairing_code"] = CODE
+            stored["command_pairing_key"] = KEY
         if removing:
-            stored["command_pairing_removing"] = CODE
+            stored["command_pairing_removing"] = KEY
 
         def update(entry, **fields):
             self.updates.append(fields)
 
-        bridge.hass = types.SimpleNamespace(data={}, config_entries=types.SimpleNamespace(async_update_entry=update))
+        def progress(handler, match_context=None):
+            self.assertEqual((handler, match_context), ("tab5_lvgl", {"unique_id": "pairing_entry1"}))
+            return [{"flow_id": flow_id} for flow_id in self.flows]
+
+        flow = types.SimpleNamespace(async_progress_by_handler=progress, async_abort=self.aborted.append)
+        bridge.hass = types.SimpleNamespace(data={}, config_entries=types.SimpleNamespace(
+            async_update_entry=update, flow=flow))
         bridge.entry = types.SimpleNamespace(entry_id="entry1", title="Kitchen",
                                              data=MappingProxyType(stored), options=MappingProxyType({}))
         bridge.base_topic = BASE
         bridge.tracked_entities = []
-        bridge._command_channel = (CC.BridgeChannel(CODE, BASE, clock=self.clock, random=Random(), removing=removing)
-                                   if paired or removing else None)
+        bridge._command_channel = (
+            CC.BridgeChannel(PAIRING_KEY, BASE, clock=self.clock, random=Random(), removing=removing)
+            if paired or removing else None)
         bridge._unsub_start_rekey = None
+        bridge._pairing = PAIRING.PanelPairing(BASE, clock=self.clock, random=PairingRandom())
+        bridge._unsub_pair = None
+        bridge._unsub_pairing_tick = None
+        bridge._answering_flow_id = None
         bridge.command_status = {"state": "unknown", "kid": None}
         bridge._secure_log_at = {}
         bridge._refresh_runtime_entity_lists = lambda: None
@@ -466,7 +511,9 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"{BASE}/cmnd/{leaf}", topics)
         self.assertNotIn(PANEL_TOPIC, topics)
         self.assertIn(f"{BASE}/stat/secure", topics)
+        self.assertIn(PAIR_PANEL_TOPIC, topics)
         self.assertEqual(self.mqtt.published, [])
+        self.assertEqual(self.timers, [])
         await bridge._async_publish_camera_status({"status": "ready", "url": "tcp://h:1/t0k3n"})
         await bridge.async_publish_local_camera_command('{"op":"snapshot"}')
         self.assertEqual(self.mqtt.published, [
@@ -478,7 +525,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         bridge = self.make(paired=True)
         with self.assertLogs("test_command_channel", "INFO") as logs:
             await bridge.async_setup()
-        self.assertNotIn(CODE, "\n".join(logs.output))
+        self.assertNotIn(KEY, "\n".join(logs.output))
         self.assertNotIn(PANEL_KEY, "\n".join(logs.output))
         topics = set(self.mqtt.subscriptions)
         self.assertFalse([topic for topic in topics if "/cmnd/" in topic], topics)
@@ -531,7 +578,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         status = self.mqtt.subscriptions[f"{BASE}/stat/secure"]
         with self.assertLogs("test_command_channel", "WARNING") as logs:
             await status(types.SimpleNamespace(payload='{"v":1,"state":"active","kid":"0000000000000000"}'))
-        self.assertIn("another pairing code", logs.output[0])
+        self.assertIn("another pairing key", logs.output[0])
         # A forged "off" does not turn the channel off; the user is told instead.
         with self.assertLogs("test_command_channel", "WARNING") as logs:
             await status(types.SimpleNamespace(payload=""))
@@ -540,9 +587,9 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.updates, [])
         self.assertEqual([notification_id for notification_id, _ in self.notifications], ["tab5_lvgl_entry1_pairing"])
         self.assertEqual(bridge.command_status, {"state": "off", "kid": None})
-        # A matching pending panel gets a rekey so it can finish pairing.
+        # A matching panel without a session gets a rekey.
         self.clock.now += 5
-        await status(types.SimpleNamespace(payload=json.dumps({"v": 1, "state": "pending", "kid": KEY_ID})))
+        await status(types.SimpleNamespace(payload=json.dumps({"v": 1, "state": "active", "kid": KEY_ID})))
         [(topic, payload, _retain)] = self.mqtt.published
         self.assertEqual(panel_open(payload), b"rekey - 0 -\n")
 
@@ -558,7 +605,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
             await deliver(types.SimpleNamespace(payload=panel_seal(f"unpair {session} 1 -\n".encode()), retain=False))
         self.assertIn("turned encryption off", logs.output[0])
         self.assertIsNone(bridge._command_channel)
-        # The entry forgets the code and reloads unpaired.
+        # The entry forgets the key and reloads unpaired.
         self.assertEqual(self.updates, [{"data": {"base_topic": BASE}, "options": {}}])
         self.assertEqual(len(self.notifications), 1)
 
@@ -582,13 +629,90 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         self.mqtt.published.clear()
         await bridge._async_publish_camera_status({"status": "stopped"})
         self.assertEqual(self.mqtt.published[0][0], f"{BASE}/stat/camera")
-        # Once the panel's status is empty, the Bridge forgets the code.
+        # Once the panel's status is empty, the Bridge forgets the key.
         status = self.mqtt.subscriptions[f"{BASE}/stat/secure"]
-        await status(types.SimpleNamespace(payload='{"v":1,"state":"active","kid":"8982fb24a78d94e1"}'))
+        await status(types.SimpleNamespace(payload='{"v":1,"state":"active","kid":"20a8108ed11215c5"}'))
         self.assertEqual(self.updates, [])
         await status(types.SimpleNamespace(payload=""))
         self.assertEqual(self.updates, [{"data": {"base_topic": BASE}, "options": {}}])
         self.assertEqual(self.notifications, [])
+
+
+    async def pair_until_the_number(self, bridge):
+        await bridge.async_setup()
+        deliver = self.mqtt.subscriptions[PAIR_PANEL_TOPIC]
+        panel = PairingPanel()
+        await deliver(types.SimpleNamespace(payload=panel.start(), retain=False))
+        [(topic, commit, retain)] = self.mqtt.published
+        self.assertEqual((topic, retain), (PAIR_BRIDGE_TOPIC, False))
+        with self.assertLogs("test_command_channel", "INFO") as logs:
+            await deliver(types.SimpleNamespace(payload=panel.send_nonce(), retain=False))
+        self.assertIn("asks to pair", logs.output[0])
+        derived = panel.finish(json.loads(commit), json.loads(self.mqtt.published[-1][1]))
+        self.mqtt.published.clear()
+        return deliver, panel, derived
+
+    async def test_panel_pairs_by_comparing_the_number(self):
+        bridge = self.make(paired=False)
+        deliver, panel, derived = await self.pair_until_the_number(bridge)
+        # A card under Discovered; it reads the number from the Bridge.
+        self.assertEqual(self.cards, [("tab5_lvgl", {"source": "integration_discovery"},
+                                       {"pairing_entry_id": "entry1", "pairing_attempt": ATTEMPT})])
+        self.assertEqual(bridge.pairing_number(ATTEMPT), NUMBER)
+        self.assertEqual(derived["number"], NUMBER.replace(" ", ""))
+        self.flows = ["card"]
+        self.assertEqual(await bridge.async_answer_pairing(ATTEMPT, True, "card"), "waiting")
+        [(topic, confirm, _retain)] = self.mqtt.published
+        self.assertEqual((topic, json.loads(confirm)["m"]), (PAIR_BRIDGE_TOPIC, derived["m_bridge"]))
+        self.assertEqual(self.aborted, [])
+        # The Bridge repeats its confirm while the panel's is missing.
+        self.mqtt.published.clear()
+        self.clock.now += 2
+        await self.fire_timers(1.0)
+        self.assertEqual([json.loads(payload)["t"] for _topic, payload, _retain in self.mqtt.published], ["confirm"])
+        with self.assertLogs("test_command_channel", "INFO") as logs:
+            await deliver(types.SimpleNamespace(payload=panel.confirm(derived["m_panel"]), retain=False))
+        self.assertIn(f"paired (key id {KEY_ID})", "\n".join(logs.output))
+        self.assertNotIn(KEY, "\n".join(logs.output))
+        # The card closes and the entry reloads with the key.
+        self.assertEqual(self.aborted, ["card"])
+        self.assertEqual(self.updates, [{"data": {"base_topic": BASE, "command_pairing_key": KEY}, "options": {}}])
+
+    async def test_the_answering_card_is_not_aborted_under_its_feet(self):
+        bridge = self.make(paired=False)
+        deliver, panel, derived = await self.pair_until_the_number(bridge)
+        await deliver(types.SimpleNamespace(payload=panel.confirm(derived["m_panel"]), retain=False))
+        self.flows = ["card", "stale"]
+        self.assertEqual(await bridge.async_answer_pairing(ATTEMPT, True, "card"), "paired")
+        self.assertEqual(self.aborted, ["stale"])
+        self.assertEqual(len(self.updates), 1)
+
+    async def test_rejected_or_cancelled_pairing_changes_nothing(self):
+        bridge = self.make(paired=False)
+        deliver, panel, _derived = await self.pair_until_the_number(bridge)
+        self.flows = ["card"]
+        self.assertEqual(await bridge.async_answer_pairing(ATTEMPT, False, "card"), "rejected")
+        self.assertEqual(json.loads(self.mqtt.published[0][1]), {"v": 2, "t": "abort", "id": ATTEMPT, "r": "rejected"})
+        self.assertEqual(await bridge.async_answer_pairing(ATTEMPT, True, "card"), "expired")
+        self.assertEqual(self.updates, [])
+        # Retained pairing messages are never handled.
+        self.mqtt.published.clear()
+        await deliver(types.SimpleNamespace(payload=PairingPanel(attempt="8899aabbccddeeff").start(), retain=True))
+        self.assertEqual(self.mqtt.published, [])
+
+    async def test_a_paired_bridge_refuses_a_new_pairing(self):
+        # A removal in progress counts as paired: the panel turns it off first.
+        for removing in (False, True):
+            bridge = self.make(paired=not removing, removing=removing)
+            await bridge.async_setup()
+            self.mqtt.published.clear()
+            with self.assertLogs("test_command_channel", "WARNING") as logs:
+                await self.mqtt.subscriptions[PAIR_PANEL_TOPIC](
+                    types.SimpleNamespace(payload=PairingPanel().start(), retain=False))
+            self.assertIn("still paired", logs.output[0])
+            self.assertEqual([(topic, json.loads(payload)) for topic, payload, _retain in self.mqtt.published],
+                             [(PAIR_BRIDGE_TOPIC, {"v": 2, "t": "abort", "id": ATTEMPT, "r": "paired"})])
+            self.assertEqual(self.cards, [])
 
 
 class LocalCameraPublisherTest(unittest.IsolatedAsyncioTestCase):
@@ -619,40 +743,168 @@ class LocalCameraPublisherTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((calls, self.published), (['{"a":1}'], []))
 
 
-class OptionsFlowContractTest(unittest.TestCase):
-    def test_security_step_is_translated_everywhere(self):
+class FlowTextsTest(unittest.TestCase):
+    def test_pairing_texts_are_translated_everywhere(self):
         package = ROOT
         for path in [package / "strings.json", *sorted((package / "translations").glob("*.json"))]:
             data = json.loads(path.read_text(encoding="utf-8"))
             options = data["options"]
             self.assertIn("security", options["step"]["init"]["menu_options"], path)
             step = options["step"]["security"]
-            self.assertEqual(set(step["data"]), {"pairing_code", "remove_pairing"}, path)
+            self.assertEqual(set(step["data"]), {"remove_pairing"}, path)
             self.assertIn("{key_id}", step["description"], path)
-            for error in ("invalid_pairing_code", "pairing_not_started", "pairing_code_mismatch",
-                          "pairing_code_empty"):
-                self.assertIn(error, options["error"], path)
-            # The result names the stored key id, so it is clear which panel entry holds the code.
-            self.assertIn("{key_id}", options["abort"]["pairing_saved"], path)
-            self.assertTrue(options["abort"]["pairing_removed"].strip(), path)
+            self.assertIn("pairing_nothing_selected", options["error"], path)
+            for reason in ("pairing_removed", "pairing_not_paired", "pairing_removing"):
+                self.assertTrue(options["abort"][reason].strip(), path)
+            for gone in ("pairing_code_empty", "invalid_pairing_code", "pairing_saved"):
+                self.assertNotIn(gone, options["error"] | options["abort"], path)
+            card = data["config"]["step"]["pairing_confirm"]
+            self.assertIn("{name}", card["description"], path)
+            self.assertIn("{number}", card["description"], path)
+            self.assertEqual(set(card["menu_options"]), {"pairing_accept", "pairing_reject"}, path)
+            for reason in ("pairing_done", "pairing_confirmed", "pairing_rejected", "pairing_expired"):
+                self.assertTrue(data["config"]["abort"][reason].strip(), path)
 
-    def test_security_step_validates_before_storing(self):
+    def test_security_step_only_removes(self):
         source = (ROOT / "config_flow.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         step = next(node for node in ast.walk(tree)
                     if isinstance(node, ast.AsyncFunctionDef) and node.name == "async_step_security")
         segment = ast.get_source_segment(source, step)
-        self.assertIn('"security"', source)
-        self.assertLess(segment.index("check_pairing_code("), segment.index("updated[CONF_COMMAND_PAIRING] = code"))
-        self.assertIn("updated.pop(CONF_COMMAND_PAIRING, None)", segment)
-        # A removed code waits until the panel turned pairing off too.
-        self.assertIn("updated[CONF_COMMAND_PAIRING_REMOVING] = stored_code", segment)
-        self.assertNotIn("_LOGGER", segment)
-        # An empty form is not reported as a success.
-        self.assertIn('errors["base"] = "pairing_code_empty"', segment)
-        self.assertIn('reason="pairing_saved"', segment)
+        # A removed key waits until the panel turned pairing off too.
+        self.assertIn("updated[CONF_COMMAND_PAIRING_REMOVING] = stored_key.hex()", segment)
+        self.assertIn('reason="pairing_not_paired"', segment)
+        self.assertIn('reason="pairing_removing"', segment)
         self.assertIn('reason="pairing_removed"', segment)
+        # An empty form is not reported as a success.
+        self.assertIn('errors["base"] = "pairing_nothing_selected"', segment)
+        self.assertNotIn("_LOGGER", segment)
         self.assertNotIn("async_create_entry", segment)
+
+
+def pairing_flow_class():
+    """The pairing card steps of config_flow.py on a small flow, without HA."""
+    source = (ROOT / "config_flow.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    flow = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Tab5ConfigFlow")
+    names = {"_pairing_bridge", "_pairing_number", "_async_start_pairing_card", "async_step_pairing_confirm",
+             "async_step_pairing_accept", "async_step_pairing_reject", "_async_answer_pairing", "async_step_ignore"}
+    functions = [node for node in flow.body if getattr(node, "name", None) in names]
+    results = next(node for node in tree.body if isinstance(node, ast.Assign)
+                   and getattr(node.targets[0], "id", None) == "_PAIRING_RESULTS")
+    discovery = next(node for node in flow.body if getattr(node, "name", None) == "async_step_integration_discovery")
+    # Its first statement sends pairing data to the card; the panel card is left out.
+    head = ast.AsyncFunctionDef(name="async_step_integration_discovery", args=discovery.args,
+                                body=[discovery.body[1], ast.Return(ast.Constant("panel card"))],
+                                decorator_list=[], returns=None, type_params=[])
+    cls = ast.ClassDef(name="Flow", bases=[ast.Name("FlowBase", ast.Load())], keywords=[],
+                       body=[*functions, head], decorator_list=[], type_params=[])
+    module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
+                              results, cls], type_ignores=[])
+
+    class FlowBase:
+        _pairing_entry_id = None
+        _pairing_attempt = None
+
+        def __init__(self, hass):
+            self.hass = hass
+            self.context = {}
+            self.flow_id = "card"
+
+        async def async_set_unique_id(self, unique_id):
+            self.context["unique_id"] = unique_id
+
+        def async_abort(self, *, reason):
+            return ("abort", reason)
+
+        def async_show_menu(self, *, step_id, menu_options, description_placeholders):
+            return ("menu", step_id, list(menu_options), description_placeholders)
+
+        async def async_step_ignore(self, user_input):
+            return ("ignored", user_input["unique_id"])
+
+    scope = {"FlowBase": FlowBase, "DOMAIN": "tab5_lvgl", "DISCOVERY_PAIRING_ENTRY": "pairing_entry_id",
+             "DISCOVERY_PAIRING_ATTEMPT": "pairing_attempt", "PAIRING_UNIQUE_ID_PREFIX": "pairing_"}
+    exec(compile(ast.fix_missing_locations(module), "config_flow.py", "exec"), scope)
+    return scope["Flow"]
+
+
+class FakeBridge:
+    def __init__(self, number=NUMBER, outcome="waiting"):
+        self.number = number
+        self.outcome = outcome
+        self.answers = []
+
+    def pairing_number(self, attempt_id):
+        return self.number if attempt_id == ATTEMPT else None
+
+    async def async_answer_pairing(self, attempt_id, accept, flow_id=None):
+        self.answers.append((attempt_id, accept, flow_id))
+        return self.outcome
+
+
+class PairingCardTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.Flow = pairing_flow_class()
+        self.bridge = FakeBridge()
+        entry = types.SimpleNamespace(entry_id="entry1", title="Kitchen")
+        self.hass = types.SimpleNamespace(
+            data={"tab5_lvgl": {"entries": {"entry1": self.bridge}}},
+            config_entries=types.SimpleNamespace(async_get_entry=lambda entry_id: entry if entry_id == "entry1" else None))
+
+    async def open_card(self):
+        flow = self.Flow(self.hass)
+        result = await flow.async_step_integration_discovery(
+            {"pairing_entry_id": "entry1", "pairing_attempt": ATTEMPT})
+        return flow, result
+
+    async def test_card_shows_the_number_and_passes_the_answer_on(self):
+        flow, result = await self.open_card()
+        self.assertEqual(result, ("menu", "pairing_confirm", ["pairing_accept", "pairing_reject"],
+                                  {"name": "Kitchen", "number": NUMBER}))
+        self.assertEqual(flow.context, {"unique_id": "pairing_entry1",
+                                        "title_placeholders": {"name": f"Kitchen ({NUMBER})"}})
+        self.assertEqual(await flow.async_step_pairing_accept(), ("abort", "pairing_confirmed"))
+        self.assertEqual(self.bridge.answers, [(ATTEMPT, True, "card")])
+        for outcome, reason in (("paired", "pairing_done"), ("rejected", "pairing_rejected"),
+                                ("expired", "pairing_expired")):
+            self.bridge.outcome = outcome
+            self.assertEqual(await flow.async_step_pairing_accept(), ("abort", reason))
+        self.bridge.outcome = "rejected"
+        self.assertEqual(await flow.async_step_pairing_reject(), ("abort", "pairing_rejected"))
+        self.assertEqual(self.bridge.answers[-1], (ATTEMPT, False, "card"))
+
+    async def test_ended_attempts_show_no_number(self):
+        self.bridge.number = None
+        _flow, result = await self.open_card()
+        self.assertEqual(result, ("abort", "pairing_expired"))
+        self.bridge.number = NUMBER
+        flow, _result = await self.open_card()
+        self.hass.data["tab5_lvgl"]["entries"].clear()
+        self.assertEqual(await flow.async_step_pairing_confirm(), ("abort", "pairing_expired"))
+        self.assertEqual(await flow.async_step_pairing_accept(), ("abort", "pairing_expired"))
+
+    async def test_ignoring_the_card_rejects_the_pairing(self):
+        flow = self.Flow(self.hass)
+        self.assertEqual(await flow.async_step_ignore({"unique_id": "pairing_entry1", "title": "x"}),
+                         ("abort", "pairing_rejected"))
+        self.assertEqual(self.bridge.answers, [(None, False, None)])
+        # Cards of new panels are ignored as usual.
+        self.assertEqual(await flow.async_step_ignore({"unique_id": "A1B2C3D4E5F6", "title": "x"}),
+                         ("ignored", "A1B2C3D4E5F6"))
+
+    async def test_panel_cards_take_the_usual_way(self):
+        flow = self.Flow(self.hass)
+        self.assertEqual(await flow.async_step_integration_discovery({"device_id": "A1B2C3D4E5F6"}), "panel card")
+
+    def test_results_cover_every_answer(self):
+        scope = {}
+        exec(compile(ast.Module(body=[next(
+            node for node in ast.parse((ROOT / "config_flow.py").read_text(encoding="utf-8")).body
+            if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) == "_PAIRING_RESULTS")],
+            type_ignores=[]), "config_flow.py", "exec"), scope)
+        self.assertEqual(set(scope["_PAIRING_RESULTS"]),
+                         {PAIRING.ANSWER_PAIRED, PAIRING.ANSWER_WAITING, PAIRING.ANSWER_REJECTED})
 
 
 if __name__ == "__main__":

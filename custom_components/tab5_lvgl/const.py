@@ -12,12 +12,18 @@ CONF_MANUFACTURER = "manufacturer"
 CONF_MODEL = "model"
 CONF_DEVICE_NAME = "device_name"
 CONF_LOCAL_IO = "local_io"
-# Pairing code of the encrypted command channel (command_channel.py); absent
-# means unencrypted commands exactly as before.
-CONF_COMMAND_PAIRING = "command_pairing_code"
-# A code removed in Home Assistant, kept until the panel turned pairing off
+# Pairing key (hex) of the encrypted command channel (pairing.py,
+# command_channel.py); absent means unencrypted commands exactly as before.
+CONF_COMMAND_PAIRING = "command_pairing_key"
+# A key removed in Home Assistant, kept until the panel turned pairing off
 # as well (command_channel.py sends it an unpair).
 CONF_COMMAND_PAIRING_REMOVING = "command_pairing_removing"
+# Discovery data keys of a pairing card: the entry whose panel asks to pair
+# and the attempt (config_flow.async_step_pairing_confirm).
+DISCOVERY_PAIRING_ENTRY = "pairing_entry_id"
+DISCOVERY_PAIRING_ATTEMPT = "pairing_attempt"
+# Unique id of a pairing card; one per entry at a time.
+PAIRING_UNIQUE_ID_PREFIX = "pairing_"
 # Discovery data key: the existing entry a newly announcing panel would be
 # linked to once the user confirms (config_flow.async_step_adopt_confirm).
 DISCOVERY_ADOPT_ENTRY = "adopt_entry_id"

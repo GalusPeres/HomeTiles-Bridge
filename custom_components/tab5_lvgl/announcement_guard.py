@@ -11,7 +11,7 @@ messages from binding, changing or flooding config entries:
 Signature: the panel appends ``,"sig":"<64 hex>"`` before the final ``}``,
 where sig = HMAC-SHA256(announce key, topic + "\\n" + unsigned payload) and the
 unsigned payload is the exact JSON text without that member. The announce
-key is HKDF-SHA256 of the pairing code with the info label "announce". See
+key is HKDF-SHA256 of the pairing key with the info label "announce". See
 docs-dev/command-encryption.md in the HomeTiles firmware repository.
 """
 
@@ -72,7 +72,7 @@ def check_signature(announce_key: Optional[bytes], topic: str, raw_payload: Any)
   if match is None:
     return SIGNATURE_UNSIGNED
   if announce_key is None:
-    # Signed by a paired panel, but this Bridge entry has no code: the
+    # Signed by a paired panel, but this Bridge entry has no key: the
     # content is treated like any unsigned announcement.
     return SIGNATURE_UNSIGNED
   unsigned = raw_payload[:match.start()] + "}"

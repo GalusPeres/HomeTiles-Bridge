@@ -23,7 +23,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .capabilities import merged_capabilities_data, supports
-from .command_channel import entry_pairing_code
+from .command_channel import entry_pairing_key
 from .const import (
     DOMAIN,
     LOCAL_CAMERA_FRAME_INTERVAL_S,
@@ -89,7 +89,7 @@ class HomeTilesLocalCamera(Camera):
         super().__init__()
         self.content_type = "image/jpeg"
         self._entry_id = entry.entry_id
-        self._paired = entry_pairing_code(entry) is not None
+        self._paired = entry_pairing_key(entry) is not None
         self._attr_device_info = entry_device_info(entry)
         self._attr_unique_id = local_camera_unique_id(entry_device_id(entry))
         self._base = base_topic

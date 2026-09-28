@@ -137,12 +137,15 @@ from .const import (
   CONFIG_TOPIC_SUB,
   DEFAULT_BASE,
   DISCOVERY_ADOPT_ENTRY,
+  DISCOVERY_PAIRING_ATTEMPT,
+  DISCOVERY_PAIRING_ENTRY,
   DEFAULT_PREFIX,
   DOMAIN,
   ENERGY_REQUEST_SUFFIX,
   ENERGY_RESPONSE_SUFFIX,
   HISTORY_REQUEST_SUFFIX,
   HISTORY_RESPONSE_SUFFIX,
+  PAIRING_UNIQUE_ID_PREFIX,
   SERVICE_PUBLISH_SNAPSHOT,
   WEATHER_REQUEST_SUFFIX,
 )
@@ -178,12 +181,15 @@ from .capabilities import (
 from .command_channel import (
   BridgeChannel,
   Keys as CommandKeys,
-  entry_pairing_code,
-  entry_removing_code,
+  entry_pairing_key,
+  entry_removing_key,
+  has_legacy_code,
   parse_status as parse_command_status,
   status_topic as command_status_topic,
+  with_pairing_key,
   without_pairing,
 )
+from .pairing import PanelPairing
 from .announcement_guard import (
   DiscoveryLimiter,
   MAX_ANNOUNCEMENT_BYTES,
@@ -220,6 +226,8 @@ MEDIA_COVER_MAX_BYTES = 14000
 # Home Assistant sends SUBSCRIBE packets batched, a moment after async_subscribe
 # returns. The start rekey waits so the panel's hello finds the subscription.
 SECURE_START_REKEY_DELAY_S = 3.0
+# A running pairing attempt times out and repeats the Bridge's confirm.
+PAIRING_TICK_S = 1.0
 # Panel history requests are a few hundred bytes of JSON.
 HISTORY_REQUEST_MAX_BYTES = 2048
 # Source covers from HA media_player_proxy can be 200-500 KB (HD album art).
@@ -477,6 +485,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.config_entries.async_update_entry(entry, title=dev_info["name"])
   _remove_stale_local_io_entities(hass, entry)
   _migrate_local_io_entity_ids(hass, entry)
+  if has_legacy_code(entry):
+    # v0.7.1b1/b2 stored a typed pairing code. Pairing now compares a number,
+    # and the firmware drops its old record too, so both run unencrypted.
+    _LOGGER.warning(
+      "HomeTiles Bridge removed the old pairing code of %s; pair the display again "
+      "(Settings > System > Security > Pair)", entry.title,
+    )
+    hass.config_entries.async_update_entry(
+      entry, data=without_pairing(entry.data), options=without_pairing(entry.options),
+    )
   bridge = Tab5Bridge(hass, entry)
   await bridge.async_setup()
   hass.data[DOMAIN]["entries"][entry.entry_id] = bridge
@@ -1146,16 +1164,22 @@ class Tab5Bridge:
     self._unsub_secure = None
     self._unsub_secure_status = None
     # Encrypted panel commands (command_channel.py); None keeps the plain
-    # command topics exactly as before. A code removed in Home Assistant keeps
+    # command topics exactly as before. A key removed in Home Assistant keeps
     # a "removing" channel until the panel confirmed that it turned pairing off.
     self._command_channel: Optional[BridgeChannel] = None
-    pairing_code = entry_pairing_code(entry)
-    removing_code = entry_removing_code(entry)
-    if pairing_code or removing_code:
+    pairing_key = entry_pairing_key(entry)
+    removing_key = entry_removing_key(entry)
+    if pairing_key or removing_key:
       self._command_channel = BridgeChannel(
-        pairing_code or removing_code, self.base_topic, clock=monotonic, removing=not pairing_code,
+        pairing_key or removing_key, self.base_topic, clock=monotonic, removing=not pairing_key,
       )
     self._unsub_start_rekey = None
+    # Pairing by number (pairing.py). Its state outlives a reload of the
+    # entry, which storing the key causes.
+    self._pairing = _panel_pairing(self.hass, entry.entry_id, self.base_topic)
+    self._unsub_pair = None
+    self._unsub_pairing_tick = None
+    self._answering_flow_id: Optional[str] = None
     self.command_status: Dict[str, Any] = {"state": "unknown", "kid": None}
     self._secure_log_at: Dict[str, float] = {}
     self._history_gate = RequestGate(monotonic)
@@ -1350,6 +1374,13 @@ class Tab5Bridge:
       command_status_topic(self.base_topic),
       self._async_handle_secure_status,
     )
+    # Every panel may ask to pair; firmware without pairing never does.
+    self._unsub_pair = await mqtt.async_subscribe(
+      self.hass,
+      self._pairing.panel_topic,
+      self._async_handle_pair_message,
+    )
+    self._schedule_pairing_tick()
     channel = self._command_channel
     if channel is not None:
       await self._async_setup_secure_commands()
@@ -1538,6 +1569,12 @@ class Tab5Bridge:
     if self._unsub_start_rekey:
       self._unsub_start_rekey()
       self._unsub_start_rekey = None
+    if self._unsub_pair:
+      self._unsub_pair()
+      self._unsub_pair = None
+    if self._unsub_pairing_tick:
+      self._unsub_pairing_tick()
+      self._unsub_pairing_tick = None
     if self._unsub_secure:
       self._unsub_secure()
       self._unsub_secure = None
@@ -2208,7 +2245,7 @@ class Tab5Bridge:
         )
         self._notify_pairing(
           f"The display ({self.entry.title}) reports that encryption is off, but the Bridge still "
-          "has its pairing code and ignores its unencrypted commands. If you turned encryption off "
+          "has its pairing key and ignores its unencrypted commands. If you turned encryption off "
           "on the display, remove the pairing under Configure > Security."
         )
       return
@@ -2217,7 +2254,8 @@ class Tab5Bridge:
     if kid != channel.keys.key_id:
       if self._secure_log_due("status_kid"):
         _LOGGER.warning(
-          "HomeTiles panel %s uses another pairing code; enter the code shown on the panel",
+          "HomeTiles panel %s uses another pairing key; remove the pairing under "
+          "Configure > Security and pair the display again",
           self.base_topic,
         )
       return
@@ -2228,7 +2266,7 @@ class Tab5Bridge:
         _LOGGER.debug("HomeTiles encrypted rekey sent to %s", self.base_topic)
 
   def _drop_pairing(self) -> None:
-    """Forget the pairing code; the update listener reloads the entry unpaired."""
+    """Forget the pairing key; the update listener reloads the entry unpaired."""
     self._command_channel = None
     self.hass.config_entries.async_update_entry(
       self.entry,
@@ -2240,6 +2278,91 @@ class Tab5Bridge:
     persistent_notification.async_create(
       self.hass, message, title="HomeTiles Bridge",
       notification_id=f"{DOMAIN}_{self.entry.entry_id}_pairing",
+    )
+
+  async def _async_handle_pair_message(self, msg: ReceiveMessage) -> None:
+    """A pairing message from the panel ({base}/pair/panel)."""
+    if getattr(msg, "retain", False):
+      return
+    # A removal in progress counts as paired: the panel turns it off first.
+    events = self._pairing.handle(msg.payload, paired=self._command_channel is not None)
+    await self._async_apply_pairing_events(events)
+
+  def pairing_number(self, attempt_id: Optional[str]) -> Optional[str]:
+    """The number of a pairing attempt the user can still answer ("061 806")."""
+    return self._pairing.number(attempt_id)
+
+  async def async_answer_pairing(
+    self, attempt_id: Optional[str], accept: bool, flow_id: Optional[str] = None,
+  ) -> str:
+    """The user's answer on the pairing card (config_flow.py); the card stays open."""
+    outcome, events = self._pairing.answer(attempt_id, accept)
+    self._answering_flow_id = flow_id
+    try:
+      await self._async_apply_pairing_events(events)
+    finally:
+      self._answering_flow_id = None
+    return outcome
+
+  async def _async_pairing_tick(self, _now: Any = None) -> None:
+    self._unsub_pairing_tick = None
+    await self._async_apply_pairing_events(self._pairing.tick())
+
+  def _schedule_pairing_tick(self) -> None:
+    if self._pairing.active and self._unsub_pairing_tick is None:
+      self._unsub_pairing_tick = async_call_later(self.hass, PAIRING_TICK_S, self._async_pairing_tick)
+    elif not self._pairing.active and self._unsub_pairing_tick is not None:
+      self._unsub_pairing_tick()
+      self._unsub_pairing_tick = None
+
+  async def _async_apply_pairing_events(self, events: List[Tuple[str, Any]]) -> None:
+    for event, value in events:
+      if event == "send":
+        await mqtt.async_publish(self.hass, self._pairing.bridge_topic, value, qos=0, retain=False)
+      elif event == "prompt":
+        _LOGGER.info("HomeTiles panel %s asks to pair; compare the number in Home Assistant", self.base_topic)
+        self._show_pairing_card(value[0])
+      elif event == "closed":
+        _LOGGER.info("HomeTiles pairing of %s ended (%s)", self.base_topic, value)
+        self._close_pairing_card()
+      elif event == "refused":
+        if value == "paired" and self._secure_log_due("pair_paired"):
+          _LOGGER.warning(
+            "HomeTiles panel %s asks to pair, but the Bridge is still paired with it; "
+            "remove the pairing under Configure > Security first",
+            self.base_topic,
+          )
+        elif self._secure_log_due(f"pair_{value}", 10.0):
+          _LOGGER.debug("HomeTiles pairing request of %s refused (%s)", self.base_topic, value)
+      elif event == "paired":
+        self._close_pairing_card()
+        self._store_pairing(value)
+    self._schedule_pairing_tick()
+
+  def _show_pairing_card(self, attempt_id: str) -> None:
+    """A card under Discovered; config_flow.async_step_pairing_confirm shows the number."""
+    discovery_flow.async_create_flow(
+      self.hass,
+      DOMAIN,
+      context={"source": config_entries.SOURCE_INTEGRATION_DISCOVERY},
+      data={DISCOVERY_PAIRING_ENTRY: self.entry.entry_id, DISCOVERY_PAIRING_ATTEMPT: attempt_id},
+    )
+
+  def _close_pairing_card(self) -> None:
+    flows = self.hass.config_entries.flow
+    unique_id = f"{PAIRING_UNIQUE_ID_PREFIX}{self.entry.entry_id}"
+    for flow in flows.async_progress_by_handler(DOMAIN, match_context={"unique_id": unique_id}):
+      # The card that is answering closes itself with its result.
+      if flow["flow_id"] != self._answering_flow_id:
+        flows.async_abort(flow["flow_id"])
+
+  def _store_pairing(self, pairing_key: bytes) -> None:
+    """Keep the pairing key; the update listener reloads the entry paired."""
+    _LOGGER.info("HomeTiles panel %s paired (key id %s)", self.base_topic, CommandKeys(pairing_key).key_id)
+    self.hass.config_entries.async_update_entry(
+      self.entry,
+      data=with_pairing_key(self.entry.data, pairing_key),
+      options=without_pairing(self.entry.options),
     )
 
   async def _async_publish_sealed_data(self, kind: str, text: str) -> bool:
@@ -5387,7 +5510,7 @@ async def _async_process_bridge_config(
     )
     return
   if fallback:
-    if entry_pairing_code(fallback) and not _announcement_trusted(
+    if entry_pairing_key(fallback) and not _announcement_trusted(
       hass, fallback, data, topic, raw_payload,
     ):
       return
@@ -5441,15 +5564,16 @@ def _announcement_trusted(
   raw_payload: Any,
 ) -> bool:
   """May this announcement update the entry of the panel it names?"""
-  code = entry_pairing_code(entry)
-  if code:
-    # A paired panel signs its announcement with the pairing code.
-    signature = check_signature(CommandKeys(code).announce, topic or "", raw_payload)
+  pairing_key = entry_pairing_key(entry)
+  if pairing_key:
+    # A paired panel signs its announcement with its pairing key.
+    signature = check_signature(CommandKeys(pairing_key).announce, topic or "", raw_payload)
     if signature != SIGNATURE_VALID:
       if _announcement_log_due(hass, f"signature_{entry.entry_id}"):
         _LOGGER.warning(
           "HomeTiles Bridge ignored an unsigned or wrongly signed announcement for %s; "
-          "if the panel shows a new pairing code, enter it under Configure > Security",
+          "if the display lost its pairing, remove the pairing under Configure > Security "
+          "and pair it again",
           entry.title,
         )
       return False
@@ -5482,7 +5606,20 @@ def _pending_discovery_flows(hass: HomeAssistant) -> int:
       flow for flow in progress(DOMAIN)
       if (flow.get("context") or {}).get("source") == source
     ]
-  return len(flows)
+  # Pairing cards are limited by pairing.py, not by the panel announcements.
+  return len([
+    flow for flow in flows
+    if not str((flow.get("context") or {}).get("unique_id") or "").startswith(PAIRING_UNIQUE_ID_PREFIX)
+  ])
+
+
+def _panel_pairing(hass: HomeAssistant, entry_id: str, base_topic: str) -> PanelPairing:
+  """The pairing state of one entry; kept in hass.data across reloads."""
+  store = hass.data.setdefault(DOMAIN, {"entries": {}}).setdefault("_pairing", {})
+  pairing = store.get(entry_id)
+  if pairing is None or pairing.base_topic != base_topic:
+    pairing = store[entry_id] = PanelPairing(base_topic, clock=monotonic)
+  return pairing
 
 
 def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:

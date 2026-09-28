@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 
 from .capabilities import merged_capabilities_data, supports
-from .command_channel import entry_pairing_code
+from .command_channel import entry_pairing_key
 from .const import DOMAIN, LOCAL_CAMERA_MAX_BYTES, TOPIC_DISPLAY_ROTATE, TOPIC_DISPLAY_SLEEP
 from .device_helpers import (
     command_topic,
@@ -77,7 +77,7 @@ class HomeTilesLocalCameraSwitch(SwitchEntity):
         self._device_info = entry_device_info(entry)
         self._attr_unique_id = local_camera_unique_id(entry_device_id(entry))
         self._entry_id = entry.entry_id
-        self._paired = entry_pairing_code(entry) is not None
+        self._paired = entry_pairing_key(entry) is not None
         self._base_topic = base_topic
         self._topic_status = local_camera_status_topic(base_topic)
         self._topic_available = state_topic(base_topic, "connected")

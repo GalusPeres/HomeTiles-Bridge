@@ -1,10 +1,10 @@
 """Encrypted, authenticated commands between a panel and the Bridge.
 
 Protocol reference: docs-dev/command-encryption.md in the HomeTiles firmware
-repository. The pairing code is shown on the panel and entered in the Bridge
-options (Security); both sides derive the same keys from it:
+repository. Pairing (pairing.py) leaves both sides with the same 32-byte
+pairing key K; both derive the channel keys from it:
 
-  HKDF-SHA256(salt="HomeTiles command pairing v1", ikm=<25 code symbols>,
+  HKDF-SHA256(salt="HomeTiles command pairing v2", ikm=K,
               info="panel-to-bridge" | "bridge-to-panel" | "announce" (32 bytes) |
                    "key-id" (8 bytes))
 
@@ -17,7 +17,7 @@ ChaCha20-Poly1305 with the direction's key, a random 96-bit nonce and the MQTT
 topic as associated data. Plaintext: "<type> <session|-> <seq> <name|->\\n<body>".
 
 Nothing here performs I/O, so the tests run the exact code the integration uses.
-The pairing code and the keys are never logged.
+The pairing key and the channel keys are never logged.
 """
 
 from __future__ import annotations
@@ -30,9 +30,8 @@ import os
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-CODE_LENGTH = 25
-KDF_SALT = b"HomeTiles command pairing v1"
+KEY_LENGTH = 32
+KDF_SALT = b"HomeTiles command pairing v2"
 MAX_BODY = 2048
 MAX_NAME = 32
 REPLAY_WINDOW = 64
@@ -43,10 +42,13 @@ PANEL_TOPIC_LEAF = "secure/panel"
 BRIDGE_TOPIC_LEAF = "secure/bridge"
 STATUS_TOPIC_LEAF = "stat/secure"
 # Same value as const.CONF_COMMAND_PAIRING; this module stays import-free.
-CONF_PAIRING_KEY = "command_pairing_code"
-# A code removed in Home Assistant is kept here until the panel confirmed that
+CONF_PAIRING_KEY = "command_pairing_key"
+# A key removed in Home Assistant is kept here until the panel confirmed that
 # it turned pairing off (same value as const.CONF_COMMAND_PAIRING_REMOVING).
 CONF_REMOVING_KEY = "command_pairing_removing"
+# The typed pairing code of v0.7.1b1/b2 (const.CONF_COMMAND_PAIRING_LEGACY).
+# Pairing now compares a number, so a stored code is dropped.
+CONF_LEGACY_CODE = "command_pairing_code"
 
 # Panel command topics that arrive sealed once pairing is active.
 SEALED_COMMANDS = frozenset({"scene", "light", "switch", "media", "climate", "cover", "camera", "value"})
@@ -64,37 +66,10 @@ _TYPES = frozenset({TYPE_HELLO, TYPE_SESSION, TYPE_REKEY, TYPE_COMMAND, TYPE_DAT
 
 _NAME = re.compile(r"[a-z0-9_]{1,32}\Z")
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
+_STORED_KEY = re.compile(r"[0-9a-f]{64}\Z")
 _SEQ = re.compile(r"(0|[1-9][0-9]{0,9})\Z")
 _HEX = re.compile(r"[0-9a-fA-F]*\Z")
 _MAX_ENVELOPE = 200 + 2 * (MAX_BODY + 128)
-
-
-def _symbol(char: str) -> Optional[str]:
-  char = char.upper()
-  if char == "O":
-    char = "0"
-  elif char in ("I", "L"):
-    char = "1"
-  return char if char in ALPHABET else None
-
-
-def normalize_code(text: Any) -> Optional[str]:
-  """Return the 25 canonical symbols, or None for anything else."""
-  if not isinstance(text, str):
-    return None
-  symbols = []
-  for char in text:
-    if char in "- \t":
-      continue
-    symbol = _symbol(char)
-    if symbol is None:
-      return None
-    symbols.append(symbol)
-  return "".join(symbols) if len(symbols) == CODE_LENGTH else None
-
-
-def format_code(code: str) -> str:
-  return "-".join(code[i:i + 5] for i in range(0, CODE_LENGTH, 5))
 
 
 def _hkdf(ikm: bytes, info: bytes, length: int) -> bytes:
@@ -110,13 +85,12 @@ def _hkdf(ikm: bytes, info: bytes, length: int) -> bytes:
 
 
 class Keys:
-  """Direction keys and the public key id derived from one pairing code."""
+  """Direction keys and the public key id derived from one pairing key."""
 
-  def __init__(self, code: str) -> None:
-    canonical = normalize_code(code)
-    if canonical is None:
-      raise ValueError("invalid_pairing_code")
-    ikm = canonical.encode("ascii")
+  def __init__(self, pairing_key: bytes) -> None:
+    if not isinstance(pairing_key, bytes) or len(pairing_key) != KEY_LENGTH:
+      raise ValueError("invalid_pairing_key")
+    ikm = pairing_key
     self.panel_to_bridge = _hkdf(ikm, b"panel-to-bridge", 32)
     self.bridge_to_panel = _hkdf(ikm, b"bridge-to-panel", 32)
     # Signs the panel's announcement (announcement_guard.py).
@@ -247,7 +221,7 @@ class ReplayWindow:
 
 
 def parse_status(payload: Any) -> Dict[str, Any]:
-  """Retained {base}/stat/secure: {"state": "off"|"pending"|"active", "kid"}."""
+  """Retained {base}/stat/secure: {"state": "off"|"active", "kid"}; empty means off."""
   if isinstance(payload, (bytes, bytearray)):
     payload = bytes(payload).decode("utf-8", "ignore")
   if not isinstance(payload, str) or not payload.strip() or len(payload) > 256:
@@ -260,7 +234,7 @@ def parse_status(payload: Any) -> Dict[str, Any]:
     return {"state": "unknown", "kid": None}
   state = data.get("state")
   kid = data.get("kid")
-  if state not in ("pending", "active", "off"):
+  if state not in ("active", "off"):
     state = "unknown"
   if not (isinstance(kid, str) and len(kid) == 16 and _HEX.match(kid)):
     kid = None
@@ -275,9 +249,9 @@ class BridgeChannel:
   runs no sealed commands.
   """
 
-  def __init__(self, code: str, base_topic: str, *, clock: Callable[[], float],
+  def __init__(self, pairing_key: bytes, base_topic: str, *, clock: Callable[[], float],
                random: Callable[[int], bytes] = os.urandom, removing: bool = False) -> None:
-    self.keys = Keys(code)
+    self.keys = Keys(pairing_key)
     self.removing = removing
     self.base_topic = base_topic
     self.panel_topic = f"{base_topic}/{PANEL_TOPIC_LEAF}"
@@ -370,55 +344,55 @@ class BridgeChannel:
     return self._seal(build_plaintext(TYPE_UNPAIR, self.session, seq, None))
 
 
-def _entry_code(entry: Any, key: str) -> Optional[str]:
+def _sources(entry: Any) -> List[Mapping]:
   # Home Assistant hands out entry data and options as read-only
   # MappingProxyType, which is a Mapping but not a dict.
-  for source in (getattr(entry, "options", None), getattr(entry, "data", None)):
-    if isinstance(source, Mapping) and source.get(key):
-      return normalize_code(source.get(key))
+  return [source for source in (getattr(entry, "options", None), getattr(entry, "data", None))
+          if isinstance(source, Mapping)]
+
+
+def _entry_key(entry: Any, name: str) -> Optional[bytes]:
+  for source in _sources(entry):
+    value = source.get(name)
+    if value:
+      return bytes.fromhex(value) if isinstance(value, str) and _STORED_KEY.match(value) else None
   return None
 
 
-def entry_pairing_code(entry: Any) -> Optional[str]:
-  """The stored pairing code of a config entry (options override data)."""
-  return _entry_code(entry, CONF_PAIRING_KEY)
+def entry_pairing_key(entry: Any) -> Optional[bytes]:
+  """The stored pairing key of a config entry (options override data)."""
+  return _entry_key(entry, CONF_PAIRING_KEY)
 
 
-def entry_removing_code(entry: Any) -> Optional[str]:
-  """A code removed in Home Assistant that the panel still has to turn off."""
-  if entry_pairing_code(entry):
+def entry_removing_key(entry: Any) -> Optional[bytes]:
+  """A key removed in Home Assistant that the panel still has to turn off."""
+  if entry_pairing_key(entry):
     return None
-  return _entry_code(entry, CONF_REMOVING_KEY)
+  return _entry_key(entry, CONF_REMOVING_KEY)
+
+
+def has_legacy_code(entry: Any) -> bool:
+  """A typed pairing code stored by v0.7.1b1/b2."""
+  return any(CONF_LEGACY_CODE in source for source in _sources(entry))
 
 
 def without_pairing(values: Any) -> Dict[str, Any]:
-  """Entry data or options without any pairing code."""
+  """Entry data or options without any pairing key or old code."""
   return {key: value for key, value in dict(values or {}).items()
-          if key not in (CONF_PAIRING_KEY, CONF_REMOVING_KEY)}
+          if key not in (CONF_PAIRING_KEY, CONF_REMOVING_KEY, CONF_LEGACY_CODE)}
 
 
-def check_pairing_code(text: Any, panel_status: Optional[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
-  """Validate a code entered in the Bridge against the panel's retained status.
-
-  Returns (canonical code, None) or (None, error key). Only a panel that shows
-  a code (pending or active) with the same key id can be paired, so a typo or
-  a panel with old firmware cannot silence its own commands.
-  """
-  code = normalize_code(text)
-  if code is None:
-    return None, "invalid_pairing_code"
-  status = panel_status or {}
-  kid = status.get("kid")
-  if status.get("state") not in ("pending", "active") or not isinstance(kid, str):
-    return None, "pairing_not_started"
-  if not hmac.compare_digest(Keys(code).key_id, kid):
-    return None, "pairing_code_mismatch"
-  return code, None
+def with_pairing_key(values: Any, pairing_key: bytes) -> Dict[str, Any]:
+  """Entry data holding this pairing key and no other."""
+  Keys(pairing_key)  # Only 32 bytes are a key.
+  updated = without_pairing(values)
+  updated[CONF_PAIRING_KEY] = pairing_key.hex()
+  return updated
 
 
-def key_id_for_code(code: str) -> Optional[str]:
+def key_id_for_key(pairing_key: Optional[bytes]) -> Optional[str]:
   try:
-    return Keys(code).key_id
+    return Keys(pairing_key).key_id
   except ValueError:
     return None
 

@@ -22,7 +22,7 @@ from homeassistant.helpers.network import get_url
 from .binary_sensor_helpers import split_binary_sensor_entities
 from .panel_auth import ERROR_CANNOT_CONNECT, async_push_credentials
 from .capabilities import CAPABILITIES
-from .command_channel import check_pairing_code, entry_pairing_code, key_id_for_code, without_pairing
+from .command_channel import entry_pairing_key, entry_removing_key, key_id_for_key, without_pairing
 from .control_helpers import ACTION_DOMAINS, SWITCH_DOMAINS, build_action_map, entity_domain
 from .editable_helpers import (EDITABLE_LISTS, EDITABLE_DOMAINS, NUMBER_DOMAINS, SELECT_DOMAINS, DATETIME_DOMAINS, editable_selection, domain_of, build_editable_payload, build_editable_service_call, add_number_history, MAX_CONTROL_BYTES)
 from .const import (
@@ -31,7 +31,6 @@ from .const import (
   CONF_BINARY_SENSORS,
   CONF_CAMERAS,
   CONF_CLIMATES,
-  CONF_COMMAND_PAIRING,
   CONF_COMMAND_PAIRING_REMOVING,
   CONF_COVERS,
   CONF_DEVICE_ID,
@@ -54,7 +53,10 @@ from .const import (
   DEFAULT_BASE,
   DEFAULT_PREFIX,
   DISCOVERY_ADOPT_ENTRY,
+  DISCOVERY_PAIRING_ATTEMPT,
+  DISCOVERY_PAIRING_ENTRY,
   DOMAIN,
+  PAIRING_UNIQUE_ID_PREFIX,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,9 +68,10 @@ CONF_PROVISION_MQTT_PASSWORD = "mqtt_password"
 # Optional Web Admin password of the panel. Used only for the pairing push and
 # never stored in the config entry or logged.
 CONF_PROVISION_PANEL_PASSWORD = "panel_password"
-# Options step "security": the code is stored as CONF_COMMAND_PAIRING.
-CONF_PAIRING_CODE = "pairing_code"
+# Options step "security": removes the pairing key (CONF_COMMAND_PAIRING).
 CONF_REMOVE_PAIRING = "remove_pairing"
+# Result of the user's answer on a pairing card (pairing.ANSWER_*).
+_PAIRING_RESULTS = {"paired": "pairing_done", "waiting": "pairing_confirmed", "rejected": "pairing_rejected"}
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +95,9 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   _discovered_data: Optional[Dict[str, Any]] = None
   # Existing entry the announcing panel would be linked to (adopt_confirm).
   _adopt_entry_id: Optional[str] = None
+  # Pairing card: the entry whose panel asks to pair, and the attempt.
+  _pairing_entry_id: Optional[str] = None
+  _pairing_attempt: Optional[str] = None
 
   def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
@@ -160,6 +166,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
   async def async_step_integration_discovery(self, discovery_info: Dict[str, Any]):
     """A panel announced itself over MQTT; ask the user before adding it."""
+    if discovery_info.get(DISCOVERY_PAIRING_ENTRY):
+      return await self._async_start_pairing_card(discovery_info)
     device_id = discovery_info.get(CONF_DEVICE_ID)
     if not device_id:
       return self.async_abort(reason="missing_device_id")
@@ -235,6 +243,63 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         "base_topic": data.get(CONF_BASE_TOPIC) or "",
       },
     )
+
+  # ---- Pairing card: the panel asks to pair (pairing.py) ----
+
+  def _pairing_bridge(self) -> Any:
+    return self.hass.data.get(DOMAIN, {}).get("entries", {}).get(self._pairing_entry_id or "")
+
+  def _pairing_number(self) -> Optional[str]:
+    bridge = self._pairing_bridge()
+    return bridge.pairing_number(self._pairing_attempt) if bridge is not None else None
+
+  async def _async_start_pairing_card(self, discovery_info: Dict[str, Any]):
+    self._pairing_entry_id = str(discovery_info.get(DISCOVERY_PAIRING_ENTRY))
+    self._pairing_attempt = str(discovery_info.get(DISCOVERY_PAIRING_ATTEMPT) or "")
+    # One card per panel; "Ignore" on it rejects the attempt (async_step_ignore).
+    await self.async_set_unique_id(f"{PAIRING_UNIQUE_ID_PREFIX}{self._pairing_entry_id}")
+    entry = self.hass.config_entries.async_get_entry(self._pairing_entry_id)
+    number = self._pairing_number()
+    if entry is None or number is None:
+      return self.async_abort(reason="pairing_expired")
+    self.context["title_placeholders"] = {"name": f"{entry.title} ({number})"}
+    return await self.async_step_pairing_confirm()
+
+  async def async_step_pairing_confirm(self, user_input: Dict[str, Any] | None = None):
+    """Show the number; the user compares it with the one on the display."""
+    entry = self.hass.config_entries.async_get_entry(self._pairing_entry_id or "")
+    number = self._pairing_number()
+    if entry is None or number is None:
+      return self.async_abort(reason="pairing_expired")
+    return self.async_show_menu(
+      step_id="pairing_confirm",
+      menu_options=["pairing_accept", "pairing_reject"],
+      description_placeholders={"name": entry.title, "number": number},
+    )
+
+  async def async_step_pairing_accept(self, user_input: Dict[str, Any] | None = None):
+    return await self._async_answer_pairing(True)
+
+  async def async_step_pairing_reject(self, user_input: Dict[str, Any] | None = None):
+    return await self._async_answer_pairing(False)
+
+  async def _async_answer_pairing(self, accept: bool):
+    bridge = self._pairing_bridge()
+    outcome = None
+    if bridge is not None:
+      outcome = await bridge.async_answer_pairing(self._pairing_attempt, accept, self.flow_id)
+    return self.async_abort(reason=_PAIRING_RESULTS.get(outcome, "pairing_expired"))
+
+  async def async_step_ignore(self, user_input: Dict[str, Any]):
+    """Ignoring a pairing card rejects the pairing; other cards are ignored as usual."""
+    unique_id = str(user_input.get("unique_id") or "")
+    if not unique_id.startswith(PAIRING_UNIQUE_ID_PREFIX):
+      return await super().async_step_ignore(user_input)
+    self._pairing_entry_id = unique_id[len(PAIRING_UNIQUE_ID_PREFIX):]
+    bridge = self._pairing_bridge()
+    if bridge is not None:
+      await bridge.async_answer_pairing(None, False)
+    return self.async_abort(reason="pairing_rejected")
 
   async def async_step_zeroconf(self, discovery_info: Any):
     """Panel per mDNS gefunden, BEVOR es MQTT-Zugangsdaten hat (siehe Firmware:
@@ -394,53 +459,34 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
   # ---- Encrypted panel commands (command_channel.py) ----
 
   async def async_step_security(self, user_input: Dict[str, Any] | None = None):
+    """Pairing happens on the display (a card shows the number); here it is removed."""
+    stored_key = entry_pairing_key(self.config_entry)
+    if stored_key is None:
+      if entry_removing_key(self.config_entry) is not None:
+        return self.async_abort(reason="pairing_removing")
+      return self.async_abort(reason="pairing_not_paired")
     errors: Dict[str, str] = {}
-    current = dict(self.config_entry.data)
-    stored_code = entry_pairing_code(self.config_entry)
 
     if user_input is not None:
-      updated = dict(current)
-      remove = bool(user_input.get(CONF_REMOVE_PAIRING))
-      if remove:
-        # The Bridge keeps the code until the panel turned pairing off too:
+      if user_input.get(CONF_REMOVE_PAIRING):
+        # The Bridge keeps the key until the panel turned pairing off too:
         # it sends the panel an unpair as soon as they have a session.
-        updated.pop(CONF_COMMAND_PAIRING, None)
-        if stored_code:
-          updated[CONF_COMMAND_PAIRING_REMOVING] = stored_code
-      elif (user_input.get(CONF_PAIRING_CODE) or "").strip():
-        bridge = self.hass.data.get(DOMAIN, {}).get("entries", {}).get(self.config_entry.entry_id)
-        code, error = check_pairing_code(
-          user_input.get(CONF_PAIRING_CODE), getattr(bridge, "command_status", None)
+        updated = without_pairing(self.config_entry.data)
+        updated[CONF_COMMAND_PAIRING_REMOVING] = stored_key.hex()
+        # The update listener reloads the entry with a removing channel.
+        self.hass.config_entries.async_update_entry(
+          self.config_entry, data=updated, options=without_pairing(self.config_entry.options),
         )
-        if error:
-          errors[CONF_PAIRING_CODE] = error
-        else:
-          updated[CONF_COMMAND_PAIRING] = code
-          updated.pop(CONF_COMMAND_PAIRING_REMOVING, None)
-      else:
-        # An empty form changes nothing; say so instead of a plain success.
-        errors["base"] = "pairing_code_empty"
-      if not errors:
-        options = without_pairing(self.config_entry.options)
-        # The update listener reloads the entry with the new channel.
-        self.hass.config_entries.async_update_entry(self.config_entry, data=updated, options=options)
-        # A result naming the key id shows which panel entry holds the code.
-        if remove:
-          return self.async_abort(reason="pairing_removed")
-        return self.async_abort(
-          reason="pairing_saved",
-          description_placeholders={"key_id": key_id_for_code(updated[CONF_COMMAND_PAIRING]) or "-"},
-        )
+        return self.async_abort(reason="pairing_removed")
+      # An empty form changes nothing; say so instead of a plain success.
+      errors["base"] = "pairing_nothing_selected"
 
     return self.async_show_form(
       step_id="security",
       data_schema=vol.Schema({
-        vol.Optional(CONF_PAIRING_CODE, default=""): str,
         vol.Optional(CONF_REMOVE_PAIRING, default=False): bool,
       }),
-      description_placeholders={
-        "key_id": key_id_for_code(stored_code) if stored_code else "-",
-      },
+      description_placeholders={"key_id": key_id_for_key(stored_key) or "-"},
       errors=errors,
     )
 

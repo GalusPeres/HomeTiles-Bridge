@@ -20,13 +20,14 @@ LIMITS = load_module("request_limits")
 CAPS = load_module("capabilities")
 SELECTION = load_module("sensor_selection")
 
-# Shared with the firmware test tools/tests/network/test-command-channel-core.mjs.
-CODE = "ABCDE-FGHJK-MNPQR-STVWX-YZ012"
-ANNOUNCE_KEY = "73fcf8b4dfdb0ea67138ebc100e63e0e25f93c342b1cbc4df27b76df17e0d321"
+# The pairing key of the pairing v2 vectors (test_pairing.py) and its announce key.
+PAIRING_KEY = bytes.fromhex("b925def556256ead767b0f1d14879e50d6bddbd0bb44dc0d2435e4af011b3e19")
+OTHER_KEY = bytes(32)
+ANNOUNCE_KEY = "318f1b1153aed588afc39a727b1f7a56659c9104b8f4d2eac4b8ee08eb71563e"
 TOPIC = "tab5_lvgl/config/A1B2C3D4E5F6/bridge"
 UNSIGNED = '{"device_id":"A1B2C3D4E5F6","base_topic":"hometiles","ha_prefix":"ha"}'
 SIGNED = ('{"device_id":"A1B2C3D4E5F6","base_topic":"hometiles","ha_prefix":"ha",'
-          '"sig":"8d87186d122e8b1d8e04b428db076c6ca09bffb81748a99e55abafdd974eb34c"}')
+          '"sig":"be8539d3139c63fe108fafd4a9ffc736c7ec51fbdfc51a067f9c4d45578b68b9"}')
 
 
 class Clock:
@@ -51,19 +52,19 @@ class AnnouncementHelpersTest(unittest.TestCase):
         self.assertFalse(GUARD.valid_device_id("A1B2 C3"))
 
     def test_announce_key_and_signature_match_the_firmware_vector(self):
-        keys = CHANNEL.Keys(CODE)
+        keys = CHANNEL.Keys(PAIRING_KEY)
         self.assertEqual(keys.announce.hex(), ANNOUNCE_KEY)
         self.assertEqual(GUARD.check_signature(keys.announce, TOPIC, SIGNED), GUARD.SIGNATURE_VALID)
         self.assertEqual(GUARD.check_signature(keys.announce, TOPIC, SIGNED.encode()), GUARD.SIGNATURE_VALID)
         self.assertEqual(GUARD.check_signature(keys.announce, TOPIC, UNSIGNED), GUARD.SIGNATURE_UNSIGNED)
-        # Signed content is bound to its topic, its text and the pairing code.
+        # Signed content is bound to its topic, its text and the pairing key.
         other_topic = "tab5_lvgl/config/FFFFFFFFFFFF/bridge"
         self.assertEqual(GUARD.check_signature(keys.announce, other_topic, SIGNED), GUARD.SIGNATURE_INVALID)
         tampered = SIGNED.replace('"hometiles"', '"attacker"')
         self.assertEqual(GUARD.check_signature(keys.announce, TOPIC, tampered), GUARD.SIGNATURE_INVALID)
-        other_code = CHANNEL.Keys("00000-00000-00000-00000-00000")
-        self.assertEqual(GUARD.check_signature(other_code.announce, TOPIC, SIGNED), GUARD.SIGNATURE_INVALID)
-        # Without a stored code the signature is irrelevant.
+        other_key = CHANNEL.Keys(OTHER_KEY)
+        self.assertEqual(GUARD.check_signature(other_key.announce, TOPIC, SIGNED), GUARD.SIGNATURE_INVALID)
+        # Without a stored key the signature is irrelevant.
         self.assertEqual(GUARD.check_signature(None, TOPIC, SIGNED), GUARD.SIGNATURE_UNSIGNED)
         self.assertEqual(GUARD.check_signature(keys.announce, TOPIC, None), GUARD.SIGNATURE_INVALID)
         self.assertEqual(GUARD.check_signature(keys.announce, TOPIC, b"\xff"), GUARD.SIGNATURE_INVALID)
@@ -190,7 +191,7 @@ class AnnouncementProcessingTest(unittest.IsolatedAsyncioTestCase):
             "filter_runtime_sensor_entities": SELECTION.filter_runtime_sensor_entities,
             "clean_stored_sensor_selections": SELECTION.clean_stored_sensor_selections,
             "should_import_feedback_selection": SELECTION.should_import_feedback_selection,
-            "entry_pairing_code": CHANNEL.entry_pairing_code,
+            "entry_pairing_key": CHANNEL.entry_pairing_key,
             "CommandKeys": CHANNEL.Keys,
             "check_signature": GUARD.check_signature,
             "announcement_matches_topic": GUARD.announcement_matches_topic,
@@ -238,15 +239,15 @@ class AnnouncementProcessingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_paired_panel_needs_a_valid_signature(self):
         entry = self.entry(device_id="A1B2C3D4E5F6", base_topic="hometiles", ha_prefix="ha",
-                           command_pairing_code=CODE)
+                           command_pairing_key=PAIRING_KEY.hex())
         payload = json.loads(UNSIGNED)
         with self.assertLogs("test_announcement_guard", "WARNING"):
             await self.announce(dict(payload, model="forged"), raw=UNSIGNED)
         self.assertEqual(self.updates, [])
         await self.announce(json.loads(SIGNED), raw=SIGNED)
         self.assertEqual(len(self.updates), 0)  # Nothing new to store, but accepted.
-        # A valid signature from another code is rejected as well.
-        other = CHANNEL.Keys("00000-00000-00000-00000-00000")
+        # A valid signature from another key is rejected as well.
+        other = CHANNEL.Keys(OTHER_KEY)
         body = '{"device_id":"A1B2C3D4E5F6","base_topic":"hometiles","model":"x"}'
         sig = hmac.new(other.announce, (TOPIC + "\n" + body).encode(), hashlib.sha256).hexdigest()
         forged = body[:-1] + f',"sig":"{sig}"}}'
@@ -263,13 +264,13 @@ class AnnouncementProcessingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_old_firmware_updates_an_entry_without_the_new_fields(self):
         # An entry from before the security work and a panel with firmware
-        # v0.1.0: short device id, no signature, no pairing code, no local I/O.
+        # v0.1.0: short device id, no signature, no pairing key, no local I/O.
         entry = self.entry(device_id="tab5_lvgl_1A2B", base_topic="tab5", ha_prefix="homeassistant")
         with self.assertNoLogs("test_announcement_guard", "WARNING"):
             await self.announce({"device_id": "tab5_lvgl_1A2B", "base_topic": "tab5",
                                  "ha_prefix": "homeassistant", "sensors": ["sensor.outdoor"]})
         self.assertEqual(entry.data["sensors"], ["sensor.outdoor"])
-        self.assertNotIn("command_pairing_code", entry.data)
+        self.assertNotIn("command_pairing_key", entry.data)
         self.assertEqual(self.flows, [])
 
     async def test_existing_manual_entry_is_linked_only_after_confirmation(self):
