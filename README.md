@@ -55,11 +55,11 @@ Configure via the Home Assistant UI:
 - **Panel Settings** - MQTT base topic, HA prefix, device metadata
 - **Entity Configuration** - Sensors, binary sensors, weather, lights, switchable entities, covers, climate devices, media players, scenes/scripts/buttons
 - **Energy Dashboard** - Electricity, gas and water from the HA Energy Dashboard
-- **Security (encrypted commands)** - Optional. Pairing starts on the display (Settings > System > Security > Pair). Home Assistant then shows a card under Discovered with a six-digit number; confirm it there and on the display if both show the same number. The Bridge then runs only encrypted, authenticated commands from that display and sends camera stream tokens encrypted; states and camera images stay unencrypted. Under Configure > Security the pairing can be removed again. Without pairing, and with older firmware, everything works unencrypted as before. Protocol: [command-encryption.md](https://github.com/GalusPeres/HomeTiles/blob/main/docs-dev/command-encryption.md)
+- **Security (encrypted commands)** - Optional. Encryption is set up on the display (Settings > System > Security > Encrypt). Home Assistant then shows a card under Discovered with a six-digit number; confirm it there and on the display if both show the same number. The Bridge then runs only encrypted, authenticated commands from that display and sends camera stream tokens encrypted; states and camera images stay unencrypted. A diagnostic sensor "Encryption" shows the state, and Configure > Security turns encryption off again. Without encryption, and with older firmware, everything works unencrypted as before. Protocol: [command-encryption.md](https://github.com/GalusPeres/HomeTiles/blob/main/docs-dev/command-encryption.md)
 
 ### Announcements and discovery
 
-Any client on the MQTT broker can publish on the announcement topic, so the Bridge accepts an announcement only under the panel's own `tab5_lvgl/config/{id}/bridge` topic and, for an existing entry, only with that entry's base topic. A panel paired for encrypted commands signs its announcement; its entry then ignores unsigned or wrongly signed ones. New panels always get a discovery card (at most three waiting, five new panels per ten minutes), and linking a panel to an existing entry that has no panel yet also asks for confirmation. History requests are limited to two at a time and 30 per minute per panel, and a numeric graph reads at most 20,160 Recorder rows.
+Any client on the MQTT broker can publish on the announcement topic, so the Bridge accepts an announcement only under the panel's own `tab5_lvgl/config/{id}/bridge` topic and, for an existing entry, only with that entry's base topic. A panel with encrypted commands signs its announcement; its entry then ignores unsigned or wrongly signed ones. New panels always get a discovery card (at most three waiting, five new panels per ten minutes), and linking a panel to an existing entry that has no panel yet also asks for confirmation. History requests run two at a time and 30 per minute per panel; extra requests wait in line. A numeric graph uses the Recorder statistics where it can and otherwise reads at most 60,480 state rows.
 
 ### Compatible Switch and Scene entities (v0.6.42)
 
@@ -103,11 +103,11 @@ The integration communicates with the display firmware via MQTT:
 | `base_topic/cmnd/scene` | Display > HA | Scene/script activation or button press |
 | `base_topic/cmnd/camera` | Display > HA | Open or close an experimental camera stream |
 | `base_topic/stat/camera` | HA > Display | Camera stream endpoint, protocol and status |
-| `base_topic/secure/panel` | Display > HA | Encrypted commands and session requests once paired (replaces the `cmnd/*` topics above) |
-| `base_topic/secure/bridge` | HA > Display | Encrypted session answers, camera replies and built-in camera requests once paired |
-| `base_topic/stat/secure` | Display > HA | Retained pairing status (`active` and the public key id; empty when not paired) |
-| `base_topic/pair/panel` | Display > HA | Pairing by number: start, nonce, confirm, abort (not retained) |
-| `base_topic/pair/bridge` | HA > Display | Pairing by number: commit, nonce, confirm, abort (not retained) |
+| `base_topic/secure/panel` | Display > HA | Encrypted commands, session requests and unpair once encrypted (replaces the `cmnd/*` topics above) |
+| `base_topic/secure/bridge` | HA > Display | Encrypted session answers, camera replies, built-in camera requests and unpair once encrypted |
+| `base_topic/stat/secure` | Display > HA | Retained encryption status (`active` and the public key id; empty when off) |
+| `base_topic/pair/panel` | Display > HA | Encryption setup by number: start, nonce, confirm, abort (not retained) |
+| `base_topic/pair/bridge` | HA > Display | Encryption setup by number: commit, nonce, confirm, abort (not retained) |
 | `base_topic/cmnd/local_camera` | HA > Display | Request one still image from the display's own camera (not retained) |
 | `base_topic/cmnd/local_camera` (`"action":"stream"`) | HA > Display | Start or keep alive the live stream (not retained): `{"v":1,"action":"stream","session":"<32 hex>","host":"<Bridge IPv4>","port":8124,"token":"<32 hex>","width":640,"height":360,"fps":15,"quality":65,"ttl_ms":6000}`, re-sent every 2 s while viewers exist |
 | `base_topic/cmnd/local_camera` (`"action":"stream_stop"`) | HA > Display | Stop the live stream (not retained): `{"v":1,"action":"stream_stop","session":"<32 hex>"}` |

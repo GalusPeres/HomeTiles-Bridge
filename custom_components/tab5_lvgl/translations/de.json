@@ -25,7 +25,7 @@
           "panel_password": "Web-Admin-Passwort des Panels (nur falls gesetzt)"
         },
         "data_description": {
-          "panel_password": "Leer lassen, wenn am Panel kein Web-Admin-Passwort gesetzt ist. Es wird nur f\u00fcr diese Kopplung verwendet und nicht gespeichert."
+          "panel_password": "Leer lassen, wenn am Panel kein Web-Admin-Passwort gesetzt ist. Es wird nur f\u00fcr diese Einrichtung verwendet und nicht gespeichert."
         }
       },
       "discovery_confirm": {
@@ -37,7 +37,7 @@
         "description": "**{name}** hat sich per MQTT mit der Basis {base_topic} gemeldet, die der Eintrag **{entry}** nutzt. Nur verkn\u00fcpfen, wenn es dein Panel ist."
       },
       "pairing_confirm": {
-        "title": "Display koppeln",
+        "title": "Verschl\u00fcsselung einrichten",
         "description": "Verschl\u00fcsselt das vorhandene Display **{name}**. Es wird kein neues Ger\u00e4t angelegt.\n\n# {number}\n\nNur best\u00e4tigen, wenn das Display diese Zahl zeigt.",
         "menu_options": {
           "pairing_accept": "Zahlen stimmen: verschl\u00fcsseln",
@@ -63,10 +63,10 @@
       "already_configured": "Dieses Panel ist bereits konfiguriert.",
       "panel_linked": "Das Panel wurde mit dem bestehenden Eintrag verkn\u00fcpft.",
       "adopt_target_changed": "Der Eintrag ist inzwischen einem anderen Panel zugeordnet oder nutzt eine andere Basis.",
-      "pairing_done": "Gekoppelt. Das Display sendet jetzt verschl\u00fcsselt.",
+      "pairing_done": "Verschl\u00fcsselt. Das Display sendet seine Befehle jetzt verschl\u00fcsselt.",
       "pairing_confirmed": "Best\u00e4tigt. Jetzt auch am Display best\u00e4tigen.",
       "pairing_rejected": "Abgelehnt. Das Display bleibt unverschl\u00fcsselt verbunden.",
-      "pairing_expired": "Dieser Kopplungsversuch ist beendet. Am Display neu starten."
+      "pairing_expired": "Dieser Versuch ist beendet. Am Display erneut auf Verschl\u00fcsseln tippen."
     }
   },
   "options": {
@@ -122,19 +122,19 @@
         "title": "Verschl\u00fcsselung",
         "description": "Dieses Display ist verschl\u00fcsselt (Schl\u00fcssel-ID {key_id}).",
         "data": {
-          "remove_pairing": "Kopplung entfernen (wieder unverschl\u00fcsselt)"
+          "remove_pairing": "Verschl\u00fcsselung ausschalten"
         }
       }
     },
     "error": {
       "invalid_scene_map": "Alias muss dem Muster alias=entity_id folgen (eine Zeile pro Alias).",
       "invalid_editable_entities": "Bitte passende Zahlen-, Auswahl- oder Datum-/Uhrzeit-Entit\u00e4ten ausw\u00e4hlen.",
-      "pairing_nothing_selected": "Nichts ge\u00e4ndert. Zum Entfernen das H\u00e4kchen setzen."
+      "pairing_nothing_selected": "Nichts ge\u00e4ndert. Zum Ausschalten das H\u00e4kchen setzen."
     },
     "abort": {
-      "pairing_removed": "Kopplung entfernt. Das Display schaltet die Verschl\u00fcsselung beim Verbinden aus.",
-      "pairing_not_paired": "Nicht verschl\u00fcsselt. Zum Koppeln am Display Einstellungen \u2192 System \u2192 Sicherheit \u2192 Koppeln w\u00e4hlen.",
-      "pairing_removing": "Kopplung entfernt. Das Display schaltet die Verschl\u00fcsselung beim Verbinden aus."
+      "pairing_removed": "Verschl\u00fcsselung ausgeschaltet. Das Display schaltet sie beim Verbinden auch aus.",
+      "pairing_not_paired": "Nicht verschl\u00fcsselt. Zum Einrichten am Display Einstellungen \u2192 System \u2192 Sicherheit \u2192 Verschl\u00fcsseln w\u00e4hlen.",
+      "pairing_removing": "Verschl\u00fcsselung wird ausgeschaltet. Das Display schaltet sie beim Verbinden aus."
     }
   },
   "entity": {

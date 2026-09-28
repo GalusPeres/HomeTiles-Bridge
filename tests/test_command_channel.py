@@ -579,7 +579,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         status = self.mqtt.subscriptions[f"{BASE}/stat/secure"]
         with self.assertLogs("test_command_channel", "WARNING") as logs:
             await status(types.SimpleNamespace(payload='{"v":1,"state":"active","kid":"0000000000000000"}'))
-        self.assertIn("another pairing key", logs.output[0])
+        self.assertIn("uses another key", logs.output[0])
         # A forged "off" does not turn the channel off; the user is told instead.
         with self.assertLogs("test_command_channel", "WARNING") as logs:
             await status(types.SimpleNamespace(payload=""))
@@ -648,7 +648,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((topic, retain), (PAIR_BRIDGE_TOPIC, False))
         with self.assertLogs("test_command_channel", "INFO") as logs:
             await deliver(types.SimpleNamespace(payload=panel.send_nonce(), retain=False))
-        self.assertIn("asks to pair", logs.output[0])
+        self.assertIn("asks to set up encryption", logs.output[0])
         derived = panel.finish(json.loads(commit), json.loads(self.mqtt.published[-1][1]))
         self.mqtt.published.clear()
         return deliver, panel, derived
@@ -673,7 +673,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([json.loads(payload)["t"] for _topic, payload, _retain in self.mqtt.published], ["confirm"])
         with self.assertLogs("test_command_channel", "INFO") as logs:
             await deliver(types.SimpleNamespace(payload=panel.confirm(derived["m_panel"]), retain=False))
-        self.assertIn(f"paired (key id {KEY_ID})", "\n".join(logs.output))
+        self.assertIn(f"encryption set up for {BASE} (key id {KEY_ID})", "\n".join(logs.output))
         self.assertNotIn(KEY, "\n".join(logs.output))
         # The card closes and the entry reloads with the key.
         self.assertEqual(self.aborted, ["card"])
@@ -710,7 +710,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
             with self.assertLogs("test_command_channel", "WARNING") as logs:
                 await self.mqtt.subscriptions[PAIR_PANEL_TOPIC](
                     types.SimpleNamespace(payload=PairingPanel().start(), retain=False))
-            self.assertIn("still paired", logs.output[0])
+            self.assertIn("still has its key", logs.output[0])
             self.assertEqual([(topic, json.loads(payload)) for topic, payload, _retain in self.mqtt.published],
                              [(PAIR_BRIDGE_TOPIC, {"v": 2, "t": "abort", "id": ATTEMPT, "r": "paired"})])
             self.assertEqual(self.cards, [])
@@ -887,9 +887,9 @@ class PairingCardTest(unittest.IsolatedAsyncioTestCase):
         flow, result = await self.open_card()
         self.assertEqual(result, ("menu", "pairing_confirm", ["pairing_accept", "pairing_reject"],
                                   {"name": "Kitchen", "number": NUMBER}))
-        # The card says that an existing display is paired, not that a device is added.
+        # The card says that an existing display is encrypted, not that a device is added.
         self.assertEqual(flow.context, {"unique_id": "pairing_entry1",
-                                        "title_placeholders": {"name": f"Pair Kitchen for encryption \u00b7 {NUMBER}"}})
+                                        "title_placeholders": {"name": f"Encrypt Kitchen \u00b7 {NUMBER}"}})
         self.assertEqual(await flow.async_step_pairing_accept(), ("abort", "pairing_confirmed"))
         self.assertEqual(self.bridge.answers, [(ATTEMPT, True, "card")])
         for outcome, reason in (("paired", "pairing_done"), ("rejected", "pairing_rejected"),
@@ -901,10 +901,10 @@ class PairingCardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.answers[-1], (ATTEMPT, False, "card"))
 
     async def test_card_title_follows_the_language_of_home_assistant(self):
-        for language, title in (("de", f"Kitchen f\u00fcr Verschl\u00fcsselung koppeln \u00b7 {NUMBER}"),
-                                ("de-CH", f"Kitchen f\u00fcr Verschl\u00fcsselung koppeln \u00b7 {NUMBER}"),
-                                ("fr", f"Pair Kitchen for encryption \u00b7 {NUMBER}"),
-                                (None, f"Pair Kitchen for encryption \u00b7 {NUMBER}")):
+        for language, title in (("de", f"Kitchen verschl\u00fcsseln \u00b7 {NUMBER}"),
+                                ("de-CH", f"Kitchen verschl\u00fcsseln \u00b7 {NUMBER}"),
+                                ("fr", f"Encrypt Kitchen \u00b7 {NUMBER}"),
+                                (None, f"Encrypt Kitchen \u00b7 {NUMBER}")):
             self.hass.config.language = language
             flow, _result = await self.open_card()
             self.assertEqual(flow.context["title_placeholders"], {"name": title}, language)

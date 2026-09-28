@@ -489,8 +489,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # v0.7.1b1/b2 stored a typed pairing code. Pairing now compares a number,
     # and the firmware drops its old record too, so both run unencrypted.
     _LOGGER.warning(
-      "HomeTiles Bridge removed the old pairing code of %s; pair the display again "
-      "(Settings > System > Security > Pair)", entry.title,
+      "HomeTiles Bridge removed the old pairing code of %s; set up encryption on the display again "
+      "(Settings > System > Security > Encrypt)", entry.title,
     )
     hass.config_entries.async_update_entry(
       entry, data=without_pairing(entry.data), options=without_pairing(entry.options),
@@ -1463,7 +1463,7 @@ class Tab5Bridge:
     )
     if channel.removing:
       _LOGGER.info(
-        "HomeTiles pairing of %s removed; waiting for the panel to turn it off (key id %s)",
+        "HomeTiles encryption of %s turned off; waiting for the panel to turn it off too (key id %s)",
         self.base_topic, channel.keys.key_id,
       )
       return
@@ -2197,7 +2197,7 @@ class Tab5Bridge:
         )
         self._notify_pairing(
           f"Encryption was turned off on the display ({self.entry.title}). "
-          "The Bridge removed the pairing and accepts its unencrypted commands again."
+          "The Bridge accepts its unencrypted commands again."
         )
       self._drop_pairing()
       return
@@ -2239,14 +2239,14 @@ class Tab5Bridge:
       # Anyone on the broker can publish this status, so it removes nothing.
       if self._secure_log_due("status_off", 3600.0):
         _LOGGER.warning(
-          "HomeTiles panel %s reports encryption off, but the Bridge still has its pairing "
-          "and ignores its unencrypted commands; remove the pairing under Configure > Security",
+          "HomeTiles panel %s reports encryption off, but the Bridge still has its key "
+          "and ignores its unencrypted commands; turn encryption off under Configure > Security",
           self.base_topic,
         )
         self._notify_pairing(
           f"The display ({self.entry.title}) reports that encryption is off, but the Bridge still "
-          "has its pairing key and ignores its unencrypted commands. If you turned encryption off "
-          "on the display, remove the pairing under Configure > Security."
+          "has its key and ignores its unencrypted commands. If you turned encryption off "
+          "on the display, turn it off under Configure > Security as well."
         )
       return
     if kid is None:
@@ -2254,8 +2254,8 @@ class Tab5Bridge:
     if kid != channel.keys.key_id:
       if self._secure_log_due("status_kid"):
         _LOGGER.warning(
-          "HomeTiles panel %s uses another pairing key; remove the pairing under "
-          "Configure > Security and pair the display again",
+          "HomeTiles panel %s uses another key; turn encryption off under "
+          "Configure > Security and set it up on the display again",
           self.base_topic,
         )
       return
@@ -2320,20 +2320,22 @@ class Tab5Bridge:
       if event == "send":
         await mqtt.async_publish(self.hass, self._pairing.bridge_topic, value, qos=0, retain=False)
       elif event == "prompt":
-        _LOGGER.info("HomeTiles panel %s asks to pair; compare the number in Home Assistant", self.base_topic)
+        _LOGGER.info(
+          "HomeTiles panel %s asks to set up encryption; compare the number in Home Assistant", self.base_topic,
+        )
         self._show_pairing_card(value[0])
       elif event == "closed":
-        _LOGGER.info("HomeTiles pairing of %s ended (%s)", self.base_topic, value)
+        _LOGGER.info("HomeTiles encryption setup of %s ended (%s)", self.base_topic, value)
         self._close_pairing_card()
       elif event == "refused":
         if value == "paired" and self._secure_log_due("pair_paired"):
           _LOGGER.warning(
-            "HomeTiles panel %s asks to pair, but the Bridge is still paired with it; "
-            "remove the pairing under Configure > Security first",
+            "HomeTiles panel %s asks to set up encryption, but the Bridge still has its key; "
+            "turn encryption off under Configure > Security first",
             self.base_topic,
           )
         elif self._secure_log_due(f"pair_{value}", 10.0):
-          _LOGGER.debug("HomeTiles pairing request of %s refused (%s)", self.base_topic, value)
+          _LOGGER.debug("HomeTiles encryption setup of %s refused (%s)", self.base_topic, value)
       elif event == "paired":
         self._close_pairing_card()
         self._store_pairing(value)
@@ -2358,7 +2360,7 @@ class Tab5Bridge:
 
   def _store_pairing(self, pairing_key: bytes) -> None:
     """Keep the pairing key; the update listener reloads the entry paired."""
-    _LOGGER.info("HomeTiles panel %s paired (key id %s)", self.base_topic, CommandKeys(pairing_key).key_id)
+    _LOGGER.info("HomeTiles encryption set up for %s (key id %s)", self.base_topic, CommandKeys(pairing_key).key_id)
     self.hass.config_entries.async_update_entry(
       self.entry,
       data=with_pairing_key(self.entry.data, pairing_key),
@@ -5572,8 +5574,8 @@ def _announcement_trusted(
       if _announcement_log_due(hass, f"signature_{entry.entry_id}"):
         _LOGGER.warning(
           "HomeTiles Bridge ignored an unsigned or wrongly signed announcement for %s; "
-          "if the display lost its pairing, remove the pairing under Configure > Security "
-          "and pair it again",
+          "if the display lost its key, turn encryption off under Configure > Security "
+          "and set it up again",
           entry.title,
         )
       return False

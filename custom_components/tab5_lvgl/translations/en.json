@@ -25,7 +25,7 @@
           "panel_password": "Panel Web Admin password (only if set)"
         },
         "data_description": {
-          "panel_password": "Leave empty if the panel has no Web Admin password. It is used only for this pairing and is not stored."
+          "panel_password": "Leave empty if the panel has no Web Admin password. It is used only for this setup and is not stored."
         }
       },
       "discovery_confirm": {
@@ -37,7 +37,7 @@
         "description": "**{name}** announced itself over MQTT with base topic {base_topic}, which the entry **{entry}** uses. Only link it if it is your panel."
       },
       "pairing_confirm": {
-        "title": "Pair display",
+        "title": "Set up encryption",
         "description": "Encrypts the existing display **{name}**. No new device is added.\n\n# {number}\n\nConfirm only if the display shows this number.",
         "menu_options": {
           "pairing_accept": "Numbers match: encrypt",
@@ -63,10 +63,10 @@
       "already_configured": "This panel is already configured.",
       "panel_linked": "The panel was linked to the existing entry.",
       "adopt_target_changed": "The entry now belongs to another panel or uses another base topic.",
-      "pairing_done": "Paired. The display now sends encrypted commands.",
+      "pairing_done": "Encrypted. The display now sends encrypted commands.",
       "pairing_confirmed": "Confirmed. Now confirm on the display too.",
       "pairing_rejected": "Rejected. The display stays connected unencrypted.",
-      "pairing_expired": "This pairing has ended. Start it again on the display."
+      "pairing_expired": "This attempt has ended. Tap Encrypt on the display again."
     }
   },
   "options": {
@@ -122,19 +122,19 @@
         "title": "Encryption",
         "description": "This display is encrypted (key id {key_id}).",
         "data": {
-          "remove_pairing": "Remove pairing (unencrypted again)"
+          "remove_pairing": "Turn off encryption"
         }
       }
     },
     "error": {
       "invalid_scene_map": "Aliases must follow the pattern alias=entity_id (one per line).",
       "invalid_editable_entities": "Choose compatible Number, Select or Date/Time entities.",
-      "pairing_nothing_selected": "Nothing changed. Tick the box to remove the pairing."
+      "pairing_nothing_selected": "Nothing changed. Tick the box to turn encryption off."
     },
     "abort": {
-      "pairing_removed": "Pairing removed. The display turns encryption off when it connects.",
-      "pairing_not_paired": "Not encrypted. To pair, choose Settings → System → Security → Pair on the display.",
-      "pairing_removing": "Pairing removed. The display turns encryption off when it connects."
+      "pairing_removed": "Encryption turned off. The display turns it off too when it connects.",
+      "pairing_not_paired": "Not encrypted. To set it up, choose Settings → System → Security → Encrypt on the display.",
+      "pairing_removing": "Encryption is turning off. The display turns it off when it connects."
     }
   },
   "entity": {

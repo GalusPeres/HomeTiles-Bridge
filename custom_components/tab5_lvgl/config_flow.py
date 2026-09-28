@@ -75,8 +75,8 @@ _PAIRING_RESULTS = {"paired": "pairing_done", "waiting": "pairing_confirmed", "r
 # Pairing card title in Home Assistant's language (English otherwise). A
 # flow_title with an ICU select would fail Home Assistant's placeholder check.
 _PAIRING_CARD_TITLES = {
-  "de": "{display} f\u00fcr Verschl\u00fcsselung koppeln \u00b7 {number}",
-  "en": "Pair {display} for encryption \u00b7 {number}",
+  "de": "{display} verschl\u00fcsseln \u00b7 {number}",
+  "en": "Encrypt {display} \u00b7 {number}",
 }
 
 
@@ -296,7 +296,7 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     if entry is None or number is None:
       return self.async_abort(reason="pairing_expired")
     # A card under Discovered usually means a new device; this title says that
-    # an existing display is paired. As plain text it also shows before the
+    # an existing display is encrypted. As plain text it also shows before the
     # browser has loaded the integration's new translations.
     self.context["title_placeholders"] = {"name": _pairing_card_title(self.hass, entry.title, number)}
     return await self.async_step_pairing_confirm()
