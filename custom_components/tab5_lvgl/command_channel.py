@@ -44,6 +44,9 @@ BRIDGE_TOPIC_LEAF = "secure/bridge"
 STATUS_TOPIC_LEAF = "stat/secure"
 # Same value as const.CONF_COMMAND_PAIRING; this module stays import-free.
 CONF_PAIRING_KEY = "command_pairing_code"
+# A code removed in Home Assistant is kept here until the panel confirmed that
+# it turned pairing off (same value as const.CONF_COMMAND_PAIRING_REMOVING).
+CONF_REMOVING_KEY = "command_pairing_removing"
 
 # Panel command topics that arrive sealed once pairing is active.
 SEALED_COMMANDS = frozenset({"scene", "light", "switch", "media", "climate", "cover", "camera", "value"})
@@ -55,7 +58,9 @@ TYPE_SESSION = "session"
 TYPE_REKEY = "rekey"
 TYPE_COMMAND = "cmd"
 TYPE_DATA = "data"
-_TYPES = frozenset({TYPE_HELLO, TYPE_SESSION, TYPE_REKEY, TYPE_COMMAND, TYPE_DATA})
+# Either side turns pairing off; numbered in the sender's session like cmd/data.
+TYPE_UNPAIR = "unpair"
+_TYPES = frozenset({TYPE_HELLO, TYPE_SESSION, TYPE_REKEY, TYPE_COMMAND, TYPE_DATA, TYPE_UNPAIR})
 
 _NAME = re.compile(r"[a-z0-9_]{1,32}\Z")
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
@@ -263,10 +268,17 @@ def parse_status(payload: Any) -> Dict[str, Any]:
 
 
 class BridgeChannel:
-  """Bridge end of the channel for one panel (one config entry)."""
+  """Bridge end of the channel for one panel (one config entry).
 
-  def __init__(self, code: str, base_topic: str, *, clock: Callable[[], float], random: Callable[[int], bytes] = os.urandom) -> None:
+  With ``removing`` the pairing was removed in Home Assistant: the channel
+  still answers a hello, so the Bridge can send the panel an unpair, but it
+  runs no sealed commands.
+  """
+
+  def __init__(self, code: str, base_topic: str, *, clock: Callable[[], float],
+               random: Callable[[int], bytes] = os.urandom, removing: bool = False) -> None:
     self.keys = Keys(code)
+    self.removing = removing
     self.base_topic = base_topic
     self.panel_topic = f"{base_topic}/{PANEL_TOPIC_LEAF}"
     self.bridge_topic = f"{base_topic}/{BRIDGE_TOPIC_LEAF}"
@@ -290,7 +302,7 @@ class BridgeChannel:
     return self._seal(build_plaintext(TYPE_REKEY, None, 0, None))
 
   def handle_panel_message(self, payload: Any) -> Tuple[str, Any]:
-    """Return ("command", (leaf, body)), ("reply", (topic, payload)) or ("ignore", reason)."""
+    """Return ("command", (leaf, body)), ("reply", (topic, payload)), ("unpair", None) or ("ignore", reason)."""
     status, plaintext = open_envelope(self.keys.panel_to_bridge, self.keys.key_id, self.panel_topic, payload)
     if status != OPEN_OK:
       return "ignore", status
@@ -308,6 +320,14 @@ class BridgeChannel:
       self._window = ReplayWindow()
       self._next_seq = 1
       return "reply", self._seal(build_plaintext(TYPE_SESSION, self.session, 0, message.name))
+    if message.kind == TYPE_UNPAIR:
+      if message.name is not None or message.body:
+        return "ignore", "invalid_unpair"
+      if self.session is None or message.session is None or not hmac.compare_digest(message.session, self.session):
+        return "ignore", "stale_session"
+      if not self._window.accept(message.seq):
+        return "ignore", "replayed"
+      return "unpair", None
     if message.kind != TYPE_COMMAND:
       return "ignore", "unexpected_type"
     if message.name not in SEALED_COMMANDS:
@@ -315,13 +335,15 @@ class BridgeChannel:
     if self.session is None or message.session is None or not hmac.compare_digest(message.session, self.session):
       rekey = self.rekey()
       return ("reply", rekey) if rekey else ("ignore", "stale_session")
+    if self.removing:
+      # The unpair follows the session; commands of this panel go plain again.
+      return "ignore", "removing"
     if not self._window.accept(message.seq):
       return "ignore", "replayed"
     return "command", (message.name, message.body)
 
-  def seal_data(self, kind: str, body: bytes) -> Optional[Tuple[str, str]]:
-    """Seal a stream-token message for the panel; None without a session."""
-    if kind not in SEALED_DATA or self.session is None or len(body) > MAX_BODY:
+  def _next(self) -> Optional[int]:
+    if self.session is None:
       return None
     if self._next_seq >= 0xFFFFFFFF:
       # Sequence space exhausted: the panel needs a new session first.
@@ -329,17 +351,50 @@ class BridgeChannel:
       return None
     seq = self._next_seq
     self._next_seq += 1
+    return seq
+
+  def seal_data(self, kind: str, body: bytes) -> Optional[Tuple[str, str]]:
+    """Seal a stream-token message for the panel; None without a session."""
+    if kind not in SEALED_DATA or len(body) > MAX_BODY:
+      return None
+    seq = self._next()
+    if seq is None:
+      return None
     return self._seal(build_plaintext(TYPE_DATA, self.session, seq, kind, body))
+
+  def seal_unpair(self) -> Optional[Tuple[str, str]]:
+    """Ask the panel to turn pairing off; None without a session."""
+    seq = self._next()
+    if seq is None:
+      return None
+    return self._seal(build_plaintext(TYPE_UNPAIR, self.session, seq, None))
+
+
+def _entry_code(entry: Any, key: str) -> Optional[str]:
+  # Home Assistant hands out entry data and options as read-only
+  # MappingProxyType, which is a Mapping but not a dict.
+  for source in (getattr(entry, "options", None), getattr(entry, "data", None)):
+    if isinstance(source, Mapping) and source.get(key):
+      return normalize_code(source.get(key))
+  return None
 
 
 def entry_pairing_code(entry: Any) -> Optional[str]:
   """The stored pairing code of a config entry (options override data)."""
-  # Home Assistant hands out entry data and options as read-only
-  # MappingProxyType, which is a Mapping but not a dict.
-  for source in (getattr(entry, "options", None), getattr(entry, "data", None)):
-    if isinstance(source, Mapping) and source.get(CONF_PAIRING_KEY):
-      return normalize_code(source.get(CONF_PAIRING_KEY))
-  return None
+  return _entry_code(entry, CONF_PAIRING_KEY)
+
+
+def entry_removing_code(entry: Any) -> Optional[str]:
+  """A code removed in Home Assistant that the panel still has to turn off."""
+  if entry_pairing_code(entry):
+    return None
+  return _entry_code(entry, CONF_REMOVING_KEY)
+
+
+def without_pairing(values: Any) -> Dict[str, Any]:
+  """Entry data or options without any pairing code."""
+  return {key: value for key, value in dict(values or {}).items()
+          if key not in (CONF_PAIRING_KEY, CONF_REMOVING_KEY)}
 
 
 def check_pairing_code(text: Any, panel_status: Optional[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:

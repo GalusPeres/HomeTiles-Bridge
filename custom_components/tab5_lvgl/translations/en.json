@@ -125,7 +125,7 @@
     },
     "abort": {
       "pairing_saved": "Pairing saved (key id {key_id}). The display connects to the Bridge encrypted within a few seconds.",
-      "pairing_removed": "Pairing removed. The Bridge runs unencrypted commands from this display again. Also turn off encryption on the display under Settings → System → Security."
+      "pairing_removed": "Pairing removed. The Bridge runs unencrypted commands from this display again. The display turns encryption off by itself as soon as it is connected to the Bridge."
     }
   },
   "entity": {

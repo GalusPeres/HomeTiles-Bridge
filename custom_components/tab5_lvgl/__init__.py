@@ -18,6 +18,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components import mqtt
 from homeassistant.components import network as ha_network
+from homeassistant.components import persistent_notification
 from homeassistant.components.weather import WeatherEntityFeature
 from homeassistant.components.weather.const import DATA_COMPONENT as WEATHER_DATA_COMPONENT
 from homeassistant.components.mqtt.models import ReceiveMessage
@@ -178,8 +179,10 @@ from .command_channel import (
   BridgeChannel,
   Keys as CommandKeys,
   entry_pairing_code,
+  entry_removing_code,
   parse_status as parse_command_status,
   status_topic as command_status_topic,
+  without_pairing,
 )
 from .announcement_guard import (
   DiscoveryLimiter,
@@ -214,6 +217,9 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor", "camera"]
 
 MEDIA_COVER_MAX_BYTES = 14000
+# Home Assistant sends SUBSCRIBE packets batched, a moment after async_subscribe
+# returns. The start rekey waits so the panel's hello finds the subscription.
+SECURE_START_REKEY_DELAY_S = 3.0
 # Panel history requests are a few hundred bytes of JSON.
 HISTORY_REQUEST_MAX_BYTES = 2048
 # Source covers from HA media_player_proxy can be 200-500 KB (HD album art).
@@ -1140,11 +1146,16 @@ class Tab5Bridge:
     self._unsub_secure = None
     self._unsub_secure_status = None
     # Encrypted panel commands (command_channel.py); None keeps the plain
-    # command topics exactly as before.
+    # command topics exactly as before. A code removed in Home Assistant keeps
+    # a "removing" channel until the panel confirmed that it turned pairing off.
     self._command_channel: Optional[BridgeChannel] = None
     pairing_code = entry_pairing_code(entry)
-    if pairing_code:
-      self._command_channel = BridgeChannel(pairing_code, self.base_topic, clock=monotonic)
+    removing_code = entry_removing_code(entry)
+    if pairing_code or removing_code:
+      self._command_channel = BridgeChannel(
+        pairing_code or removing_code, self.base_topic, clock=monotonic, removing=not pairing_code,
+      )
+    self._unsub_start_rekey = None
     self.command_status: Dict[str, Any] = {"state": "unknown", "kid": None}
     self._secure_log_at: Dict[str, float] = {}
     self._history_gate = RequestGate(monotonic)
@@ -1339,9 +1350,11 @@ class Tab5Bridge:
       command_status_topic(self.base_topic),
       self._async_handle_secure_status,
     )
-    if self._command_channel is not None:
+    channel = self._command_channel
+    if channel is not None:
       await self._async_setup_secure_commands()
-    else:
+    # While the pairing is being removed, plain commands work again.
+    if channel is None or channel.removing:
       await self._async_setup_plain_commands()
 
     if self.tracked_entities:
@@ -1405,7 +1418,8 @@ class Tab5Bridge:
 
     The plain command topics stay unsubscribed, so a forged unencrypted
     command is never executed. The rekey asks the panel for a new session,
-    because a restarted Bridge no longer knows the previous one.
+    because a restarted Bridge no longer knows the previous one. While the
+    pairing is being removed, the session only carries the unpair.
     """
     channel = self._command_channel
     self._unsub_secure = await mqtt.async_subscribe(
@@ -1413,10 +1427,15 @@ class Tab5Bridge:
       channel.panel_topic,
       self._async_handle_secure_panel_message,
     )
-    rekey = channel.rekey(force=True)
-    if rekey:
-      await mqtt.async_publish(self.hass, rekey[0], rekey[1], qos=0, retain=False)
-      _LOGGER.debug("HomeTiles encrypted rekey sent to %s", self.base_topic)
+    self._unsub_start_rekey = async_call_later(
+      self.hass, SECURE_START_REKEY_DELAY_S, self._async_send_start_rekey,
+    )
+    if channel.removing:
+      _LOGGER.info(
+        "HomeTiles pairing of %s removed; waiting for the panel to turn it off (key id %s)",
+        self.base_topic, channel.keys.key_id,
+      )
+      return
     _LOGGER.info(
       "HomeTiles encrypted commands enabled for %s (key id %s)",
       self.base_topic, channel.keys.key_id,
@@ -1516,6 +1535,9 @@ class Tab5Bridge:
     if self._unsub_camera:
       self._unsub_camera()
       self._unsub_camera = None
+    if self._unsub_start_rekey:
+      self._unsub_start_rekey()
+      self._unsub_start_rekey = None
     if self._unsub_secure:
       self._unsub_secure()
       self._unsub_secure = None
@@ -2076,6 +2098,17 @@ class Tab5Bridge:
     )
 
 
+  async def _async_send_start_rekey(self, _now: Any = None) -> None:
+    """Ask the panel for a new session once the subscription is active."""
+    self._unsub_start_rekey = None
+    channel = self._command_channel
+    if channel is None or channel.session is not None:
+      return
+    rekey = channel.rekey(force=True)
+    if rekey:
+      await mqtt.async_publish(self.hass, rekey[0], rekey[1], qos=0, retain=False)
+      _LOGGER.debug("HomeTiles encrypted rekey sent to %s", self.base_topic)
+
   def _command_handlers(self) -> Dict[str, Any]:
     """Command leaf -> handler, shared by plain and sealed commands."""
     return {
@@ -2108,10 +2141,28 @@ class Tab5Bridge:
       topic, payload = value
       await mqtt.async_publish(self.hass, topic, payload, qos=0, retain=False)
       # A hello gets a new session; a command for an unknown session a rekey.
+      new_session = channel.session != previous_session
       _LOGGER.debug(
         "HomeTiles encrypted %s sent to %s",
-        "session" if channel.session != previous_session else "rekey", self.base_topic,
+        "session" if new_session else "rekey", self.base_topic,
       )
+      if channel.removing and new_session:
+        unpair = channel.seal_unpair()
+        if unpair:
+          await mqtt.async_publish(self.hass, unpair[0], unpair[1], qos=0, retain=False)
+          _LOGGER.info("HomeTiles asked panel %s to turn encryption off", self.base_topic)
+      return
+    if action == "unpair":
+      if not channel.removing:
+        _LOGGER.warning(
+          "HomeTiles panel %s turned encryption off; its unencrypted commands are accepted again",
+          self.base_topic,
+        )
+        self._notify_pairing(
+          f"Encryption was turned off on the display ({self.entry.title}). "
+          "The Bridge removed the pairing and accepts its unencrypted commands again."
+        )
+      self._drop_pairing()
       return
     if action != "command":
       if value in ("rejected", "other_key"):
@@ -2137,8 +2188,31 @@ class Tab5Bridge:
     """Track the panel's retained pairing status (it grants nothing)."""
     self.command_status = parse_command_status(msg.payload)
     channel = self._command_channel
+    state = self.command_status["state"]
     kid = self.command_status["kid"]
-    if channel is None or kid is None:
+    if channel is None:
+      return
+    if channel.removing:
+      # The panel shows no pairing, or another one: nothing left to turn off.
+      if state == "off" or (kid is not None and kid != channel.keys.key_id):
+        _LOGGER.info("HomeTiles panel %s turned encryption off", self.base_topic)
+        self._drop_pairing()
+        return
+    elif state == "off":
+      # Anyone on the broker can publish this status, so it removes nothing.
+      if self._secure_log_due("status_off", 3600.0):
+        _LOGGER.warning(
+          "HomeTiles panel %s reports encryption off, but the Bridge still has its pairing "
+          "and ignores its unencrypted commands; remove the pairing under Configure > Security",
+          self.base_topic,
+        )
+        self._notify_pairing(
+          f"The display ({self.entry.title}) reports that encryption is off, but the Bridge still "
+          "has its pairing code and ignores its unencrypted commands. If you turned encryption off "
+          "on the display, remove the pairing under Configure > Security."
+        )
+      return
+    if kid is None:
       return
     if kid != channel.keys.key_id:
       if self._secure_log_due("status_kid"):
@@ -2152,6 +2226,21 @@ class Tab5Bridge:
       if rekey:
         await mqtt.async_publish(self.hass, rekey[0], rekey[1], qos=0, retain=False)
         _LOGGER.debug("HomeTiles encrypted rekey sent to %s", self.base_topic)
+
+  def _drop_pairing(self) -> None:
+    """Forget the pairing code; the update listener reloads the entry unpaired."""
+    self._command_channel = None
+    self.hass.config_entries.async_update_entry(
+      self.entry,
+      data=without_pairing(self.entry.data),
+      options=without_pairing(self.entry.options),
+    )
+
+  def _notify_pairing(self, message: str) -> None:
+    persistent_notification.async_create(
+      self.hass, message, title="HomeTiles Bridge",
+      notification_id=f"{DOMAIN}_{self.entry.entry_id}_pairing",
+    )
 
   async def _async_publish_sealed_data(self, kind: str, text: str) -> bool:
     """Send a stream-token message to a paired panel; never unencrypted."""
@@ -2170,7 +2259,8 @@ class Tab5Bridge:
   async def _async_publish_camera_status(self, payload: Dict[str, Any]) -> None:
     """Answer a camera command; the answer can carry a stream token."""
     text = json.dumps(payload)
-    if self._command_channel is not None:
+    channel = self._command_channel
+    if channel is not None and not channel.removing:
       await self._async_publish_sealed_data("camera", text)
       return
     await mqtt.async_publish(
@@ -2179,7 +2269,8 @@ class Tab5Bridge:
 
   async def async_publish_local_camera_command(self, text: str) -> None:
     """Snapshot, stream and pause requests for the panel's own camera."""
-    if self._command_channel is not None:
+    channel = self._command_channel
+    if channel is not None and not channel.removing:
       await self._async_publish_sealed_data("local_camera", text)
       return
     await mqtt.async_publish(

@@ -22,7 +22,7 @@ from homeassistant.helpers.network import get_url
 from .binary_sensor_helpers import split_binary_sensor_entities
 from .panel_auth import ERROR_CANNOT_CONNECT, async_push_credentials
 from .capabilities import CAPABILITIES
-from .command_channel import check_pairing_code, entry_pairing_code, key_id_for_code
+from .command_channel import check_pairing_code, entry_pairing_code, key_id_for_code, without_pairing
 from .control_helpers import ACTION_DOMAINS, SWITCH_DOMAINS, build_action_map, entity_domain
 from .editable_helpers import (EDITABLE_LISTS, EDITABLE_DOMAINS, NUMBER_DOMAINS, SELECT_DOMAINS, DATETIME_DOMAINS, editable_selection, domain_of, build_editable_payload, build_editable_service_call, add_number_history, MAX_CONTROL_BYTES)
 from .const import (
@@ -32,6 +32,7 @@ from .const import (
   CONF_CAMERAS,
   CONF_CLIMATES,
   CONF_COMMAND_PAIRING,
+  CONF_COMMAND_PAIRING_REMOVING,
   CONF_COVERS,
   CONF_DEVICE_ID,
   CONF_DEVICE_NAME,
@@ -401,7 +402,11 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
       updated = dict(current)
       remove = bool(user_input.get(CONF_REMOVE_PAIRING))
       if remove:
+        # The Bridge keeps the code until the panel turned pairing off too:
+        # it sends the panel an unpair as soon as they have a session.
         updated.pop(CONF_COMMAND_PAIRING, None)
+        if stored_code:
+          updated[CONF_COMMAND_PAIRING_REMOVING] = stored_code
       elif (user_input.get(CONF_PAIRING_CODE) or "").strip():
         bridge = self.hass.data.get(DOMAIN, {}).get("entries", {}).get(self.config_entry.entry_id)
         code, error = check_pairing_code(
@@ -411,14 +416,12 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
           errors[CONF_PAIRING_CODE] = error
         else:
           updated[CONF_COMMAND_PAIRING] = code
+          updated.pop(CONF_COMMAND_PAIRING_REMOVING, None)
       else:
         # An empty form changes nothing; say so instead of a plain success.
         errors["base"] = "pairing_code_empty"
       if not errors:
-        options = {
-          key: value for key, value in (self.config_entry.options or {}).items()
-          if key != CONF_COMMAND_PAIRING
-        }
+        options = without_pairing(self.config_entry.options)
         # The update listener reloads the entry with the new channel.
         self.hass.config_entries.async_update_entry(self.config_entry, data=updated, options=options)
         # A result naming the key id shows which panel entry holds the code.

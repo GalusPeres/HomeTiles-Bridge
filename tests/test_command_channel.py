@@ -40,6 +40,17 @@ COMMAND_PLAINTEXT = (
 BASE = "hometiles"
 PANEL_TOPIC = "hometiles/secure/panel"
 BRIDGE_TOPIC = "hometiles/secure/bridge"
+# Shared with the firmware as well: an unpair in each direction.
+UNPAIR_PLAINTEXT = b"unpair 0123456789abcdef0123456789abcdef 1 -\n"
+UNPAIR_NONCE = bytes.fromhex("000102030405060708090a0b")
+UNPAIR_FROM_PANEL = (
+    '{"v":1,"k":"8982fb24a78d94e1","n":"000102030405060708090a0b","d":"57bf95048efe6d21a8392023d835128bca899f9577'
+    '00cb026d090ecb5c811a72707dfb8b90c495763ea5ab124daac7347b8d1d772ea4ace283bbb02a"}'
+)
+UNPAIR_FROM_BRIDGE = (
+    '{"v":1,"k":"8982fb24a78d94e1","n":"000102030405060708090a0b","d":"f0304f27341f5bebe38670e0476e55fefa34e2b11a'
+    '21a4224f5e66be62a63afaa85712b16a9618140eb3fecc7d8cb5b0b9332900c520448e4f1e7977"}'
+)
 
 
 def panel_seal(plaintext: bytes, topic: str = PANEL_TOPIC, nonce: bytes = b"\x07" * 12) -> str:
@@ -147,6 +158,18 @@ class PairingCodeTest(unittest.TestCase):
         entry = types.SimpleNamespace(data=MappingProxyType({}), options=MappingProxyType({}))
         self.assertIsNone(CC.entry_pairing_code(entry))
 
+    def test_removed_code_waits_for_the_panel(self):
+        removing = types.SimpleNamespace(
+            data=MappingProxyType({"base_topic": BASE, "command_pairing_removing": CODE}), options=MappingProxyType({}))
+        self.assertIsNone(CC.entry_pairing_code(removing))
+        self.assertEqual(CC.entry_removing_code(removing), "ABCDEFGHJKMNPQRSTVWXYZ012")
+        # A new code wins over a removal still in progress.
+        paired = types.SimpleNamespace(
+            data=MappingProxyType({"command_pairing_code": CODE, "command_pairing_removing": CODE}), options={})
+        self.assertIsNone(CC.entry_removing_code(paired))
+        self.assertEqual(CC.without_pairing(removing.data), {"base_topic": BASE})
+        self.assertEqual(CC.without_pairing(None), {})
+
 
 NEEDS_CRYPTOGRAPHY = unittest.skipIf(
     ChaCha20Poly1305 is None, "cryptography (bundled with Home Assistant) is required")
@@ -183,6 +206,17 @@ class EnvelopeTest(unittest.TestCase):
         for malformed in ("", "not json", "[]", '{"v":2}', '{"v":1,"k":"8982fb24a78d94e1","n":"00","d":"00"}',
                           b"\xff\xfe", "x" * 10000, None):
             self.assertEqual(CC.open_envelope(key, KEY_ID, PANEL_TOPIC, malformed)[0], CC.OPEN_MALFORMED, malformed)
+
+    def test_unpair_envelopes_are_byte_identical(self):
+        self.assertEqual(CC.seal(self.keys.panel_to_bridge, KEY_ID, PANEL_TOPIC, UNPAIR_PLAINTEXT, UNPAIR_NONCE),
+                         UNPAIR_FROM_PANEL)
+        self.assertEqual(CC.seal(self.keys.bridge_to_panel, KEY_ID, BRIDGE_TOPIC, UNPAIR_PLAINTEXT, UNPAIR_NONCE),
+                         UNPAIR_FROM_BRIDGE)
+        self.assertEqual(CC.build_plaintext("unpair", "0123456789abcdef0123456789abcdef", 1, None),
+                         UNPAIR_PLAINTEXT)
+        message = CC.parse_plaintext(UNPAIR_PLAINTEXT)
+        self.assertEqual((message.kind, message.session, message.seq, message.name, message.body),
+                         ("unpair", "0123456789abcdef0123456789abcdef", 1, None, b""))
 
     def test_plaintext_header_is_strict(self):
         self.assertEqual(CC.build_plaintext("hello", None, 0, "ffeeddccbbaa99887766554433221100"),
@@ -286,6 +320,34 @@ class BridgeChannelTest(unittest.TestCase):
         with self.assertRaises(Exception):
             panel_open(payload, topic="other/secure/bridge")
 
+    def test_unpair_from_the_panel_counts_like_a_command(self):
+        channel = new_channel()
+        session = establish(channel)
+        unpair = panel_seal(f"unpair {session} 1 -\n".encode())
+        self.assertEqual(channel.handle_panel_message(unpair), ("unpair", None))
+        # Authenticated, current session only, and never twice.
+        self.assertEqual(channel.handle_panel_message(unpair), ("ignore", "replayed"))
+        other = panel_seal(f"unpair {'ab' * 16} 2 -\n".encode(), nonce=b"\x08" * 12)
+        self.assertEqual(channel.handle_panel_message(other), ("ignore", "stale_session"))
+        named = panel_seal(f"unpair {session} 3 light\n".encode(), nonce=b"\x09" * 12)
+        self.assertEqual(channel.handle_panel_message(named), ("ignore", "invalid_unpair"))
+        # The panel's numbering is shared with its commands.
+        command = panel_seal(f"cmd {session} 1 light\n{{}}".encode(), nonce=b"\x0a" * 12)
+        self.assertEqual(channel.handle_panel_message(command), ("ignore", "replayed"))
+
+    def test_removing_channel_only_carries_the_unpair(self):
+        clock = Clock()
+        channel = CC.BridgeChannel(CODE, BASE, clock=clock, random=Random(), removing=True)
+        self.assertIsNone(channel.seal_unpair())  # No session yet.
+        session = establish(channel)
+        topic, payload = channel.seal_unpair()
+        self.assertEqual((topic, panel_open(payload)), (BRIDGE_TOPIC, f"unpair {session} 1 -\n".encode()))
+        # Sealed commands no longer run; a stale one still gets a rekey.
+        command = panel_seal(f"cmd {session} 1 light\n{{}}".encode())
+        self.assertEqual(channel.handle_panel_message(command), ("ignore", "removing"))
+        stale = panel_seal(f"cmd {'ab' * 16} 2 light\n{{}}".encode(), nonce=b"\x08" * 12)
+        self.assertEqual(channel.handle_panel_message(stale)[0], "reply")
+
     def test_rekey_is_forced_at_startup_and_rate_limited_afterwards(self):
         clock = Clock()
         channel = new_channel(clock)
@@ -304,6 +366,7 @@ def bridge_class(scope):
         "async_setup", "_async_setup_plain_commands", "_async_setup_secure_commands", "_command_handlers",
         "_secure_log_due", "_async_handle_secure_panel_message", "_async_handle_secure_status",
         "_async_publish_sealed_data", "_async_publish_camera_status", "async_publish_local_camera_command",
+        "_async_send_start_rekey", "_drop_pairing", "_notify_pairing",
     }
     functions = [node for node in bridge.body if getattr(node, "name", None) in names]
     opened = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "_OpenedCommand")
@@ -331,22 +394,55 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.mqtt = FakeMqtt()
         self.clock = Clock()
+        self.timers = []
+        self.notifications = []
+        self.updates = []
+
+        def call_later(hass, delay, action):
+            self.timers.append((delay, action))
+            return lambda: None
+
+        def notify(hass, message, title=None, notification_id=None):
+            self.notifications.append((notification_id, message))
+
         scope = {
             "mqtt": self.mqtt, "json": json, "monotonic": self.clock,
             "_LOGGER": logging.getLogger("test_command_channel"),
             "command_status_topic": CC.status_topic, "parse_command_status": CC.parse_status,
             "local_camera_command_topic": LOCAL_CAMERA.local_camera_command_topic,
             "async_track_state_change_event": lambda *args: None,
+            "async_call_later": call_later, "SECURE_START_REKEY_DELAY_S": 3.0,
+            "persistent_notification": types.SimpleNamespace(async_create=notify),
+            "without_pairing": CC.without_pairing, "DOMAIN": "tab5_lvgl",
         }
         self.Bridge = bridge_class(scope)
         self.handled = []
 
-    def make(self, paired: bool):
+    async def fire_timers(self):
+        timers, self.timers = self.timers, []
+        for delay, action in timers:
+            self.assertEqual(delay, 3.0)
+            await action(None)
+
+    def make(self, paired: bool, removing: bool = False):
         bridge = self.Bridge()
-        bridge.hass = types.SimpleNamespace(data={})
+        stored = {"base_topic": BASE}
+        if paired:
+            stored["command_pairing_code"] = CODE
+        if removing:
+            stored["command_pairing_removing"] = CODE
+
+        def update(entry, **fields):
+            self.updates.append(fields)
+
+        bridge.hass = types.SimpleNamespace(data={}, config_entries=types.SimpleNamespace(async_update_entry=update))
+        bridge.entry = types.SimpleNamespace(entry_id="entry1", title="Kitchen",
+                                             data=MappingProxyType(stored), options=MappingProxyType({}))
         bridge.base_topic = BASE
         bridge.tracked_entities = []
-        bridge._command_channel = CC.BridgeChannel(CODE, BASE, clock=self.clock, random=Random()) if paired else None
+        bridge._command_channel = (CC.BridgeChannel(CODE, BASE, clock=self.clock, random=Random(), removing=removing)
+                                   if paired or removing else None)
+        bridge._unsub_start_rekey = None
         bridge.command_status = {"state": "unknown", "kid": None}
         bridge._secure_log_at = {}
         bridge._refresh_runtime_entity_lists = lambda: None
@@ -387,7 +483,10 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         topics = set(self.mqtt.subscriptions)
         self.assertFalse([topic for topic in topics if "/cmnd/" in topic], topics)
         self.assertIn(PANEL_TOPIC, topics)
-        # The restarted Bridge asks the panel for a new session right away.
+        # The restarted Bridge asks the panel for a new session once Home
+        # Assistant has sent the subscription to the broker.
+        self.assertEqual(self.mqtt.published, [])
+        await self.fire_timers()
         [(topic, payload, retain)] = self.mqtt.published
         self.assertEqual((topic, panel_open(payload), retain), (BRIDGE_TOPIC, b"rekey - 0 -\n", False))
         self.mqtt.published.clear()
@@ -433,15 +532,63 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("test_command_channel", "WARNING") as logs:
             await status(types.SimpleNamespace(payload='{"v":1,"state":"active","kid":"0000000000000000"}'))
         self.assertIn("another pairing code", logs.output[0])
-        # A forged "off" does not turn the channel off.
-        await status(types.SimpleNamespace(payload=""))
+        # A forged "off" does not turn the channel off; the user is told instead.
+        with self.assertLogs("test_command_channel", "WARNING") as logs:
+            await status(types.SimpleNamespace(payload=""))
+        self.assertIn("reports encryption off", logs.output[0])
         self.assertIsNotNone(bridge._command_channel)
+        self.assertEqual(self.updates, [])
+        self.assertEqual([notification_id for notification_id, _ in self.notifications], ["tab5_lvgl_entry1_pairing"])
         self.assertEqual(bridge.command_status, {"state": "off", "kid": None})
         # A matching pending panel gets a rekey so it can finish pairing.
         self.clock.now += 5
         await status(types.SimpleNamespace(payload=json.dumps({"v": 1, "state": "pending", "kid": KEY_ID})))
         [(topic, payload, _retain)] = self.mqtt.published
         self.assertEqual(panel_open(payload), b"rekey - 0 -\n")
+
+
+    async def test_unpair_from_the_panel_removes_the_pairing(self):
+        bridge = self.make(paired=True)
+        await bridge.async_setup()
+        await self.fire_timers()
+        deliver = self.mqtt.subscriptions[PANEL_TOPIC]
+        await deliver(types.SimpleNamespace(payload=hello(), retain=False))
+        session = panel_open(self.mqtt.published[-1][1]).decode().split(" ")[1]
+        with self.assertLogs("test_command_channel", "WARNING") as logs:
+            await deliver(types.SimpleNamespace(payload=panel_seal(f"unpair {session} 1 -\n".encode()), retain=False))
+        self.assertIn("turned encryption off", logs.output[0])
+        self.assertIsNone(bridge._command_channel)
+        # The entry forgets the code and reloads unpaired.
+        self.assertEqual(self.updates, [{"data": {"base_topic": BASE}, "options": {}}])
+        self.assertEqual(len(self.notifications), 1)
+
+    async def test_removed_pairing_turns_the_panel_off_too(self):
+        bridge = self.make(paired=False, removing=True)
+        await bridge.async_setup()
+        topics = set(self.mqtt.subscriptions)
+        # Plain commands work again while the panel is being unpaired.
+        for leaf in ("scene", "light", "switch", "value", "media", "climate", "cover", "camera"):
+            self.assertIn(f"{BASE}/cmnd/{leaf}", topics)
+        self.assertIn(PANEL_TOPIC, topics)
+        await self.fire_timers()
+        self.assertEqual(panel_open(self.mqtt.published[-1][1]), b"rekey - 0 -\n")
+        self.mqtt.published.clear()
+        # The panel's hello gets the session and right away the unpair.
+        await self.mqtt.subscriptions[PANEL_TOPIC](types.SimpleNamespace(payload=hello(), retain=False))
+        [session_message, unpair] = [panel_open(payload) for _topic, payload, _retain in self.mqtt.published]
+        session = session_message.decode().split(" ")[1]
+        self.assertEqual(unpair, f"unpair {session} 1 -\n".encode())
+        # Stream tokens go plain again: the panel is about to turn pairing off.
+        self.mqtt.published.clear()
+        await bridge._async_publish_camera_status({"status": "stopped"})
+        self.assertEqual(self.mqtt.published[0][0], f"{BASE}/stat/camera")
+        # Once the panel's status is empty, the Bridge forgets the code.
+        status = self.mqtt.subscriptions[f"{BASE}/stat/secure"]
+        await status(types.SimpleNamespace(payload='{"v":1,"state":"active","kid":"8982fb24a78d94e1"}'))
+        self.assertEqual(self.updates, [])
+        await status(types.SimpleNamespace(payload=""))
+        self.assertEqual(self.updates, [{"data": {"base_topic": BASE}, "options": {}}])
+        self.assertEqual(self.notifications, [])
 
 
 class LocalCameraPublisherTest(unittest.IsolatedAsyncioTestCase):
@@ -498,6 +645,8 @@ class OptionsFlowContractTest(unittest.TestCase):
         self.assertIn('"security"', source)
         self.assertLess(segment.index("check_pairing_code("), segment.index("updated[CONF_COMMAND_PAIRING] = code"))
         self.assertIn("updated.pop(CONF_COMMAND_PAIRING, None)", segment)
+        # A removed code waits until the panel turned pairing off too.
+        self.assertIn("updated[CONF_COMMAND_PAIRING_REMOVING] = stored_code", segment)
         self.assertNotIn("_LOGGER", segment)
         # An empty form is not reported as a success.
         self.assertIn('errors["base"] = "pairing_code_empty"', segment)

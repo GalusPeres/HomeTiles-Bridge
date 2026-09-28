@@ -125,7 +125,7 @@
     },
     "abort": {
       "pairing_saved": "Kopplung gespeichert (Schl\u00fcssel-ID {key_id}). Das Display verbindet sich in wenigen Sekunden verschl\u00fcsselt mit der Bridge.",
-      "pairing_removed": "Kopplung entfernt. Die Bridge f\u00fchrt wieder unverschl\u00fcsselte Befehle dieses Displays aus. Auf dem Display unter Einstellungen \u2192 System \u2192 Sicherheit die Verschl\u00fcsselung ebenfalls ausschalten."
+      "pairing_removed": "Kopplung entfernt. Die Bridge f\u00fchrt wieder unverschl\u00fcsselte Befehle dieses Displays aus. Das Display schaltet die Verschl\u00fcsselung selbst aus, sobald es mit der Bridge verbunden ist."
     }
   },
   "entity": {
