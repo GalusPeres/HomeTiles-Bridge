@@ -91,7 +91,7 @@ def menu_helpers():
     tree = ast.parse(source)
     nodes = [node for node in tree.body
              if (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None)
-                 in ("_PAIRING_CARD_TITLES", "_SECURITY_STATES"))
+                 == "_SECURITY_STATES")
              or (isinstance(node, ast.FunctionDef) and node.name in ("_language", "_security_state"))]
     module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
                               *nodes], type_ignores=[])

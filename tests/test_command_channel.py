@@ -817,8 +817,7 @@ def pairing_flow_class():
     functions = [node for node in flow.body if getattr(node, "name", None) in names]
     helpers = [node for node in tree.body
                if (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None)
-                   in ("_PAIRING_RESULTS", "_PAIRING_CARD_TITLES"))
-               or (isinstance(node, ast.FunctionDef) and node.name in ("_language", "_pairing_card_title"))]
+                   == "_PAIRING_RESULTS")]
     discovery = next(node for node in flow.body if getattr(node, "name", None) == "async_step_integration_discovery")
     # Its first statement sends pairing data to the card; the panel card is left out.
     head = ast.AsyncFunctionDef(name="async_step_integration_discovery", args=discovery.args,
@@ -890,9 +889,9 @@ class PairingCardTest(unittest.IsolatedAsyncioTestCase):
         flow, result = await self.open_card()
         self.assertEqual(result, ("menu", "pairing_confirm", ["pairing_accept", "pairing_reject"],
                                   {"name": "Kitchen", "number": NUMBER}))
-        # The card says that an existing display is encrypted, not that a device is added.
+        # Short, so the card never cuts the number off.
         self.assertEqual(flow.context, {"unique_id": "pairing_entry1",
-                                        "title_placeholders": {"name": f"Encrypt Kitchen \u00b7 {NUMBER}"}})
+                                        "title_placeholders": {"name": f"Kitchen ({NUMBER})"}})
         self.assertEqual(await flow.async_step_pairing_accept(), ("abort", "pairing_confirmed"))
         self.assertEqual(self.bridge.answers, [(ATTEMPT, True, "card")])
         for outcome, reason in (("paired", "pairing_done"), ("rejected", "pairing_rejected"),
@@ -902,15 +901,6 @@ class PairingCardTest(unittest.IsolatedAsyncioTestCase):
         self.bridge.outcome = "rejected"
         self.assertEqual(await flow.async_step_pairing_reject(), ("abort", "pairing_rejected"))
         self.assertEqual(self.bridge.answers[-1], (ATTEMPT, False, "card"))
-
-    async def test_card_title_follows_the_language_of_home_assistant(self):
-        for language, title in (("de", f"Kitchen verschl\u00fcsseln \u00b7 {NUMBER}"),
-                                ("de-CH", f"Kitchen verschl\u00fcsseln \u00b7 {NUMBER}"),
-                                ("fr", f"Encrypt Kitchen \u00b7 {NUMBER}"),
-                                (None, f"Encrypt Kitchen \u00b7 {NUMBER}")):
-            self.hass.config.language = language
-            flow, _result = await self.open_card()
-            self.assertEqual(flow.context["title_placeholders"], {"name": title}, language)
 
     async def test_ended_attempts_show_no_number(self):
         self.bridge.number = None
