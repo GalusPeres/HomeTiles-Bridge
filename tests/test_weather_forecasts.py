@@ -52,6 +52,7 @@ def helpers():
                  date=date, datetime=datetime, timedelta=timedelta,
                  WeatherEntityFeature=WeatherEntityFeature, WEATHER_DATA_COMPONENT="weather", async_get_forecasts=None,
                  _LOGGER=logging.getLogger(__name__), _weather_icon_from_state=lambda *args: None,
+                 _weather_sun=lambda *args: None,
                  dt_util=SimpleNamespace(utcnow=lambda: datetime(2026, 9, 8, tzinfo=timezone.utc),
                                          as_local=lambda dt: dt.astimezone(local_tz),
                                          as_utc=lambda dt: dt.astimezone(timezone.utc),

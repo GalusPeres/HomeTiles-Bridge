@@ -62,6 +62,7 @@ from homeassistant.helpers import discovery_flow
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
+from homeassistant.helpers.sun import get_astral_event_date
 try:
   from homeassistant.helpers.icon import icon_for_entity
 except Exception:  # pragma: no cover - optional fallback
@@ -200,6 +201,7 @@ from .announcement_guard import (
 from .local_camera import is_local_camera_self_loop, local_camera_command_topic
 from .numeric_history import fetch_numeric_history_values
 from .request_limits import RequestGate
+from .sun_times import sun_days, sun_entries
 from .local_io import (
   LOCAL_IO_RELAY,
   LOCAL_IO_TEMPERATURE,
@@ -4316,6 +4318,11 @@ class Tab5Bridge:
       if prepared_hourly:
         payload["forecast_hourly"] = prepared_hourly
 
+    # The panel shows the moon variants of the icons between sunset and sunrise.
+    sun = _weather_sun(self.hass, payload)
+    if sun:
+      payload["sun"] = sun
+
     return json.dumps(payload)
 
   def _ha_topic_for_entity(self, entity_id: str, suffix: str) -> str:
@@ -4948,6 +4955,29 @@ def _compact_hourly_forecast(hourly_forecast: List[Dict[str, Any]]) -> List[Dict
     if out:
       compact.append(out)
   return compact
+
+
+def _weather_sun(hass: HomeAssistant, payload: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+  """Local sun times from today through the last forecast day (sun_times.py)."""
+  latitude = hass.config.latitude
+  longitude = hass.config.longitude
+  if latitude is None or longitude is None or (latitude == 0 and longitude == 0):
+    return None  # Home Assistant has no home location.
+  forecast_days = [entry.get("date_local") for entry in payload.get("forecast") or []
+                   if isinstance(entry, dict)]
+  forecast_days += [entry.get("d") for entry in payload.get("forecast_hourly") or []
+                    if isinstance(entry, dict)]
+
+  def event(kind: str, day: date) -> Optional[datetime]:
+    # Works from the configured location, also without the sun integration.
+    moment = get_astral_event_date(hass, kind, day)
+    return dt_util.as_local(moment) if moment is not None else None
+
+  try:
+    return sun_entries(sun_days(dt_util.now().date(), forecast_days), event, latitude)
+  except Exception:
+    _LOGGER.debug("HomeTiles Bridge could not compute the sun times", exc_info=True)
+    return None
 
 
 def _try_parse_json(payload: str) -> Any:
