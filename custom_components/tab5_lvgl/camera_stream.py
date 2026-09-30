@@ -60,6 +60,23 @@ CAMERA_STREAM_CHUNK_BYTES: Final = 8 * 1024
 CAMERA_STREAM_HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
 CAMERA_STREAM_ACK_TIMEOUT_SECONDS: Final = 5.0
 CAMERA_STREAM_DIAGNOSTIC_INTERVAL_SECONDS: Final = 5.0
+# A direct stream is decoded on this many threads. One thread could not keep
+# up with a 1440p60 stream in a Home Assistant VM (0.9x real time). Frame
+# threading delays the output by (threads - 1) source frames.
+CAMERA_STREAM_DECODE_THREADS: Final = 4
+# FFmpeg that falls this far behind a live stream is restarted at the live
+# position. Otherwise the delay keeps growing until the stream server drops
+# data for the slow reader, which smears the H.264 picture.
+CAMERA_STREAM_MAX_LAG_SECONDS: Final = 1.0
+# This many lag restarts within the window switch the popup to key frames
+# only: few pictures per second, but current and never smeared.
+CAMERA_STREAM_LAG_RESTARTS_FOR_KEYFRAMES: Final = 2
+CAMERA_STREAM_LAG_WINDOW_SECONDS: Final = 60.0
+# Keys of FFmpeg's -progress blocks on stderr (plus stream_<i>_<j>_q).
+CAMERA_FFMPEG_PROGRESS_KEYS: Final = frozenset({
+  "frame", "fps", "bitrate", "total_size", "out_time_us", "out_time_ms",
+  "out_time", "dup_frames", "drop_frames", "speed", "progress",
+})
 CAMERA_STREAM_REQUEST_PREFIX: Final = "HTCAM/1 "
 CAMERA_STREAM_HELLO_MAGIC: Final = b"HTC1"
 CAMERA_STREAM_FRAME_MAGIC: Final = b"HTF1"
@@ -105,6 +122,43 @@ class JpegFrameParser:
       frames.append(bytes(self._buffer[:finish]))
       del self._buffer[:finish]
     return frames
+
+
+class CameraStreamLagGuard:
+  """Tell when FFmpeg decodes a live stream slower than real time.
+
+  Compares FFmpeg's output clock (-progress out_time) with the wall clock.
+  A pause without new frames is the source pausing, not decoding lag, so it
+  is not counted. Whenever FFmpeg runs ahead, for example while it catches
+  up after such a pause, the comparison starts again from there.
+  """
+
+  def __init__(self, max_lag_seconds: float) -> None:
+    self._max_lag = max_lag_seconds
+    self._base_now: float | None = None
+    self._base_out = 0.0
+    self._last_now = 0.0
+    self._last_frame = 0
+    self.lag_seconds = 0.0
+
+  def update(self, frame: int, out_time_seconds: float, now: float) -> bool:
+    """Record one progress report; True once the lag exceeds the limit."""
+    if frame <= 0:
+      return False
+    if self._base_now is None:
+      self._base_now = now
+      self._base_out = out_time_seconds
+    elif frame == self._last_frame:
+      self._base_now += now - self._last_now
+    self._last_now = now
+    self._last_frame = frame
+    lag = (now - self._base_now) - (out_time_seconds - self._base_out)
+    if lag < 0:
+      self._base_now = now
+      self._base_out = out_time_seconds
+      lag = 0.0
+    self.lag_seconds = lag
+    return lag > self._max_lag
 
 
 @dataclass(slots=True)
@@ -1015,13 +1069,43 @@ class CameraStreamConnection:
     session: CameraStreamSession,
     process: asyncio.subprocess.Process,
     image_mode: bool,
-  ) -> None:
-    """Drain FFmpeg stderr and expose useful diagnostics for still cameras."""
+    watch_lag: bool = False,
+  ) -> float | None:
+    """Drain FFmpeg stderr and expose useful diagnostics for still cameras.
+
+    With watch_lag, FFmpeg's -progress reports are compared with the wall
+    clock. When FFmpeg falls too far behind the live stream it is stopped,
+    and the lag in seconds is returned so the caller restarts it at the
+    live position.
+    """
     if process.stderr is None:
-      return
+      return None
+    guard = (
+      CameraStreamLagGuard(CAMERA_STREAM_MAX_LAG_SECONDS) if watch_lag else None
+    )
+    report: dict[str, str] = {}
     while line := await process.stderr.readline():
       message = line.decode(errors="replace").strip()
       if not message:
+        continue
+      key, separator, value = message.partition("=")
+      if separator and (
+        key in CAMERA_FFMPEG_PROGRESS_KEYS or key.startswith("stream_")
+      ):
+        report[key] = value.strip()
+        if key != "progress":
+          continue
+        try:
+          frame = int(report.get("frame", "0"))
+          out_time = int(report.get("out_time_us", "")) / 1_000_000.0
+        except ValueError:
+          frame, out_time = 0, 0.0  # out_time_us=N/A before the first frame
+        report = {}
+        if guard is not None and guard.update(
+          frame, out_time, time.monotonic()
+        ):
+          process.terminate()
+          return guard.lag_seconds
         continue
       if image_mode:
         _LOGGER.warning(
@@ -1034,6 +1118,88 @@ class CameraStreamConnection:
           "HomeTiles camera FFmpeg warning (%s)",
           session.entity_id,
         )
+    return None
+
+  @staticmethod
+  def _ffmpeg_command(
+    ffmpeg_binary: str,
+    session: CameraStreamSession,
+    jpeg_quality: int,
+    keyframes_only: bool = False,
+  ) -> list[str]:
+    """Build the FFmpeg command that turns the camera into JPEG frames."""
+    command = [ffmpeg_binary, "-hide_banner", "-loglevel", "warning"]
+    image_mode = session.source is None
+    if image_mode:
+      command.extend([
+        # image2pipe otherwise probes roughly twelve JPEGs before producing
+        # output. At low fps that otherwise leaves the P4 waiting for seconds.
+        "-probesize", "32",
+        "-analyzeduration", "0",
+        "-f", "image2pipe",
+        "-framerate", str(session.fps),
+        "-vcodec", "mjpeg",
+        "-i", "pipe:0",
+      ])
+    else:
+      assert session.source is not None
+      # Progress reports on stderr let the lag guard see whether FFmpeg
+      # keeps up with the live stream.
+      command.extend(["-progress", "pipe:2"])
+      if session.source.lower().startswith("rtsp"):
+        # No "-flags low_delay": it forces a single decoding thread.
+        command.extend([
+          "-rtsp_transport", "tcp",
+          "-fflags", "nobuffer",
+          "-probesize", "32",
+          "-analyzeduration", "0",
+          "-max_delay", "0",
+          "-timeout", "5000000",
+        ])
+      command.extend(["-threads", str(CAMERA_STREAM_DECODE_THREADS)])
+      if keyframes_only:
+        # About twenty times less decoding work than every frame.
+        command.extend(["-skip_frame", "nokey"])
+      command.extend(["-i", session.source])
+    video_filters: list[str] = []
+    video_filters.extend([
+      (
+        f"scale={session.width}:{session.height}:"
+        "force_original_aspect_ratio=increase:"
+        "out_color_matrix=bt601:out_range=full"
+      ),
+      f"crop={session.width}:{session.height}",
+      "setsar=1",
+    ])
+    command.extend([
+      "-map", "0:v:0",
+      "-an",
+      "-vf", ",".join(video_filters),
+      "-pix_fmt", "yuvj420p",
+      "-color_range", "pc",
+      "-colorspace", "smpte170m",
+      "-color_primaries", "smpte170m",
+      "-color_trc", "smpte170m",
+      "-c:v", "mjpeg",
+      "-threads:v", "1",
+      "-q:v", str(jpeg_quality),
+    ])
+    if keyframes_only:
+      # -fpsmax implies a constant rate and would repeat every key frame up
+      # to it; key frames come far below the session rate anyway.
+      command.extend(["-fps_mode", "vfr"])
+    elif not image_mode:
+      # A fixed fps filter duplicates frames when the source is slower (for
+      # example 10 FPS from OBS), wasting ESP decode/display time and making
+      # the on-device counter look faster than the real video. fpsmax only
+      # drops excess source frames and never fabricates missing ones.
+      command.extend(["-fpsmax", str(session.fps)])
+    command.extend([
+      "-flush_packets", "1",
+      "-f", "image2pipe",
+      "pipe:1",
+    ])
+    return command
 
   async def _async_read_latest_jpeg_frames(
     self,
@@ -1075,7 +1241,6 @@ class CameraStreamConnection:
   ) -> None:
     """Transcode and send the newest frame using acknowledged chunks."""
     ffmpeg_binary = get_ffmpeg_manager(self._manager.hass).binary
-    command = [ffmpeg_binary, "-hide_banner", "-loglevel", "warning"]
     image_mode = session.source is None
     live = session.live if image_mode else None
     # A live panel upload is video, so it uses the direct-stream JPEG budget.
@@ -1084,64 +1249,8 @@ class CameraStreamConnection:
       if image_mode and live is None
       else CAMERA_STREAM_JPEG_QUALITY
     )
-    if image_mode:
-      command.extend([
-        # image2pipe otherwise probes roughly twelve JPEGs before producing
-        # output. At low fps that otherwise leaves the P4 waiting for seconds.
-        "-probesize", "32",
-        "-analyzeduration", "0",
-        "-f", "image2pipe",
-        "-framerate", str(session.fps),
-        "-vcodec", "mjpeg",
-        "-i", "pipe:0",
-      ])
-    else:
-      assert session.source is not None
-      if session.source.lower().startswith("rtsp"):
-        command.extend([
-          "-rtsp_transport", "tcp",
-          "-fflags", "nobuffer",
-          "-flags", "low_delay",
-          "-probesize", "32",
-          "-analyzeduration", "0",
-          "-max_delay", "0",
-          "-timeout", "5000000",
-        ])
-      command.extend(["-i", session.source])
-    video_filters: list[str] = []
-    video_filters.extend([
-      (
-        f"scale={session.width}:{session.height}:"
-        "force_original_aspect_ratio=increase:"
-        "out_color_matrix=bt601:out_range=full"
-      ),
-      f"crop={session.width}:{session.height}",
-      "setsar=1",
-    ])
-    command.extend([
-      "-map", "0:v:0",
-      "-an",
-      "-vf", ",".join(video_filters),
-      "-pix_fmt", "yuvj420p",
-      "-color_range", "pc",
-      "-colorspace", "smpte170m",
-      "-color_primaries", "smpte170m",
-      "-color_trc", "smpte170m",
-      "-c:v", "mjpeg",
-      "-threads:v", "1",
-      "-q:v", str(jpeg_quality),
-    ])
-    if not image_mode:
-      # A fixed fps filter duplicates frames when the source is slower (for
-      # example 10 FPS from OBS), wasting ESP decode/display time and making
-      # the on-device counter look faster than the real video. fpsmax only
-      # drops excess source frames and never fabricates missing ones.
-      command.extend(["-fpsmax", str(session.fps)])
-    command.extend([
-      "-flush_packets", "1",
-      "-f", "image2pipe",
-      "pipe:1",
-    ])
+    keyframes_only = False
+    lag_restarts: list[float] = []
 
     sent = 0
     sent_frame_once = False
@@ -1169,11 +1278,15 @@ class CameraStreamConnection:
       reconnect_attempt = 0
       while not session.stop_event.is_set():
         feeder: asyncio.Task[None] | None = None
-        stderr_task: asyncio.Task[None] | None = None
+        stderr_task: asyncio.Task[float | None] | None = None
         frame_reader: asyncio.Task[int] | None = None
         process: asyncio.subprocess.Process | None = None
         frames_this_process = 0
         dropped_frames = 0
+        lag_seconds: float | None = None
+        command = self._ffmpeg_command(
+          ffmpeg_binary, session, jpeg_quality, keyframes_only
+        )
         try:
           process = await asyncio.create_subprocess_exec(
             *command,
@@ -1191,7 +1304,13 @@ class CameraStreamConnection:
             session.device_id, process
           )
           stderr_task = self._manager.hass.async_create_task(
-            self._async_log_ffmpeg_stderr(session, process, image_mode),
+            self._async_log_ffmpeg_stderr(
+              session,
+              process,
+              image_mode,
+              # Key frames arrive seconds apart, which is no decoding lag.
+              watch_lag=not image_mode and not keyframes_only,
+            ),
             f"HomeTiles camera FFmpeg log {session.entity_id}",
           )
           if live is not None:
@@ -1270,7 +1389,7 @@ class CameraStreamConnection:
               await process.wait()
           if stderr_task:
             with suppress(asyncio.CancelledError):
-              await stderr_task
+              lag_seconds = await stderr_task
           if process:
             await self._manager.async_forget_process(
               session.device_id, process
@@ -1288,11 +1407,36 @@ class CameraStreamConnection:
           0 if frames_this_process else min(reconnect_attempt + 1, 4)
         )
         retry_delay = min(2.0, 0.25 * (2 ** reconnect_attempt))
-        _LOGGER.warning(
-          "HomeTiles camera source ended; reconnecting %s in %.2fs",
-          session.entity_id,
-          retry_delay,
-        )
+        if lag_seconds is not None:
+          now = time.monotonic()
+          lag_restarts = [
+            restarted_at
+            for restarted_at in lag_restarts
+            if now - restarted_at < CAMERA_STREAM_LAG_WINDOW_SECONDS
+          ]
+          lag_restarts.append(now)
+          if len(lag_restarts) >= CAMERA_STREAM_LAG_RESTARTS_FOR_KEYFRAMES:
+            keyframes_only = True
+            _LOGGER.warning(
+              "HomeTiles camera %s: this host cannot decode the stream in "
+              "real time (%.1fs behind); showing key frames only until the "
+              "popup closes. A smaller camera stream avoids this.",
+              session.entity_id,
+              lag_seconds,
+            )
+          else:
+            _LOGGER.warning(
+              "HomeTiles camera %s fell %.1fs behind the live stream; "
+              "restarting at the live position",
+              session.entity_id,
+              lag_seconds,
+            )
+        else:
+          _LOGGER.warning(
+            "HomeTiles camera source ended; reconnecting %s in %.2fs",
+            session.entity_id,
+            retry_delay,
+          )
         await self._async_send_control(
           writer,
           CAMERA_STREAM_MESSAGE_FLUSH,
