@@ -333,6 +333,183 @@ class CameraStreamDiagnostics:
     self.interval_max_transport_seconds = 0.0
 
 
+# Handed to the viewers of a shared stream when its FFmpeg restarts; each
+# viewer tells its panel with a flush message, as a single stream did.
+_STREAM_RESTARTED: Final = object()
+
+
+class CameraStreamViewer:
+  """One panel's place in a shared camera stream: only its newest frame."""
+
+  def __init__(self, diagnostics: CameraStreamDiagnostics) -> None:
+    self.frames: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
+    self.diagnostics = diagnostics
+    self.closed = False
+
+  def offer(self, item: Any) -> None:
+    """Keep only the newest item: a slow panel skips frames, never lags."""
+    if self.closed:
+      return
+    if self.frames.full():
+      with suppress(asyncio.QueueEmpty):
+        if isinstance(self.frames.get_nowait(), bytes):
+          self.diagnostics.note_dropped()
+    self.frames.put_nowait(item)
+
+  def close(self) -> None:
+    """End this viewer's stream; nothing queued after this is delivered."""
+    if self.closed:
+      return
+    self.offer(None)
+    self.closed = True
+
+
+class CameraStreamBroadcast:
+  """One FFmpeg pipeline for every panel showing the same direct stream.
+
+  Panels asking for the same camera at the same size and rate share one
+  RTSP connection and one decode instead of one per panel. Every viewer
+  keeps only its newest frame and sends at its own acknowledged pace. The
+  pipeline restarts at the live position when it falls behind or the
+  source ends, and stops when its last viewer leaves.
+  """
+
+  def __init__(
+    self,
+    manager: CameraStreamManager,
+    key: tuple[Any, ...],
+    session: CameraStreamSession,
+    ffmpeg_binary: str,
+    jpeg_quality: int,
+  ) -> None:
+    self._manager = manager
+    self.key = key
+    # The first viewer's session: source, entity, size and rate are the key.
+    self._session = session
+    self._ffmpeg_binary = ffmpeg_binary
+    self._jpeg_quality = jpeg_quality
+    self.viewers: list[CameraStreamViewer] = []
+    self._stop = asyncio.Event()
+    self._process: asyncio.subprocess.Process | None = None
+    self.task: asyncio.Task[None] | None = None
+
+  def start(self) -> None:
+    self.task = self._manager.hass.async_create_task(
+      self._async_run(),
+      f"HomeTiles camera shared stream {self._session.entity_id}",
+    )
+
+  def stop(self) -> None:
+    """Stop the pipeline; its task terminates FFmpeg and closes viewers."""
+    self._stop.set()
+    process = self._process
+    if process is not None and process.returncode is None:
+      process.terminate()
+
+  async def _async_read_frames(
+    self, process: asyncio.subprocess.Process
+  ) -> int:
+    """Hand every complete JPEG to all current viewers."""
+    assert process.stdout is not None
+    parser = JpegFrameParser()
+    frames = 0
+    while (
+      not self._stop.is_set()
+      and (chunk := await process.stdout.read(16 * 1024))
+    ):
+      for jpeg in parser.feed(chunk):
+        frames += 1
+        for viewer in list(self.viewers):
+          viewer.diagnostics.note_parsed(jpeg)
+          viewer.offer(jpeg)
+    return frames
+
+  async def _async_run(self) -> None:
+    session = self._session
+    connection = self._manager.tcp_connection
+    reconnect_attempt = 0
+    lag_restarts = 0
+    try:
+      while not self._stop.is_set():
+        process: asyncio.subprocess.Process | None = None
+        stderr_task: asyncio.Task[float | None] | None = None
+        frames = 0
+        lag_seconds: float | None = None
+        command = connection._ffmpeg_command(
+          self._ffmpeg_binary, session, self._jpeg_quality
+        )
+        try:
+          process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+          )
+          self._process = process
+          if self._stop.is_set():
+            break
+          stderr_task = self._manager.hass.async_create_task(
+            connection._async_log_ffmpeg_stderr(
+              session, process, False, watch_lag=True
+            ),
+            f"HomeTiles camera FFmpeg log {session.entity_id}",
+          )
+          frames = await self._async_read_frames(process)
+        except asyncio.CancelledError:
+          raise
+        except Exception:
+          _LOGGER.exception(
+            "HomeTiles camera source process failed (%s)",
+            session.entity_id,
+          )
+        finally:
+          if process and process.returncode is None:
+            process.terminate()
+            try:
+              await asyncio.wait_for(process.wait(), timeout=2.0)
+            except TimeoutError:
+              process.kill()
+              await process.wait()
+          if stderr_task:
+            with suppress(asyncio.CancelledError):
+              lag_seconds = await stderr_task
+          self._process = None
+
+        if self._stop.is_set():
+          break
+        reconnect_attempt = (
+          0 if frames else min(reconnect_attempt + 1, 4)
+        )
+        retry_delay = min(2.0, 0.25 * (2 ** reconnect_attempt))
+        if lag_seconds is not None:
+          lag_restarts += 1
+          # Once per stream as a warning; a host that stays too slow would
+          # otherwise repeat it every few seconds.
+          (_LOGGER.warning if lag_restarts == 1 else _LOGGER.debug)(
+            "HomeTiles camera %s fell %.1fs behind the live stream; "
+            "restarting at the live position (%d in this stream)",
+            session.entity_id,
+            lag_seconds,
+            lag_restarts,
+          )
+        else:
+          _LOGGER.warning(
+            "HomeTiles camera source ended; reconnecting %s in %.2fs",
+            session.entity_id,
+            retry_delay,
+          )
+        for viewer in list(self.viewers):
+          viewer.offer(_STREAM_RESTARTED)
+        try:
+          await asyncio.wait_for(self._stop.wait(), timeout=retry_delay)
+        except TimeoutError:
+          pass
+    finally:
+      self._manager.forget_broadcast(self)
+      for viewer in list(self.viewers):
+        viewer.close()
+
+
 class CameraStreamManager:
   """Own HomeTiles camera sessions and their FFmpeg processes."""
 
@@ -351,6 +528,56 @@ class CameraStreamManager:
     self.local_camera_uploads = LocalCameraUploadRegistry()
     # HomeTiles panel cameras with a live upload, one entry per entity.
     self._live_cameras: list[Any] = []
+    # Running direct streams shared by every panel with the same camera,
+    # size, rate and JPEG quality.
+    self._broadcasts: dict[tuple[Any, ...], CameraStreamBroadcast] = {}
+
+  @property
+  def tcp_connection(self) -> CameraStreamConnection:
+    return self._tcp_connection
+
+  def join_broadcast(
+    self,
+    session: CameraStreamSession,
+    ffmpeg_binary: str,
+    jpeg_quality: int,
+    diagnostics: CameraStreamDiagnostics,
+  ) -> tuple[CameraStreamBroadcast, CameraStreamViewer]:
+    """Add a panel to the running stream of its camera, or start one."""
+    key = (
+      session.entity_id,
+      session.source,
+      session.width,
+      session.height,
+      session.fps,
+      jpeg_quality,
+    )
+    broadcast = self._broadcasts.get(key)
+    if broadcast is None:
+      broadcast = CameraStreamBroadcast(
+        self, key, session, ffmpeg_binary, jpeg_quality
+      )
+      self._broadcasts[key] = broadcast
+      broadcast.start()
+    viewer = CameraStreamViewer(diagnostics)
+    broadcast.viewers.append(viewer)
+    return broadcast, viewer
+
+  def leave_broadcast(
+    self, broadcast: CameraStreamBroadcast, viewer: CameraStreamViewer
+  ) -> None:
+    """Remove a panel; the last one leaving stops the shared pipeline."""
+    viewer.close()
+    with suppress(ValueError):
+      broadcast.viewers.remove(viewer)
+    if not broadcast.viewers:
+      self.forget_broadcast(broadcast)
+      broadcast.stop()
+
+  def forget_broadcast(self, broadcast: CameraStreamBroadcast) -> None:
+    """Let the next panel start a new pipeline instead of a stopping one."""
+    if self._broadcasts.get(broadcast.key) is broadcast:
+      del self._broadcasts[broadcast.key]
 
   def register_live_camera(self, camera: Any) -> Callable[[], None]:
     """Let popup sessions find a panel camera's live stream by entity id."""
@@ -431,6 +658,16 @@ class CameraStreamManager:
       )
     for device_id in device_ids:
       await self.async_stop_device(device_id)
+    broadcasts = list(self._broadcasts.values())
+    self._broadcasts.clear()
+    for broadcast in broadcasts:
+      for viewer in list(broadcast.viewers):
+        viewer.close()
+      broadcast.stop()
+    for broadcast in broadcasts:
+      if broadcast.task is not None:
+        with suppress(asyncio.CancelledError, Exception):
+          await broadcast.task
     self.local_camera_uploads.close_all()
     if self._tcp_server is not None:
       self._tcp_server.close()
@@ -1255,12 +1492,35 @@ class CameraStreamConnection:
       if image_mode and live is None
       else CAMERA_STREAM_JPEG_QUALITY
     )
-    lag_restarts = 0
 
     sent = 0
     sent_frame_once = False
     sequence = 0
     diagnostics = CameraStreamDiagnostics(session.entity_id)
+
+    async def send_jpeg(jpeg: bytes) -> None:
+      nonlocal sequence, sent, sent_frame_once
+      sequence = (sequence + 1) & 0xFFFFFFFF
+      send_metrics = await self._async_send_frame(
+        reader,
+        writer,
+        sequence,
+        jpeg,
+      )
+      diagnostics.note_sent(jpeg, send_metrics)
+      diagnostics.maybe_log()
+      if not sent_frame_once:
+        sent_frame_once = True
+        _LOGGER.info(
+          "HomeTiles camera first JPEG frame sent "
+          "(%s, %d bytes, first_parsed=%.1f ms, first_sent=%.1f ms)",
+          session.entity_id,
+          len(jpeg),
+          diagnostics.first_parsed_ms or 0.0,
+          diagnostics.first_sent_ms or 0.0,
+        )
+      sent += len(jpeg)
+
     if live is not None:
       # The popup is a live viewer for exactly this stream's lifetime; the
       # outer finally releases it on every exit path.
@@ -1280,6 +1540,37 @@ class CameraStreamConnection:
         CAMERA_STREAM_MESSAGE_FLUSH,
         sequence,
       )
+      if not image_mode:
+        # Direct streams: every panel with the same camera, size and rate
+        # shares one FFmpeg pipeline instead of decoding it once per panel.
+        broadcast, viewer = self._manager.join_broadcast(
+          session, ffmpeg_binary, jpeg_quality, diagnostics
+        )
+        if len(broadcast.viewers) > 1:
+          _LOGGER.info(
+            "HomeTiles camera %s joins the running stream (%d panels)",
+            session.entity_id,
+            len(broadcast.viewers),
+          )
+        stop_waiter = self._manager.hass.async_create_task(
+          session.stop_event.wait(),
+          f"HomeTiles camera viewer stop {session.entity_id}",
+        )
+        stop_waiter.add_done_callback(lambda _task: viewer.close())
+        try:
+          while (item := await viewer.frames.get()) is not None:
+            if item is _STREAM_RESTARTED:
+              await self._async_send_control(
+                writer,
+                CAMERA_STREAM_MESSAGE_FLUSH,
+                sequence,
+              )
+              continue
+            await send_jpeg(item)
+        finally:
+          stop_waiter.cancel()
+          self._manager.leave_broadcast(broadcast, viewer)
+        return
       reconnect_attempt = 0
       while not session.stop_event.is_set():
         feeder: asyncio.Task[None] | None = None
@@ -1288,7 +1579,6 @@ class CameraStreamConnection:
         process: asyncio.subprocess.Process | None = None
         frames_this_process = 0
         dropped_frames = 0
-        lag_seconds: float | None = None
         command = self._ffmpeg_command(ffmpeg_binary, session, jpeg_quality)
         try:
           process = await asyncio.create_subprocess_exec(
@@ -1307,12 +1597,7 @@ class CameraStreamConnection:
             session.device_id, process
           )
           stderr_task = self._manager.hass.async_create_task(
-            self._async_log_ffmpeg_stderr(
-              session,
-              process,
-              image_mode,
-              watch_lag=not image_mode,
-            ),
+            self._async_log_ffmpeg_stderr(session, process, image_mode),
             f"HomeTiles camera FFmpeg log {session.entity_id}",
           )
           if live is not None:
@@ -1341,27 +1626,8 @@ class CameraStreamConnection:
             jpeg = await latest_frames.get()
             if jpeg is None:
               break
-            sequence = (sequence + 1) & 0xFFFFFFFF
-            send_metrics = await self._async_send_frame(
-              reader,
-              writer,
-              sequence,
-              jpeg,
-            )
-            diagnostics.note_sent(jpeg, send_metrics)
-            diagnostics.maybe_log()
-            if not sent_frame_once:
-              sent_frame_once = True
-              _LOGGER.info(
-                "HomeTiles camera first JPEG frame sent "
-                "(%s, %d bytes, first_parsed=%.1f ms, first_sent=%.1f ms)",
-                session.entity_id,
-                len(jpeg),
-                diagnostics.first_parsed_ms or 0.0,
-                diagnostics.first_sent_ms or 0.0,
-              )
+            await send_jpeg(jpeg)
             frames_this_process += 1
-            sent += len(jpeg)
           if frame_reader:
             dropped_frames = await frame_reader
         except (ConnectionResetError, BrokenPipeError):
@@ -1391,7 +1657,7 @@ class CameraStreamConnection:
               await process.wait()
           if stderr_task:
             with suppress(asyncio.CancelledError):
-              lag_seconds = await stderr_task
+              await stderr_task
           if process:
             await self._manager.async_forget_process(
               session.device_id, process
@@ -1409,23 +1675,11 @@ class CameraStreamConnection:
           0 if frames_this_process else min(reconnect_attempt + 1, 4)
         )
         retry_delay = min(2.0, 0.25 * (2 ** reconnect_attempt))
-        if lag_seconds is not None:
-          lag_restarts += 1
-          # Once per popup as a warning; a host that stays too slow would
-          # otherwise repeat it every few seconds.
-          (_LOGGER.warning if lag_restarts == 1 else _LOGGER.debug)(
-            "HomeTiles camera %s fell %.1fs behind the live stream; "
-            "restarting at the live position (%d in this popup)",
-            session.entity_id,
-            lag_seconds,
-            lag_restarts,
-          )
-        else:
-          _LOGGER.warning(
-            "HomeTiles camera source ended; reconnecting %s in %.2fs",
-            session.entity_id,
-            retry_delay,
-          )
+        _LOGGER.warning(
+          "HomeTiles camera source ended; reconnecting %s in %.2fs",
+          session.entity_id,
+          retry_delay,
+        )
         await self._async_send_control(
           writer,
           CAMERA_STREAM_MESSAGE_FLUSH,

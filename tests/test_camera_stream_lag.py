@@ -276,11 +276,11 @@ class LagRestartTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task, 3)
         warnings = [r.getMessage() for r in logs.records if r.levelname == "WARNING"]
         lag = [m for m in warnings if "behind the live stream; restarting at the live position" in m]
-        # One warning per popup; later restarts go to the debug log.
+        # One warning per stream; later restarts go to the debug log.
         self.assertEqual(len(lag), 1, warnings)
-        self.assertIn("(1 in this popup)", lag[0])
+        self.assertIn("(1 in this stream)", lag[0])
         debug = [r.getMessage() for r in logs.records if r.levelname == "DEBUG"]
-        self.assertTrue(any("(3 in this popup)" in m for m in debug), debug)
+        self.assertTrue(any("(3 in this stream)" in m for m in debug), debug)
         self.assertFalse(any("source ended" in m for m in warnings), warnings)
 
     async def test_ffmpeg_progress_lines_are_not_logged_as_warnings(self):
