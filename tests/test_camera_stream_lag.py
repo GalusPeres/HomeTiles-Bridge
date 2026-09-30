@@ -1,11 +1,14 @@
 """A direct camera stream must never fall behind the live picture.
 
-A single decoding thread could not keep up with a 1440p60 OBS stream in a
-Home Assistant VM (0.9x real time). The delay grew until the RTSP server
-dropped data for the slow reader, and every panel showed a smeared picture.
-The Bridge now decodes on several threads, restarts FFmpeg at the live
-position when it falls behind, and after repeated restarts decodes only key
-frames for the rest of the popup.
+FFmpeg could not keep up with a 1440p60 OBS stream in a Home Assistant VM
+(0.9x real time). The delay grew until the RTSP server dropped data for the
+slow reader, and every panel showed a smeared picture. The larger part of
+the work was scaling all 60 frames per second on one thread before -fpsmax
+dropped most of them. The Bridge now thins the frames to the session rate
+before scaling, decodes on several threads, and restarts FFmpeg at the live
+position when it still falls behind. v0.7.1b7 switched to key frames only
+after two restarts, which left the popup at one picture per second; that
+fallback is gone.
 """
 
 from __future__ import annotations
@@ -122,9 +125,12 @@ class FfmpegCommandTest(unittest.TestCase):
     def session(self, source):
         return types.SimpleNamespace(source=source, width=752, height=424, fps=24)
 
-    def command(self, source=SOURCE, keyframes_only=False):
+    def command(self, source=SOURCE):
         return self.module.CameraStreamConnection._ffmpeg_command(
-            "ffmpeg", self.session(source), 11, keyframes_only)
+            "ffmpeg", self.session(source), 11)
+
+    def filters(self, command):
+        return command[command.index("-vf") + 1]
 
     @staticmethod
     def pairs(command):
@@ -139,6 +145,7 @@ class FfmpegCommandTest(unittest.TestCase):
         self.assertEqual(self.module.CAMERA_STREAM_DECODE_THREADS, 4)
         self.assertIn(["-progress", "pipe:2"], self.pairs(command[:input_at]))
         self.assertIn(["-fpsmax", "24"], self.pairs(command))
+        # No key frames only fallback (v0.7.1b7: one picture per second).
         self.assertNotIn("-skip_frame", command)
         self.assertNotIn("-fps_mode", command)
         # The encoder stays single threaded, the RTSP options stay in place.
@@ -147,13 +154,16 @@ class FfmpegCommandTest(unittest.TestCase):
                      ["-probesize", "32"], ["-analyzeduration", "0"]):
             self.assertIn(pair, self.pairs(command[:input_at]))
 
-    def test_keyframes_only_skips_the_rest_without_repeating_frames(self):
-        command = self.command(keyframes_only=True)
-        input_at = command.index("-i")
-        self.assertIn(["-skip_frame", "nokey"], self.pairs(command[:input_at]))
-        # -fpsmax implies a constant rate and would repeat every key frame.
-        self.assertNotIn("-fpsmax", command)
-        self.assertIn(["-fps_mode", "vfr"], self.pairs(command[input_at:]))
+    def test_frames_are_thinned_to_the_session_rate_before_scaling(self):
+        filters = self.filters(self.command()).split(",scale=")
+        self.assertEqual(len(filters), 2)
+        # First frame of each 1/24 s slot: 60 and 30 FPS become 24, a 10 FPS
+        # source keeps its 10 without repeated frames (checked with FFmpeg).
+        self.assertEqual(
+            filters[0],
+            "select='isnan(prev_selected_t)+gt(floor(t*24),floor(prev_selected_t*24))'")
+        self.assertIn(":flags=area", filters[1])
+        self.assertTrue(filters[1].endswith("crop=752:424,setsar=1"))
 
     def test_still_image_cameras_keep_their_command(self):
         command = self.command(source=None)
@@ -165,7 +175,8 @@ class FfmpegCommandTest(unittest.TestCase):
         ])
         self.assertNotIn("-progress", command)
         self.assertNotIn("-fpsmax", command)
-        self.assertNotIn("-skip_frame", command)
+        self.assertNotIn("select=", self.filters(command))
+        self.assertNotIn("flags=area", self.filters(command))
 
 
 class LagRestartTest(unittest.IsolatedAsyncioTestCase):
@@ -222,56 +233,30 @@ class LagRestartTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.1)
         process.progress(5, 0)
 
-    async def test_lagging_ffmpeg_restarts_live_then_falls_back_to_key_frames(self):
+    async def test_lagging_ffmpeg_restarts_live_and_keeps_the_full_stream(self):
         session = await self.manager.async_create_session("viewer", ENTITY, 752, 424, 24)
         await self.manager.async_take_session(session.token)
-        with self.assertLogs(self.module._LOGGER, "WARNING") as logs:
+        with self.assertLogs(self.module._LOGGER, "DEBUG") as logs:
             task = asyncio.create_task(self.connection._async_stream(session, None, None))
             await self.wait_for(lambda: self.processes)
-            await self.fall_behind(self.processes[0])
-            await self.wait_for(lambda: len(self.processes) == 2)
-            self.assertEqual(self.processes[0].returncode, -15)
-            self.assertNotIn("-skip_frame", self.commands[1])
-            self.assertIn("-fpsmax", self.commands[1])
-
-            await self.fall_behind(self.processes[1])
-            await self.wait_for(lambda: len(self.processes) == 3)
-            self.assertIn("-skip_frame", self.commands[2])
-            self.assertNotIn("-fpsmax", self.commands[2])
-
-            # Key frames arrive seconds apart: that is not watched as lag.
-            third = self.processes[2]
-            third.progress(1, 0)
-            await asyncio.sleep(0.1)
-            third.progress(2, 0)
-            await asyncio.sleep(0.1)
-            self.assertIsNone(third.returncode)
-            self.assertEqual(len(self.processes), 3)
-
+            for restart in range(1, 4):
+                await self.fall_behind(self.processes[restart - 1])
+                await self.wait_for(lambda restart=restart: len(self.processes) == restart + 1)
+                self.assertEqual(self.processes[restart - 1].returncode, -15)
+            # Every restart runs the same full-rate command, never key frames only.
+            self.assertTrue(all(command == self.commands[0] for command in self.commands))
+            self.assertIn("-fpsmax", self.commands[-1])
+            self.assertNotIn("-skip_frame", self.commands[-1])
             await self.manager.async_stop_device("viewer")
             await asyncio.wait_for(task, 3)
-        messages = [record.getMessage() for record in logs.records]
-        self.assertTrue(any("behind the live stream; restarting at the live position" in m
-                            for m in messages), messages)
-        self.assertTrue(any("showing key frames only until the popup closes" in m
-                            for m in messages), messages)
-        self.assertFalse(any("source ended" in m for m in messages), messages)
-
-    async def test_a_single_lag_restart_is_forgotten_after_the_window(self):
-        session = await self.manager.async_create_session("viewer", ENTITY, 752, 424, 24)
-        await self.manager.async_take_session(session.token)
-        with mock.patch.object(self.module, "CAMERA_STREAM_LAG_WINDOW_SECONDS", 0.2), \
-                self.assertLogs(self.module._LOGGER, "WARNING"):
-            task = asyncio.create_task(self.connection._async_stream(session, None, None))
-            await self.wait_for(lambda: self.processes)
-            await self.fall_behind(self.processes[0])
-            await self.wait_for(lambda: len(self.processes) == 2)
-            await asyncio.sleep(0.3)  # longer than the window
-            await self.fall_behind(self.processes[1])
-            await self.wait_for(lambda: len(self.processes) == 3)
-            self.assertNotIn("-skip_frame", self.commands[2])
-            await self.manager.async_stop_device("viewer")
-            await asyncio.wait_for(task, 3)
+        warnings = [r.getMessage() for r in logs.records if r.levelname == "WARNING"]
+        lag = [m for m in warnings if "behind the live stream; restarting at the live position" in m]
+        # One warning per popup; later restarts go to the debug log.
+        self.assertEqual(len(lag), 1, warnings)
+        self.assertIn("(1 in this popup)", lag[0])
+        debug = [r.getMessage() for r in logs.records if r.levelname == "DEBUG"]
+        self.assertTrue(any("(3 in this popup)" in m for m in debug), debug)
+        self.assertFalse(any("source ended" in m for m in warnings), warnings)
 
     async def test_ffmpeg_progress_lines_are_not_logged_as_warnings(self):
         process = FakeProcess()

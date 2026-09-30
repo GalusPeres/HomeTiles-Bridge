@@ -60,18 +60,15 @@ CAMERA_STREAM_CHUNK_BYTES: Final = 8 * 1024
 CAMERA_STREAM_HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
 CAMERA_STREAM_ACK_TIMEOUT_SECONDS: Final = 5.0
 CAMERA_STREAM_DIAGNOSTIC_INTERVAL_SECONDS: Final = 5.0
-# A direct stream is decoded on this many threads. One thread could not keep
-# up with a 1440p60 stream in a Home Assistant VM (0.9x real time). Frame
-# threading delays the output by (threads - 1) source frames.
+# A direct stream is decoded on this many threads, next to the one thread
+# that scales and encodes. A 1440p60 stream ran at 0.9x real time in a Home
+# Assistant VM with everything on one thread. Frame threading delays the
+# output by (threads - 1) source frames.
 CAMERA_STREAM_DECODE_THREADS: Final = 4
 # FFmpeg that falls this far behind a live stream is restarted at the live
 # position. Otherwise the delay keeps growing until the stream server drops
 # data for the slow reader, which smears the H.264 picture.
 CAMERA_STREAM_MAX_LAG_SECONDS: Final = 1.0
-# This many lag restarts within the window switch the popup to key frames
-# only: few pictures per second, but current and never smeared.
-CAMERA_STREAM_LAG_RESTARTS_FOR_KEYFRAMES: Final = 2
-CAMERA_STREAM_LAG_WINDOW_SECONDS: Final = 60.0
 # Keys of FFmpeg's -progress blocks on stderr (plus stream_<i>_<j>_q).
 CAMERA_FFMPEG_PROGRESS_KEYS: Final = frozenset({
   "frame", "fps", "bitrate", "total_size", "out_time_us", "out_time_ms",
@@ -1125,7 +1122,6 @@ class CameraStreamConnection:
     ffmpeg_binary: str,
     session: CameraStreamSession,
     jpeg_quality: int,
-    keyframes_only: bool = False,
   ) -> list[str]:
     """Build the FFmpeg command that turns the camera into JPEG frames."""
     command = [ffmpeg_binary, "-hide_banner", "-loglevel", "warning"]
@@ -1157,16 +1153,25 @@ class CameraStreamConnection:
           "-timeout", "5000000",
         ])
       command.extend(["-threads", str(CAMERA_STREAM_DECODE_THREADS)])
-      if keyframes_only:
-        # About twenty times less decoding work than every frame.
-        command.extend(["-skip_frame", "nokey"])
       command.extend(["-i", session.source])
     video_filters: list[str] = []
+    scale_flags = ""
+    if not image_mode:
+      # Scaling runs on one thread and was the larger part of the work: every
+      # frame of a 60 FPS source was scaled before -fpsmax dropped most of
+      # them. Keep only the first frame of each 1/fps slot first, which never
+      # repeats a frame of a slower source. The area scaler is the cheapest
+      # of the sharp ones for this large reduction.
+      video_filters.append(
+        "select='isnan(prev_selected_t)"
+        f"+gt(floor(t*{session.fps}),floor(prev_selected_t*{session.fps}))'"
+      )
+      scale_flags = ":flags=area"
     video_filters.extend([
       (
         f"scale={session.width}:{session.height}:"
         "force_original_aspect_ratio=increase:"
-        "out_color_matrix=bt601:out_range=full"
+        f"out_color_matrix=bt601:out_range=full{scale_flags}"
       ),
       f"crop={session.width}:{session.height}",
       "setsar=1",
@@ -1184,11 +1189,7 @@ class CameraStreamConnection:
       "-threads:v", "1",
       "-q:v", str(jpeg_quality),
     ])
-    if keyframes_only:
-      # -fpsmax implies a constant rate and would repeat every key frame up
-      # to it; key frames come far below the session rate anyway.
-      command.extend(["-fps_mode", "vfr"])
-    elif not image_mode:
+    if not image_mode:
       # A fixed fps filter duplicates frames when the source is slower (for
       # example 10 FPS from OBS), wasting ESP decode/display time and making
       # the on-device counter look faster than the real video. fpsmax only
@@ -1249,8 +1250,7 @@ class CameraStreamConnection:
       if image_mode and live is None
       else CAMERA_STREAM_JPEG_QUALITY
     )
-    keyframes_only = False
-    lag_restarts: list[float] = []
+    lag_restarts = 0
 
     sent = 0
     sent_frame_once = False
@@ -1284,9 +1284,7 @@ class CameraStreamConnection:
         frames_this_process = 0
         dropped_frames = 0
         lag_seconds: float | None = None
-        command = self._ffmpeg_command(
-          ffmpeg_binary, session, jpeg_quality, keyframes_only
-        )
+        command = self._ffmpeg_command(ffmpeg_binary, session, jpeg_quality)
         try:
           process = await asyncio.create_subprocess_exec(
             *command,
@@ -1308,8 +1306,7 @@ class CameraStreamConnection:
               session,
               process,
               image_mode,
-              # Key frames arrive seconds apart, which is no decoding lag.
-              watch_lag=not image_mode and not keyframes_only,
+              watch_lag=not image_mode,
             ),
             f"HomeTiles camera FFmpeg log {session.entity_id}",
           )
@@ -1408,29 +1405,16 @@ class CameraStreamConnection:
         )
         retry_delay = min(2.0, 0.25 * (2 ** reconnect_attempt))
         if lag_seconds is not None:
-          now = time.monotonic()
-          lag_restarts = [
-            restarted_at
-            for restarted_at in lag_restarts
-            if now - restarted_at < CAMERA_STREAM_LAG_WINDOW_SECONDS
-          ]
-          lag_restarts.append(now)
-          if len(lag_restarts) >= CAMERA_STREAM_LAG_RESTARTS_FOR_KEYFRAMES:
-            keyframes_only = True
-            _LOGGER.warning(
-              "HomeTiles camera %s: this host cannot decode the stream in "
-              "real time (%.1fs behind); showing key frames only until the "
-              "popup closes. A smaller camera stream avoids this.",
-              session.entity_id,
-              lag_seconds,
-            )
-          else:
-            _LOGGER.warning(
-              "HomeTiles camera %s fell %.1fs behind the live stream; "
-              "restarting at the live position",
-              session.entity_id,
-              lag_seconds,
-            )
+          lag_restarts += 1
+          # Once per popup as a warning; a host that stays too slow would
+          # otherwise repeat it every few seconds.
+          (_LOGGER.warning if lag_restarts == 1 else _LOGGER.debug)(
+            "HomeTiles camera %s fell %.1fs behind the live stream; "
+            "restarting at the live position (%d in this popup)",
+            session.entity_id,
+            lag_seconds,
+            lag_restarts,
+          )
         else:
           _LOGGER.warning(
             "HomeTiles camera source ended; reconnecting %s in %.2fs",
