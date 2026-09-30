@@ -118,6 +118,31 @@ class LagGuardTest(unittest.TestCase):
         self.assertEqual(self.guard.lag_seconds, 0.0)
 
 
+class StreamRateTest(unittest.TestCase):
+    """Firmware since b134 asks for 30 FPS and falls back to 24 on rejection."""
+
+    def setUp(self):
+        self.module = load_camera_stream_module()
+        self.validate = self.module.CameraStreamManager._validate_stream_request
+
+    def test_panels_may_ask_for_up_to_30_fps(self):
+        self.assertEqual(self.module.CAMERA_STREAM_MAX_FPS, 30)
+        self.assertEqual(self.validate(752, 424, 30), (752, 424, 30))
+        self.assertEqual(self.validate(752, 424, 24), (752, 424, 24))
+        for fps in (0, 31, 60):
+            with self.assertRaisesRegex(ValueError, "camera_invalid_stream_request"):
+                self.validate(752, 424, fps)
+
+    def test_a_request_without_a_rate_keeps_24_fps(self):
+        self.assertEqual(self.module.CAMERA_STREAM_FPS, 24)
+
+    def test_30_fps_thins_the_source_to_30(self):
+        session = types.SimpleNamespace(source=SOURCE, width=752, height=424, fps=30)
+        command = self.module.CameraStreamConnection._ffmpeg_command("ffmpeg", session, 11)
+        self.assertIn("gt(floor(t*30),floor(prev_selected_t*30))", command[command.index("-vf") + 1])
+        self.assertIn(["-fpsmax", "30"], [list(p) for p in zip(command, command[1:])])
+
+
 class FfmpegCommandTest(unittest.TestCase):
     def setUp(self):
         self.module = load_camera_stream_module()

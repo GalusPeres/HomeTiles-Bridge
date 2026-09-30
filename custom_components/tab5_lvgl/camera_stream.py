@@ -29,7 +29,12 @@ CAMERA_STREAM_TCP_PORT_FIRST: Final = 8124
 CAMERA_STREAM_TCP_PORT_LAST: Final = 8131
 CAMERA_STREAM_WIDTH: Final = 752
 CAMERA_STREAM_HEIGHT: Final = 424
+# Rate for a request without "fps" (firmware before 30 FPS asked for 24).
 CAMERA_STREAM_FPS: Final = 24
+# Highest rate a panel may ask for. Frames are thinned to the requested rate
+# before scaling, so 30 costs the Bridge little; firmware since b134 asks for
+# 30 and falls back to 24 when an older Bridge rejects it.
+CAMERA_STREAM_MAX_FPS: Final = 30
 CAMERA_STREAM_MIN_WIDTH: Final = 320
 CAMERA_STREAM_MIN_HEIGHT: Final = 180
 CAMERA_STREAM_MAX_PIXELS: Final = CAMERA_STREAM_WIDTH * CAMERA_STREAM_HEIGHT
@@ -526,7 +531,7 @@ class CameraStreamManager:
       or width * height > CAMERA_STREAM_MAX_PIXELS
       or abs(width * 9 - height * 16) > 16
       or fps < 1
-      or fps > CAMERA_STREAM_FPS
+      or fps > CAMERA_STREAM_MAX_FPS
     ):
       raise ValueError("camera_invalid_stream_request")
     return width, height, fps
