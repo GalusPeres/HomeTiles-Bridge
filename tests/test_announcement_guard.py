@@ -297,6 +297,44 @@ class AnnouncementProcessingTest(unittest.IsolatedAsyncioTestCase):
             await self.announce({"device_id": f"EVIL{index:08d}", "base_topic": f"evil{index}"})
         self.assertEqual(len(self.flows), 5)  # Five new panels per ten minutes.
 
+    def signed(self, body):
+        sig = hmac.new(bytes.fromhex(ANNOUNCE_KEY), (TOPIC + "\n" + body).encode(), hashlib.sha256).hexdigest()
+        return body[:-1] + f',"sig":"{sig}"}}'
+
+    async def test_locks_and_alarm_panels_come_only_from_a_paired_panel(self):
+        body = ('{"device_id":"A1B2C3D4E5F6","base_topic":"hometiles","ha_prefix":"ha",'
+                '"locks":["lock.front_door"],"alarm_panels":["alarm_control_panel.home"],'
+                '"fans":["fan.ceiling"]}')
+        unpaired = self.entry(device_id="A1B2C3D4E5F6", base_topic="hometiles", ha_prefix="ha")
+        await self.announce(json.loads(body), raw=body)
+        self.assertEqual(unpaired.data["fans"], ["fan.ceiling"])
+        self.assertNotIn("locks", unpaired.data)
+        self.assertNotIn("alarm_panels", unpaired.data)
+        self.entries.clear()
+        paired = self.entry(device_id="A1B2C3D4E5F6", base_topic="hometiles", ha_prefix="ha",
+                            command_pairing_key=PAIRING_KEY.hex())
+        signed = self.signed(body)
+        await self.announce(json.loads(signed), raw=signed)
+        self.assertEqual(paired.data["locks"], ["lock.front_door"])
+        self.assertEqual(paired.data["alarm_panels"], ["alarm_control_panel.home"])
+        self.assertEqual(paired.data["fans"], ["fan.ceiling"])
+
+    async def test_a_new_panel_cannot_bring_locks_into_its_card(self):
+        await self.announce({"device_id": "A1B2C3D4E5F6", "base_topic": "hometiles",
+                             "locks": ["lock.front_door"], "alarm_panels": ["alarm_control_panel.home"],
+                             "fans": ["fan.ceiling"]})
+        [flow] = self.flows
+        self.assertNotIn("locks", flow)
+        self.assertNotIn("alarm_panels", flow)
+        self.assertEqual(flow["fans"], ["fan.ceiling"])
+
+    async def test_foreign_domains_in_the_new_lists_reject_the_announcement(self):
+        self.entry(device_id="A1B2C3D4E5F6", base_topic="hometiles")
+        for key, foreign in (("locks", "switch.door"), ("alarm_panels", "lock.door"), ("fans", "light.fan")):
+            with self.assertLogs("test_announcement_guard", "WARNING"):
+                await self.announce({"device_id": "A1B2C3D4E5F6", "base_topic": "hometiles", key: [foreign]})
+        self.assertEqual(self.updates, [])
+
 
 class HistoryGateWiringTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

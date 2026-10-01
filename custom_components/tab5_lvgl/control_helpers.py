@@ -29,6 +29,9 @@ PANEL_LIST_DOMAINS = {
     "media_players": ("media_player",),
     "climates": ("climate",),
     "cameras": ("camera",),
+    "fans": ("fan",),
+    "locks": ("lock",),
+    "alarm_panels": ("alarm_control_panel",),
 }
 
 

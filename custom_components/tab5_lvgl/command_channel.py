@@ -51,7 +51,11 @@ CONF_REMOVING_KEY = "command_pairing_removing"
 CONF_LEGACY_CODE = "command_pairing_code"
 
 # Panel command topics that arrive sealed once pairing is active.
-SEALED_COMMANDS = frozenset({"scene", "light", "switch", "media", "climate", "cover", "camera", "value"})
+SEALED_COMMANDS = frozenset({
+  "scene", "light", "switch", "media", "climate", "cover", "camera", "value", "fan", "lock", "alarm",
+})
+# Commands that exist only sealed: Lock and Alarm never have a plain topic.
+SEALED_ONLY_COMMANDS = frozenset({"lock", "alarm"})
 # Bridge-to-panel messages that carry stream tokens and travel sealed.
 SEALED_DATA = frozenset({"camera", "local_camera"})
 
@@ -402,4 +406,4 @@ def status_topic(base_topic: str) -> str:
 
 
 def command_topics(base_topic: str) -> List[str]:
-  return [f"{base_topic}/cmnd/{leaf}" for leaf in sorted(SEALED_COMMANDS)]
+  return [f"{base_topic}/cmnd/{leaf}" for leaf in sorted(SEALED_COMMANDS - SEALED_ONLY_COMMANDS)]

@@ -106,7 +106,16 @@
           "scene_map_text": "Aktions-Alias",
           "numbers": "Zahlenwerte / Zahlenhelfer",
           "selects": "Auswahl / Auswahlhelfer",
-          "datetimes": "Datum / Uhrzeit / Helfer"
+          "datetimes": "Datum / Uhrzeit / Helfer",
+          "fans": "Ventilatoren",
+          "locks": "Schl\u00f6sser",
+          "alarm_panels": "Alarmanlagen",
+          "open_without_code": "Ohne Code \u00f6ffnen erlauben"
+        },
+        "data_description": {
+          "locks": "Bedienbar nur von einem gekoppelten (verschl\u00fcsselten) Display mit Web-Admin-Passwort. Den Code pr\u00fcft Home Assistant.",
+          "alarm_panels": "Bedienbar nur von einem gekoppelten (verschl\u00fcsselten) Display mit Web-Admin-Passwort. Den Code pr\u00fcft Home Assistant.",
+          "open_without_code": "Achtung: Diese Schl\u00f6sser und Alarmanlagen kann jeder am Display ohne Code entsperren, \u00f6ffnen oder unscharf schalten. Nur f\u00fcr Ger\u00e4te ohne eigenen Code oder mit Standard-Code."
         }
       },
       "energy": {

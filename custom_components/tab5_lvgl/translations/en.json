@@ -106,7 +106,16 @@
           "scene_map_text": "Action aliases",
           "numbers": "Numbers / number helpers",
           "selects": "Selects / dropdown helpers",
-          "datetimes": "Date / Time / helpers"
+          "datetimes": "Date / Time / helpers",
+          "fans": "Fans",
+          "locks": "Locks",
+          "alarm_panels": "Alarm panels",
+          "open_without_code": "Allow opening without a code"
+        },
+        "data_description": {
+          "locks": "Can only be operated from a paired (encrypted) display with a Web Admin password. Home Assistant checks the code.",
+          "alarm_panels": "Can only be operated from a paired (encrypted) display with a Web Admin password. Home Assistant checks the code.",
+          "open_without_code": "Warning: anyone at the display can unlock, open or disarm these locks and alarm panels without a code. Only for devices without their own code or with a default code."
         }
       },
       "energy": {

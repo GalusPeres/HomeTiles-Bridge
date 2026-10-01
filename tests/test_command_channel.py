@@ -496,7 +496,8 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         async def noop(*_args):
             return None
         bridge._async_setup_requests = noop
-        for leaf in ("scene", "light", "switch", "value", "media", "climate", "cover", "camera"):
+        for leaf in ("scene", "light", "switch", "value", "media", "climate", "cover", "camera",
+                     "fan", "lock", "alarm"):
             async def handler(msg, leaf=leaf):
                 self.handled.append((leaf, msg.topic, msg.payload, msg.retain))
             setattr(bridge, f"_async_handle_{leaf}_command", handler)
@@ -508,8 +509,11 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         bridge = self.make(paired=False)
         await bridge.async_setup()
         topics = set(self.mqtt.subscriptions)
-        for leaf in ("scene", "light", "switch", "value", "media", "climate", "cover", "camera"):
+        for leaf in ("scene", "light", "switch", "value", "media", "climate", "cover", "camera", "fan"):
             self.assertIn(f"{BASE}/cmnd/{leaf}", topics)
+        # Lock and Alarm commands are never accepted unencrypted.
+        self.assertNotIn(f"{BASE}/cmnd/lock", topics)
+        self.assertNotIn(f"{BASE}/cmnd/alarm", topics)
         self.assertNotIn(PANEL_TOPIC, topics)
         self.assertIn(f"{BASE}/stat/secure", topics)
         self.assertIn(PAIR_PANEL_TOPIC, topics)
@@ -547,6 +551,12 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
             payload=panel_seal(f"cmd {session} 1 light\n".encode() + b'{"entity_id":"light.kitchen"}'),
             retain=False))
         self.assertEqual(self.handled, [("light", f"{BASE}/cmnd/light", '{"entity_id":"light.kitchen"}', False)])
+        # Lock, Alarm and Fan commands arrive sealed like the others.
+        for seq, leaf in ((10, "lock"), (11, "alarm"), (12, "fan")):
+            await deliver(types.SimpleNamespace(
+                payload=panel_seal(f"cmd {session} {seq} {leaf}\n{{}}".encode()), retain=False))
+        self.assertEqual([item[0] for item in self.handled[1:]], ["lock", "alarm", "fan"])
+        del self.handled[1:]
         # Retained or replayed copies never run again.
         replay = panel_seal(f"cmd {session} 1 light\n".encode() + b'{"entity_id":"light.kitchen"}')
         await deliver(types.SimpleNamespace(payload=replay, retain=False))
@@ -614,9 +624,12 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         bridge = self.make(paired=False, removing=True)
         await bridge.async_setup()
         topics = set(self.mqtt.subscriptions)
-        # Plain commands work again while the panel is being unpaired.
-        for leaf in ("scene", "light", "switch", "value", "media", "climate", "cover", "camera"):
+        # Plain commands work again while the panel is being unpaired, but
+        # Lock and Alarm stay sealed-only (and sealed ones need an active key).
+        for leaf in ("scene", "light", "switch", "value", "media", "climate", "cover", "camera", "fan"):
             self.assertIn(f"{BASE}/cmnd/{leaf}", topics)
+        self.assertNotIn(f"{BASE}/cmnd/lock", topics)
+        self.assertNotIn(f"{BASE}/cmnd/alarm", topics)
         self.assertIn(PANEL_TOPIC, topics)
         await self.fire_timers()
         self.assertEqual(panel_open(self.mqtt.published[-1][1]), b"rekey - 0 -\n")

@@ -41,6 +41,12 @@ CONF_MEDIA_PLAYERS = "media_players"
 CONF_CLIMATES = "climates"
 CONF_COVERS = "covers"
 CONF_CAMERAS = "cameras"
+CONF_LOCKS = "locks"
+CONF_ALARM_PANELS = "alarm_panels"
+CONF_FANS = "fans"
+# Locks and alarm panels that may be unlocked, opened or disarmed from a panel
+# without a code Home Assistant checks (only settable in the Bridge options).
+CONF_OPEN_WITHOUT_CODE = "open_without_code"
 
 DEFAULT_BASE = "hometiles"
 DEFAULT_PREFIX = "ha/statestream"

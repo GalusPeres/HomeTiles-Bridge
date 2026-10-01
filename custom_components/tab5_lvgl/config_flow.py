@@ -30,6 +30,7 @@ from .const import (
   CONF_BASE_TOPIC,
   CONF_BINARY_SENSORS,
   CONF_CAMERAS,
+  CONF_ALARM_PANELS,
   CONF_CLIMATES,
   CONF_COMMAND_PAIRING_REMOVING,
   CONF_COVERS,
@@ -38,12 +39,15 @@ from .const import (
   CONF_ENERGY_ELECTRICITY,
   CONF_ENERGY_GAS,
   CONF_ENERGY_WATER,
+  CONF_FANS,
   CONF_HA_PREFIX,
   CONF_LIGHTS,
   CONF_LOCAL_IO,
+  CONF_LOCKS,
   CONF_MANUFACTURER,
   CONF_MEDIA_PLAYERS,
   CONF_MODEL,
+  CONF_OPEN_WITHOUT_CODE,
   CONF_SCENE_ENTITIES,
   CONF_SCENE_MAP,
   CONF_SCENE_MAP_TEXT,
@@ -537,6 +541,7 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
           CONF_NUMBERS, CONF_SELECTS, CONF_DATETIMES,
           CONF_CLIMATES, CONF_COVERS,
           CONF_MEDIA_PLAYERS, CONF_CAMERAS, CONF_SCENE_MAP, CONF_SCENE_MAP_TEXT,
+          CONF_FANS, CONF_LOCKS, CONF_ALARM_PANELS, CONF_OPEN_WITHOUT_CODE,
         )
         for entry in self.hass.config_entries.async_entries(DOMAIN):
           if entry.entry_id == self.config_entry.entry_id:
@@ -583,6 +588,18 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
         ),
         vol.Optional(CONF_COVERS, default=merged.get(CONF_COVERS, [])): selector.EntitySelector(
           selector.EntitySelectorConfig(domain=["cover"], multiple=True)
+        ),
+        vol.Optional(CONF_FANS, default=merged.get(CONF_FANS, [])): selector.EntitySelector(
+          selector.EntitySelectorConfig(domain=["fan"], multiple=True)
+        ),
+        vol.Optional(CONF_LOCKS, default=merged.get(CONF_LOCKS, [])): selector.EntitySelector(
+          selector.EntitySelectorConfig(domain=["lock"], multiple=True)
+        ),
+        vol.Optional(CONF_ALARM_PANELS, default=merged.get(CONF_ALARM_PANELS, [])): selector.EntitySelector(
+          selector.EntitySelectorConfig(domain=["alarm_control_panel"], multiple=True)
+        ),
+        vol.Optional(CONF_OPEN_WITHOUT_CODE, default=merged.get(CONF_OPEN_WITHOUT_CODE, [])): selector.EntitySelector(
+          selector.EntitySelectorConfig(domain=["lock", "alarm_control_panel"], multiple=True)
         ),
         vol.Optional(CONF_CAMERAS, default=merged.get(CONF_CAMERAS, [])): selector.EntitySelector(
           selector.EntitySelectorConfig(domain=["camera"], multiple=True)
@@ -674,6 +691,10 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
   all_datetimes = list(current.get(CONF_DATETIMES, []))
   all_covers = list(current.get(CONF_COVERS, []))
   all_cameras = list(current.get(CONF_CAMERAS, []))
+  all_fans = list(current.get(CONF_FANS, []))
+  all_locks = list(current.get(CONF_LOCKS, []))
+  all_alarm_panels = list(current.get(CONF_ALARM_PANELS, []))
+  all_open_without_code = list(current.get(CONF_OPEN_WITHOUT_CODE, []))
   all_scene_ids = list((current.get(CONF_SCENE_MAP) or {}).values())
   scene_map_text = current.get(CONF_SCENE_MAP_TEXT, "")
 
@@ -704,6 +725,10 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
     all_datetimes.extend(list(data.get(CONF_DATETIMES, [])))
     all_covers.extend(list(data.get(CONF_COVERS, [])))
     all_cameras.extend(list(data.get(CONF_CAMERAS, [])))
+    all_fans.extend(list(data.get(CONF_FANS, [])))
+    all_locks.extend(list(data.get(CONF_LOCKS, [])))
+    all_alarm_panels.extend(list(data.get(CONF_ALARM_PANELS, [])))
+    all_open_without_code.extend(list(data.get(CONF_OPEN_WITHOUT_CODE, [])))
     all_scene_ids.extend(list((data.get(CONF_SCENE_MAP) or {}).values()))
 
   return {
@@ -719,6 +744,10 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
     CONF_DATETIMES: _unique(all_datetimes),
     CONF_COVERS: _unique(all_covers),
     CONF_CAMERAS: _unique(all_cameras),
+    CONF_FANS: _unique(all_fans),
+    CONF_LOCKS: _unique(all_locks),
+    CONF_ALARM_PANELS: _unique(all_alarm_panels),
+    CONF_OPEN_WITHOUT_CODE: _unique(all_open_without_code),
     CONF_SCENE_ENTITIES: _unique(all_scene_ids),
     CONF_SCENE_MAP_TEXT: scene_map_text,
   }
@@ -742,6 +771,16 @@ def _convert_entity_data(user_input: Dict[str, Any], current: Dict[str, Any]) ->
   climates = _normalise_entity_list(user_input.get(CONF_CLIMATES, []))
   covers = _normalise_entity_list(user_input.get(CONF_COVERS, []))
   cameras = _normalise_entity_list(user_input.get(CONF_CAMERAS, []))
+  # Lists added after the form's first version keep their stored value when a
+  # submission does not carry them.
+  def selected(key: str, domains: tuple[str, ...]) -> list[str]:
+    values = _normalise_entity_list(user_input.get(key, current.get(key, [])))
+    return [item for item in values if entity_domain(item) in domains]
+
+  fans = selected(CONF_FANS, ("fan",))
+  locks = selected(CONF_LOCKS, ("lock",))
+  alarm_panels = selected(CONF_ALARM_PANELS, ("alarm_control_panel",))
+  open_without_code = selected(CONF_OPEN_WITHOUT_CODE, ("lock", "alarm_control_panel"))
 
   selected_scenes = _normalise_entity_list(user_input.get(CONF_SCENE_ENTITIES, []))
   scene_map_text = user_input.get(CONF_SCENE_MAP_TEXT, "").strip("\n")
@@ -763,6 +802,10 @@ def _convert_entity_data(user_input: Dict[str, Any], current: Dict[str, Any]) ->
     updated[key] = editable_selection(user_input.get(key, current.get(key, [])), domains)
   updated[CONF_COVERS] = covers
   updated[CONF_CAMERAS] = cameras
+  updated[CONF_FANS] = fans
+  updated[CONF_LOCKS] = locks
+  updated[CONF_ALARM_PANELS] = alarm_panels
+  updated[CONF_OPEN_WITHOUT_CODE] = open_without_code
   updated[CONF_SCENE_MAP] = scene_map
   updated[CONF_SCENE_MAP_TEXT] = scene_map_text
   return updated

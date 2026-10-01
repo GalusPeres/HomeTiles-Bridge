@@ -117,6 +117,7 @@ from .const import (
   CONF_BASE_TOPIC,
   CONF_BINARY_SENSORS,
   CONF_CAMERAS,
+  CONF_ALARM_PANELS,
   CONF_CLIMATES,
   CONF_COVERS,
   CONF_DEVICE_ID,
@@ -124,12 +125,15 @@ from .const import (
   CONF_ENERGY_ELECTRICITY,
   CONF_ENERGY_GAS,
   CONF_ENERGY_WATER,
+  CONF_FANS,
   CONF_HA_PREFIX,
   CONF_LIGHTS,
   CONF_LOCAL_IO,
+  CONF_LOCKS,
   CONF_MANUFACTURER,
   CONF_MEDIA_PLAYERS,
   CONF_MODEL,
+  CONF_OPEN_WITHOUT_CODE,
   CONF_SCENE_MAP,
   CONF_SENSORS,
   CONF_SWITCHES,
@@ -161,6 +165,28 @@ from .climate_helpers import (
   build_climate_service_call,
   build_climate_state_payload,
 )
+from .access_helpers import (
+  ALARM_DOMAIN,
+  COMMAND_WINDOW_S as ACCESS_COMMAND_WINDOW_S,
+  LOCK_DOMAIN,
+  STATUS_CODE_REQUIRED,
+  STATUS_FAILED,
+  STATUS_LOCKED_OUT,
+  STATUS_NOT_ALLOWED,
+  STATUS_NOT_SECURED,
+  STATUS_OK,
+  STATUS_PENDING,
+  STATUS_WRONG_CODE,
+  AccessError,
+  AnsweredAccessError,
+  CodeGuard,
+  build_access_detail,
+  classify_service_error,
+  default_code_usable,
+  parse_access_command,
+  plan_access_call,
+)
+from .fan_helpers import FAN_DOMAIN, build_fan_detail, build_fan_service_call, parse_fan_command
 from .camera_stream import (
   CAMERA_BRIDGE_PROTOCOL_VERSION,
   CAMERA_STREAM_FPS,
@@ -241,6 +267,10 @@ MEDIA_COVER_CACHE_MAX = 24
 MEDIA_COVER_THUMBNAIL_SIZE = 240
 MEDIA_COVER_WARNING_INTERVAL_SECONDS = 15 * 60
 MEDIA_COVER_WARNING_MAX_KEYS = 64
+# A Lock/Alarm service call that has not finished after this time is answered
+# "pending"; it keeps running and the panel follows the entity state.
+ACCESS_SERVICE_TIMEOUT_S = 10.0
+ACCESS_SEEN_MAX = 128
 
 
 def _is_png_payload(data: bytes) -> bool:
@@ -1124,6 +1154,12 @@ class Tab5Bridge:
     self.datetimes = editable_selection(data.get(CONF_DATETIMES, []), EDITABLE_LISTS["datetimes"])
     self.covers: List[str] = _unique_entities(list(data.get(CONF_COVERS, [])))
     self.cameras: List[str] = _unique_entities(list(data.get(CONF_CAMERAS, [])))
+    self.locks: List[str] = _unique_entities(list(data.get(CONF_LOCKS, [])))
+    self.alarm_panels: List[str] = _unique_entities(list(data.get(CONF_ALARM_PANELS, [])))
+    self.fans: List[str] = _unique_entities(list(data.get(CONF_FANS, [])))
+    # Locks and alarm panels that may be unlocked/opened/disarmed without a
+    # code Home Assistant checks (access_helpers.plan_access_call).
+    self.open_without_code: List[str] = _unique_entities(list(data.get(CONF_OPEN_WITHOUT_CODE, [])))
     self.tracked_entities: List[str] = []
     self._media_cover_cache: Dict[str, Dict[str, Any]] = {}
     self._media_cover_warning_last: Dict[Tuple[str, str], float] = {}
@@ -1163,6 +1199,10 @@ class Tab5Bridge:
     self._unsub_climate = None
     self._unsub_cover = None
     self._unsub_camera = None
+    self._unsub_fan = None
+    # Lock/Alarm command ids within their deadline (replay guard). The code
+    # guard of this panel lives in hass.data (_code_guard).
+    self._access_seen: Dict[str, float] = {}
     self._unsub_secure = None
     self._unsub_secure_status = None
     # Encrypted panel commands (command_channel.py); None keeps the plain
@@ -1257,6 +1297,10 @@ class Tab5Bridge:
     all_covers: List[str] = []
     all_cameras: List[str] = []
     all_weathers: List[str] = []
+    all_locks: List[str] = []
+    all_alarm_panels: List[str] = []
+    all_fans: List[str] = []
+    all_open_without_code: List[str] = []
     all_scene_map: Dict[str, str] = {}
     for entry in self.hass.config_entries.async_entries(DOMAIN):
       data = dict(entry.data or {})
@@ -1285,6 +1329,10 @@ class Tab5Bridge:
       all_datetimes.extend(editable_selection(data.get(CONF_DATETIMES, []), EDITABLE_LISTS["datetimes"]))
       all_covers.extend(list(data.get(CONF_COVERS, [])))
       all_cameras.extend(list(data.get(CONF_CAMERAS, [])))
+      all_locks.extend(list(data.get(CONF_LOCKS, [])))
+      all_alarm_panels.extend(list(data.get(CONF_ALARM_PANELS, [])))
+      all_fans.extend(list(data.get(CONF_FANS, [])))
+      all_open_without_code.extend(list(data.get(CONF_OPEN_WITHOUT_CODE, [])))
       all_weathers.extend(weathers)
       for alias, entity in (data.get(CONF_SCENE_MAP, {}) or {}).items():
         if alias and entity:
@@ -1302,6 +1350,12 @@ class Tab5Bridge:
       "covers": _unique_entities(all_covers),
       "cameras": _unique_entities(all_cameras),
       "weathers": _unique_entities(all_weathers),
+      "locks": [item for item in _unique_entities(all_locks) if entity_domain(item) == LOCK_DOMAIN],
+      "alarm_panels": [
+        item for item in _unique_entities(all_alarm_panels) if entity_domain(item) == ALARM_DOMAIN
+      ],
+      "fans": [item for item in _unique_entities(all_fans) if entity_domain(item) == FAN_DOMAIN],
+      "open_without_code": _unique_entities(all_open_without_code),
       "scene_map": all_scene_map,
     }
 
@@ -1329,6 +1383,10 @@ class Tab5Bridge:
     self.covers = merged["covers"]
     self.cameras = merged["cameras"]
     self.weathers = merged["weathers"]
+    self.locks = merged["locks"]
+    self.alarm_panels = merged["alarm_panels"]
+    self.fans = merged["fans"]
+    self.open_without_code = merged["open_without_code"]
     self.scene_map = dict(merged["scene_map"])
     self.tracked_entities = _unique_entities(
       self.sensors
@@ -1342,6 +1400,9 @@ class Tab5Bridge:
       + self.datetimes
       + self.covers
       + self.weathers
+      + self.locks
+      + self.alarm_panels
+      + self.fans
       + list(self.scene_map.values())
     )
     if self._runtime_setup_complete and tuple(self.tracked_entities) != previous_tracked:
@@ -1446,6 +1507,14 @@ class Tab5Bridge:
       self._async_handle_camera_command,
     )
 
+    self._unsub_fan = await mqtt.async_subscribe(
+      self.hass,
+      f"{self.base_topic}/cmnd/fan",
+      self._async_handle_fan_command,
+    )
+    # Lock and Alarm commands have no plain topic: they are accepted only
+    # sealed from a paired panel (_command_handlers, _access_secured).
+
   async def _async_setup_secure_commands(self) -> None:
     """A paired panel sends its commands only sealed on {base}/secure/panel.
 
@@ -1479,7 +1548,7 @@ class Tab5Bridge:
     self._prime_icon_cache()
 
     _LOGGER.info(
-      "Tab5 MQTT bridge ready (device=%s, base=%s, ha_prefix=%s, sensors=%d, lights=%d, switches=%d, media=%d, climate=%d, covers=%d, cameras=%d)",
+      "Tab5 MQTT bridge ready (device=%s, base=%s, ha_prefix=%s, sensors=%d, lights=%d, switches=%d, media=%d, climate=%d, covers=%d, cameras=%d, locks=%d, alarm panels=%d, fans=%d)",
       self.device_id or "n/a",
       self.base_topic,
       self.ha_prefix,
@@ -1490,6 +1559,9 @@ class Tab5Bridge:
       len(self.climates),
       len(self.covers),
       len(self.cameras),
+      len(self.locks),
+      len(self.alarm_panels),
+      len(self.fans),
     )
     if self.config_topic:
       request_topic = f"{CONFIG_TOPIC_ROOT}/{self.device_id}/bridge/request"
@@ -1568,6 +1640,9 @@ class Tab5Bridge:
     if self._unsub_camera:
       self._unsub_camera()
       self._unsub_camera = None
+    if self._unsub_fan:
+      self._unsub_fan()
+      self._unsub_fan = None
     if self._unsub_start_rekey:
       self._unsub_start_rekey()
       self._unsub_start_rekey = None
@@ -1646,6 +1721,12 @@ class Tab5Bridge:
           "editable_meta": self._build_entity_meta(self.numbers + self.selects + self.datetimes),
           CONF_CAMERAS: self.cameras,
           "camera_meta": self._build_entity_meta(self.cameras),
+          CONF_LOCKS: self.locks,
+          "lock_meta": self._build_entity_meta(self.locks),
+          CONF_ALARM_PANELS: self.alarm_panels,
+          "alarm_panel_meta": self._build_entity_meta(self.alarm_panels),
+          CONF_FANS: self.fans,
+          "fan_meta": self._build_entity_meta(self.fans),
           "scene_meta": self._build_scene_meta(),
           "scene_map": self.scene_map,
       }
@@ -1686,6 +1767,8 @@ class Tab5Bridge:
 
   async def async_publish_snapshot(self) -> None:
     """Push all configured entities to MQTT."""
+    # Lock, Alarm and Fan tiles also read the additive detail topic.
+    detail_entities = getattr(self, "locks", []) + getattr(self, "alarm_panels", []) + getattr(self, "fans", [])
     for entity_id in self.tracked_entities:
       state = self.hass.states.get(entity_id)
       if entity_id in getattr(self, "numbers", []) + getattr(self, "selects", []) + getattr(self, "datetimes", []) and not state:
@@ -1695,6 +1778,8 @@ class Tab5Bridge:
           await self._async_publish_binary_sensor_absent_state(entity_id)
         elif entity_id in self.switches:
           await self._async_publish_switch_absent_state(entity_id)
+        if entity_id in detail_entities:
+          await self._async_publish_detail_state(entity_id, None)
         continue
       await self._async_publish_entity_state(entity_id, state)
 
@@ -1718,6 +1803,235 @@ class Tab5Bridge:
     # An additive topic preserves plain state payloads consumed by old firmware.
     await mqtt.async_publish(self.hass, self._ha_topic_for_entity(entity_id, "control"),
                              payload, qos=0, retain=True)
+
+  def _has_default_code(self, entity_id: str, attributes: Any) -> bool:
+    """Whether Home Assistant would fill in a usable default code.
+
+    The default code is only compared here; it is never logged or sent.
+    """
+    registry_entry = er.async_get(self.hass).async_get(entity_id)
+    options = getattr(registry_entry, "options", None) or {}
+    domain = entity_domain(entity_id)
+    domain_options = options.get(domain) or {}
+    return default_code_usable(
+      domain, (attributes or {}).get("code_format"), domain_options.get("default_code"),
+    )
+
+  def _code_guard(self) -> CodeGuard:
+    """This panel's code guard; kept in hass.data so an entry reload cannot reset it."""
+    guards = self.hass.data.setdefault(DOMAIN, {}).setdefault("_code_guards", {})
+    guard = guards.get(self.entry.entry_id)
+    if guard is None:
+      guard = guards[self.entry.entry_id] = CodeGuard(monotonic)
+    return guard
+
+  def _detail_payload(self, entity_id: str, state: Optional[State]) -> Dict[str, Any]:
+    domain = entity_domain(entity_id)
+    value = state.state if state is not None else None
+    attributes = state.attributes if state is not None else {}
+    if domain == FAN_DOMAIN:
+      return build_fan_detail(value, attributes)
+    return build_access_detail(
+      domain, value, attributes,
+      has_default_code=self._has_default_code(entity_id, attributes),
+      allowed_without_code=entity_id in self.open_without_code,
+    )
+
+  async def _async_publish_detail_state(self, entity_id: str, state: Optional[State]) -> None:
+    """Lock, Alarm and Fan tile state on the additive retained detail topic.
+
+    The plain state topic keeps its established format for older firmware and
+    other tile types showing the same entity.
+    """
+    if not self._owns_state_publish(entity_id):
+      return
+    payload = json.dumps(
+      self._detail_payload(entity_id, state), ensure_ascii=False, separators=(",", ":"),
+    )
+    await mqtt.async_publish(
+      self.hass, self._ha_topic_for_entity(entity_id, "detail"), payload, qos=0, retain=True,
+    )
+
+  def _access_secured(self, msg: Any, command: Dict[str, Any]) -> bool:
+    """Lock and Alarm need a sealed command from a paired panel with a Web Admin password.
+
+    The panel states its password in the sealed command itself, so the claim
+    is authenticated and fresh (a retained announcement could be stale).
+    """
+    channel = self._command_channel
+    return (
+      isinstance(msg, _OpenedCommand)
+      and channel is not None
+      and not channel.removing
+      and command.get("web_auth") is True
+    )
+
+  async def _async_publish_access_result(
+    self, leaf: str, entity_id: str, command_id: str, status: str, retry_after: int = 0,
+  ) -> None:
+    result: Dict[str, Any] = {"entity_id": entity_id, "id": command_id, "status": status}
+    if retry_after > 0:
+      result["retry_after"] = int(retry_after)
+    await mqtt.async_publish(
+      self.hass, f"{self.base_topic}/stat/{leaf}",
+      json.dumps(result, separators=(",", ":")), qos=0, retain=False,
+    )
+
+  def _notify_code_lockout(self, entity_id: str, seconds: int) -> None:
+    state = self.hass.states.get(entity_id)
+    name = state.name if state is not None and state.name else entity_id
+    wait = f"{seconds} seconds" if seconds < 120 else f"{round(seconds / 60)} minutes"
+    persistent_notification.async_create(
+      self.hass,
+      f"Several wrong codes were entered for {name} on the display {self.entry.title}. "
+      f"Code entry for it is blocked there for {wait}.",
+      title="HomeTiles Bridge",
+      notification_id=f"{DOMAIN}_{self.entry.entry_id}_code_{entity_id}",
+    )
+
+  async def _async_handle_lock_command(self, msg: Any) -> None:
+    await self._async_handle_access_command(LOCK_DOMAIN, msg)
+
+  async def _async_handle_alarm_command(self, msg: Any) -> None:
+    await self._async_handle_access_command(ALARM_DOMAIN, msg)
+
+  async def _async_handle_access_command(self, domain: str, msg: Any) -> None:
+    """Run a Lock or Alarm command and answer on {base}/stat/<leaf>.
+
+    The payload may carry a code: it is never logged, stored or retained, and
+    no log line below includes the payload.
+    """
+    if getattr(msg, "retain", False):
+      return
+    leaf = "lock" if domain == LOCK_DOMAIN else "alarm"
+    now = dt_util.utcnow().timestamp()
+    try:
+      command = parse_access_command(msg.payload, now)
+    except AnsweredAccessError as err:
+      await self._async_publish_access_result(leaf, err.entity_id, err.command_id, err.status)
+      return
+    except AccessError:
+      if self._secure_log_due(f"{leaf}_malformed"):
+        _LOGGER.warning("HomeTiles %s command for %s ignored (malformed)", leaf, self.base_topic)
+      return
+    entity_id, command_id = command["entity_id"], command["id"]
+
+    self._access_seen = {key: expiry for key, expiry in self._access_seen.items() if expiry > now}
+    if command_id in self._access_seen or len(self._access_seen) >= ACCESS_SEEN_MAX:
+      return
+    self._access_seen[command_id] = now + ACCESS_COMMAND_WINDOW_S
+
+    async def answer(status: str, retry_after: int = 0) -> None:
+      await self._async_publish_access_result(leaf, entity_id, command_id, status, retry_after)
+
+    if not self._access_secured(msg, command):
+      if self._secure_log_due(f"{leaf}_not_secured"):
+        _LOGGER.warning(
+          "HomeTiles %s command for %s refused: the panel needs encryption and a Web Admin password",
+          leaf, self.base_topic,
+        )
+      await answer(STATUS_NOT_SECURED)
+      return
+    candidates = self.locks if domain == LOCK_DOMAIN else self.alarm_panels
+    if entity_id not in candidates or entity_domain(entity_id) != domain:
+      await answer(STATUS_NOT_ALLOWED)
+      return
+
+    state = self.hass.states.get(entity_id)
+    attributes = state.attributes if state is not None else {}
+    guard = self._code_guard()
+    try:
+      service, service_data = plan_access_call(
+        domain, command,
+        state.state if state is not None else None,
+        attributes,
+        has_default_code=self._has_default_code(entity_id, attributes),
+        allowed_without_code=entity_id in self.open_without_code,
+      )
+    except AccessError as err:
+      blocked = guard.retry_after(entity_id)
+      if err.status == STATUS_CODE_REQUIRED and blocked:
+        await answer(STATUS_LOCKED_OUT, blocked)
+      else:
+        await answer(err.status)
+      return
+    # Only commands carrying a code pass the guard: one at a time, at most
+    # ten per minute, and none while wrong codes keep it locked.
+    with_code = "code" in service_data
+    if with_code:
+      refused, blocked = guard.admit(entity_id)
+      if refused:
+        await answer(refused, blocked)
+        return
+
+    def outcome(task: asyncio.Future) -> str:
+      if task.cancelled():
+        return STATUS_FAILED
+      error = task.exception()
+      return STATUS_OK if error is None else classify_service_error(error)
+
+    def finished(task: asyncio.Future) -> None:
+      # Runs once per call, also after "pending" or a cancelled handler.
+      status = outcome(task)
+      if not with_code:
+        return
+      seconds = guard.finish(entity_id, status)
+      if seconds:
+        _LOGGER.warning(
+          "HomeTiles code entry for %s on %s blocked for %d s after repeated wrong codes",
+          entity_id, self.base_topic, seconds,
+        )
+        self._notify_code_lockout(entity_id, seconds)
+
+    task = self.hass.async_create_task(self.hass.services.async_call(
+      domain, service, {"entity_id": entity_id, **service_data}, blocking=True,
+    ))
+    service_data = {}
+    task.add_done_callback(finished)
+    done, _pending = await asyncio.wait({task}, timeout=ACCESS_SERVICE_TIMEOUT_S)
+    if not done:
+      status = STATUS_PENDING
+    else:
+      status = outcome(task)
+      if status == STATUS_FAILED:
+        # Only the exception type: HA messages may quote the command.
+        _LOGGER.warning(
+          "HomeTiles %s %s for %s failed (%s)", leaf, command["action"], entity_id,
+          "cancelled" if task.cancelled() else type(task.exception()).__name__,
+        )
+    retry_after = guard.retry_after(entity_id) if status == STATUS_WRONG_CODE else 0
+    _LOGGER.debug("HomeTiles %s %s for %s: %s", leaf, command["action"], entity_id, status)
+    await answer(status, retry_after)
+
+  async def _async_handle_fan_command(self, msg: Any) -> None:
+    """Execute Fan tile commands; only features the entity supports."""
+    if getattr(msg, "retain", False):
+      return
+    command = parse_fan_command(msg.payload)
+    if command is None:
+      if self._secure_log_due("fan_malformed"):
+        _LOGGER.warning("Unhandled fan command from HomeTiles (malformed)")
+      return
+    raw_entity = command.get("entity_id")
+    entity_id = self._resolve_target_entity(
+      str(raw_entity).strip() if raw_entity is not None else None, self.fans,
+    )
+    if not entity_id or entity_domain(entity_id) != FAN_DOMAIN:
+      _LOGGER.warning("Unhandled fan command from HomeTiles (unknown entity): %s", raw_entity)
+      return
+    state = self.hass.states.get(entity_id)
+    call = build_fan_service_call(
+      command,
+      state.state if state is not None else None,
+      state.attributes if state is not None else {},
+    )
+    if call is None:
+      _LOGGER.debug("Ignoring unsupported or unavailable HomeTiles fan command for %s", entity_id)
+      return
+    service, service_data = call
+    await self.hass.services.async_call(
+      FAN_DOMAIN, service, {"entity_id": entity_id, **service_data}, blocking=False,
+    )
 
   async def _async_handle_value_command(self, msg):
     if getattr(msg, "retain", False) or len(msg.payload) > 2048:
@@ -1888,6 +2202,8 @@ class Tab5Bridge:
     topic = self._ha_topic_for_entity(entity_id, "state")
     if entity_id in self.numbers + self.selects + self.datetimes:
       await self._async_publish_editable_state(entity_id, state)
+    if entity_id in getattr(self, "locks", []) + getattr(self, "alarm_panels", []) + getattr(self, "fans", []):
+      await self._async_publish_detail_state(entity_id, state)
 
     if entity_id.startswith("media_player."):
       generation = self._media_publish_generation.get(entity_id, 0) + 1
@@ -2159,6 +2475,9 @@ class Tab5Bridge:
       "climate": self._async_handle_climate_command,
       "cover": self._async_handle_cover_command,
       "camera": self._async_handle_camera_command,
+      "fan": self._async_handle_fan_command,
+      "lock": self._async_handle_lock_command,
+      "alarm": self._async_handle_alarm_command,
     }
 
   def _secure_log_due(self, reason: str, interval: float = 60.0) -> bool:
@@ -3888,6 +4207,8 @@ class Tab5Bridge:
         )
       elif entity_id in self.switches:
         self.hass.async_create_task(self._async_publish_switch_absent_state(entity_id))
+      if entity_id in getattr(self, "locks", []) + getattr(self, "alarm_panels", []) + getattr(self, "fans", []):
+        self.hass.async_create_task(self._async_publish_detail_state(entity_id, None))
       return
 
     self.hass.async_create_task(self._async_publish_entity_state(entity_id, new_state))
@@ -5495,12 +5816,13 @@ async def _async_process_bridge_config(
     # haben kann. Ohne dieses Nachtragen wuerde genau dieser Fall die bereits
     # gemachte Konfiguration beim ersten echten Connect stillschweigend
     # verwerfen, weil sonst nur der Erstell-Pfad sie uebernimmt.
+    access_keys = (CONF_LOCKS, CONF_ALARM_PANELS) if entry_pairing_key(entry) else ()
     for key in (
       CONF_SENSORS, CONF_BINARY_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES,
       CONF_MEDIA_PLAYERS, CONF_CLIMATES, CONF_COVERS, CONF_CAMERAS,
-      CONF_NUMBERS, CONF_SELECTS, CONF_DATETIMES,
+      CONF_NUMBERS, CONF_SELECTS, CONF_DATETIMES, CONF_FANS,
       CONF_SCENE_MAP,
-    ):
+    ) + access_keys:
       if should_import_feedback_selection(
         existing, cleaned_options, key, data.get(key)
       ):
@@ -5564,6 +5886,9 @@ async def _async_process_bridge_config(
     return
 
   _LOGGER.info("HomeTiles Bridge discovered device %s; waiting for confirmation", device_id)
+  # A new panel is not paired yet, so it cannot add locks or alarm panels.
+  data.pop(CONF_LOCKS, None)
+  data.pop(CONF_ALARM_PANELS, None)
   data[CONF_SENSORS] = filter_runtime_sensor_entities(
     data.get(CONF_SENSORS, []),
     _runtime_managed_sensor_entity_ids(hass, None, data),
@@ -5690,6 +6015,10 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
   switches = panel_entity_list(payload.get("switches"), CONF_SWITCHES)
   media_players = panel_entity_list(payload.get("media_players"), CONF_MEDIA_PLAYERS)
   climates = panel_entity_list(payload.get("climates"), CONF_CLIMATES)
+  fans = panel_entity_list(payload.get(CONF_FANS), CONF_FANS)
+  # Imported only from a paired panel (_async_process_bridge_config).
+  locks = panel_entity_list(payload.get(CONF_LOCKS), CONF_LOCKS)
+  alarm_panels = panel_entity_list(payload.get(CONF_ALARM_PANELS), CONF_ALARM_PANELS)
 
   covers_raw = payload.get("covers") or []
   if not isinstance(covers_raw, list):
@@ -5727,6 +6056,9 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     CONF_CLIMATES: climates,
     CONF_COVERS: covers,
     CONF_CAMERAS: cameras,
+    CONF_FANS: fans,
+    CONF_LOCKS: locks,
+    CONF_ALARM_PANELS: alarm_panels,
     CONF_SCENE_MAP: scene_map,
   }
   for key, domains in EDITABLE_LISTS.items():
