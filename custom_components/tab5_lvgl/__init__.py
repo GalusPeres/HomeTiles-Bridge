@@ -194,6 +194,7 @@ from .access_helpers import (
   plan_access_call,
 )
 from .fan_helpers import FAN_DOMAIN, build_fan_detail, build_fan_service_call, parse_fan_command
+from .media_artwork import ArtworkClearGate
 from .camera_stream import (
   CAMERA_BRIDGE_PROTOCOL_VERSION,
   CAMERA_STREAM_FPS,
@@ -1175,6 +1176,8 @@ class Tab5Bridge:
     self._media_cover_cache: Dict[str, Dict[str, Any]] = {}
     self._media_cover_warning_last: Dict[Tuple[str, str], float] = {}
     self._media_publish_generation: Dict[str, int] = {}
+    self._media_artwork_gate = ArtworkClearGate()
+    self._media_artwork_timers: Dict[str, Any] = {}
     self.scene_map: Dict[str, str] = {
       (alias or "").lower(): entity
       for alias, entity in (data.get(CONF_SCENE_MAP, {}) or {}).items()
@@ -1697,6 +1700,9 @@ class Tab5Bridge:
     if self._icon_refresh_handle:
       self._icon_refresh_handle()
       self._icon_refresh_handle = None
+    for unsub in getattr(self, "_media_artwork_timers", {}).values():
+      unsub()
+    self._media_artwork_timers = {}
 
   async def async_publish_config_to_device(self, *, force: bool = False) -> None:
     """Publish retained config when its stable metadata changed.
@@ -2232,6 +2238,7 @@ class Tab5Bridge:
   ) -> str:
     if entity_id.startswith("media_player."):
       payload = _extract_media_player_payload(state, self.hass)
+      self._gate_media_artwork(entity_id, payload)
       if include_media_cover:
         await self._async_attach_media_cover_data(entity_id, payload)
       payload_text = json.dumps(payload, default=str)
@@ -2244,6 +2251,27 @@ class Tab5Bridge:
         )
       return payload_text
     return self._build_state_payload(entity_id, state)
+
+  def _gate_media_artwork(self, entity_id: str, payload: Dict[str, Any]) -> None:
+    """Clear the panel cover only after the player stayed without artwork."""
+    due_in = self._media_artwork_gate.apply(entity_id, payload, monotonic())
+    if due_in is None:
+      unsub = self._media_artwork_timers.pop(entity_id, None)
+      if unsub:
+        unsub()
+      return
+    if entity_id in self._media_artwork_timers:
+      return
+
+    @callback
+    def _republish(_now) -> None:
+      self._media_artwork_timers.pop(entity_id, None)
+      state = self.hass.states.get(entity_id)
+      if state is not None:
+        self.hass.async_create_task(self._async_publish_entity_state(entity_id, state))
+
+    # Without a new state change nothing would publish the cleared cover.
+    self._media_artwork_timers[entity_id] = async_call_later(self.hass, due_in + 0.05, _republish)
 
   def _owns_state_publish(self, entity_id: str) -> bool:
     """Return True if this entry is responsible for publishing entity_id.
