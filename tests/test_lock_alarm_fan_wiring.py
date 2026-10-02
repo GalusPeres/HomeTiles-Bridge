@@ -127,6 +127,7 @@ class AccessWiringTest(unittest.IsolatedAsyncioTestCase):
                            "alarm_control_panel.porch"]
     bridge.fans = ["fan.ceiling"]
     bridge.open_without_code = []
+    bridge.access_codes = {}
     bridge._access_seen = {}
     bridge._secure_log_at = {}
     return bridge
@@ -250,6 +251,26 @@ class AccessWiringTest(unittest.IsolatedAsyncioTestCase):
     self.clock += 61
     self.assertEqual((await self.lock())[1]["status"], "ok")
     self.assertEqual(self.guard().retry_after("lock.front_door"), 0)
+
+  async def test_codes_in_the_bridge_are_checked_before_home_assistant(self) -> None:
+    # A device that ignores a wrong code silently (Home Assistant answers
+    # ok): with its codes in the Bridge options a wrong one never reaches
+    # Home Assistant, is reported and counts towards the lockout.
+    self.bridge.access_codes = {"lock.front_door": [CODE, "4321"]}
+    statuses = [(await self.lock(code="5555"))[1] for _ in range(5)]
+    self.assertEqual([item["status"] for item in statuses], ["wrong_code"] * 5)
+    self.assertNotIn("retry_after", statuses[3])
+    self.assertEqual(statuses[4]["retry_after"], 30)
+    self.assertEqual(self.calls, [])
+    self.assertEqual(len(self.notifications), 1)
+    self.assertEqual((await self.lock())[1]["status"], "locked_out")
+    self.clock += 31
+    self.assertEqual((await self.lock(code="4321"))[1]["status"], "ok")
+    self.assertEqual(self.calls, [("lock", "unlock", {"entity_id": "lock.front_door", "code": "4321"}, True)])
+    self.assertEqual(self.guard().retry_after("lock.front_door"), 0)
+    # A device without codes in the Bridge keeps the check of Home Assistant.
+    self.bridge.access_codes = {}
+    self.assertEqual((await self.lock(code="5555"))[1]["status"], "ok")
 
   async def test_a_command_without_code_does_not_lift_the_lockout(self) -> None:
     async def reject_disarm():
@@ -457,6 +478,14 @@ class ConfigFlowTest(unittest.TestCase):
     hass = types.SimpleNamespace(config_entries=types.SimpleNamespace(async_entries=lambda domain: entries))
     merged = scope["_merge_all_entities"](hass, {"_entry_id": "a", **updated})
     self.assertEqual(merged["locks"], ["lock.door", "lock.back"])
+
+  def test_translations_explain_the_codes_the_bridge_checks(self) -> None:
+    for filename in ("strings.json", "translations/de.json", "translations/en.json"):
+      options = json.loads((ROOT / filename).read_text(encoding="utf-8"))["options"]
+      self.assertTrue(options["step"]["init"]["menu_options"]["access_codes"].strip(), filename)
+      self.assertTrue(options["step"]["access_codes"]["description"].strip(), filename)
+      self.assertTrue(options["error"]["invalid_access_codes"].strip(), filename)
+      self.assertTrue(options["abort"]["no_access_entities"].strip(), filename)
 
   def test_translations_name_the_lists_and_warn_about_opening_without_code(self) -> None:
     for filename in ("strings.json", "translations/de.json", "translations/en.json"):

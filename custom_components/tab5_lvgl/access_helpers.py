@@ -15,10 +15,11 @@ Assistant PIN rules):
 
 from __future__ import annotations
 
+import hmac
 import json
 import math
 import re
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 LOCK_DOMAIN = "lock"
 ALARM_DOMAIN = "alarm_control_panel"
@@ -77,6 +78,42 @@ _UNAVAILABLE = (None, "unavailable")
 LOCKOUT_FREE_ATTEMPTS = 5
 LOCKOUT_FIRST_S = 30.0
 LOCKOUT_MAX_S = 3600.0
+
+
+# Codes the Bridge itself checks per lock or alarm panel (CONF_ACCESS_CODES):
+# at most this many per device, separated by commas, semicolons or spaces.
+MAX_ACCESS_CODES = 10
+_ACCESS_CODE_SEPARATORS = re.compile(r"[\s,;]+")
+
+
+def parse_access_codes(value: Any) -> List[str]:
+  """The codes of one device from the options text; ValueError for a bad one.
+
+  Codes follow the panel's own limits (parse_access_command): printable, at
+  most MAX_CODE_LENGTH characters. Repeats are dropped.
+  """
+  if value is None:
+    return []
+  if not isinstance(value, str):
+    raise ValueError("codes must be text")
+  codes = [code for code in _ACCESS_CODE_SEPARATORS.split(value.strip()) if code]
+  if len(codes) > MAX_ACCESS_CODES:
+    raise ValueError("too many codes")
+  for code in codes:
+    if not 1 <= len(code) <= MAX_CODE_LENGTH or not code.isprintable():
+      raise ValueError("unusable code")
+  return list(dict.fromkeys(codes))
+
+
+def access_code_matches(code: Any, known: Sequence[str]) -> bool:
+  """Whether code is one of the known codes; every one is compared in full."""
+  if not isinstance(code, str) or not code:
+    return False
+  given = code.encode("utf-8")
+  matched = False
+  for entry in known:
+    matched |= hmac.compare_digest(given, str(entry).encode("utf-8"))
+  return matched
 
 
 class AccessError(Exception):

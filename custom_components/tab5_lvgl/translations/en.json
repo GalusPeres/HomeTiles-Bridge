@@ -75,6 +75,7 @@
         "menu_options": {
           "panel": "Panel settings",
           "entities": "Entity configuration (all displays)",
+          "access_codes": "Codes for locks and alarm panels (all displays)",
           "energy": "Energy Dashboard (all displays)",
           "security": "Security: {security}"
         }
@@ -113,10 +114,14 @@
           "open_without_code": "Allow opening without a code"
         },
         "data_description": {
-          "locks": "Can only be operated from a paired (encrypted) display with a Web Admin password. Home Assistant checks the code.",
-          "alarm_panels": "Can only be operated from a paired (encrypted) display with a Web Admin password. Home Assistant checks the code.",
+          "locks": "Can only be operated from a paired (encrypted) display with a Web Admin password. Home Assistant checks the code, or the Bridge when one is set under “Codes for locks and alarm panels”.",
+          "alarm_panels": "Can only be operated from a paired (encrypted) display with a Web Admin password. Home Assistant checks the code, or the Bridge when one is set under “Codes for locks and alarm panels”.",
           "open_without_code": "Warning: anyone at the display can unlock, open or disarm these locks and alarm panels without a code. Only for devices without their own code or with a default code."
         }
+      },
+      "access_codes": {
+        "title": "Codes for locks and alarm panels",
+        "description": "Optional. Many devices ignore a wrong code without reporting an error: Home Assistant then reports success, and the display can show neither “wrong code” nor the lockout after several wrong codes. With a code here, the Bridge checks every code from a display itself and passes only a correct one on to Home Assistant. Separate several codes with commas. Leave it empty when Home Assistant already reports a wrong code. When the code on the device changes, change it here too."
       },
       "energy": {
         "title": "Energy Dashboard",
@@ -138,12 +143,14 @@
     "error": {
       "invalid_scene_map": "Aliases must follow the pattern alias=entity_id (one per line).",
       "invalid_editable_entities": "Choose compatible Number, Select or Date/Time entities.",
-      "pairing_nothing_selected": "Nothing changed. Tick the box to turn encryption off."
+      "pairing_nothing_selected": "Nothing changed. Tick the box to turn encryption off.",
+      "invalid_access_codes": "Up to 10 codes separated by commas, each at most 32 characters."
     },
     "abort": {
       "pairing_removed": "Encryption turned off. The display turns it off too when it connects.",
       "pairing_not_paired": "Not encrypted. To set it up, choose Settings → System → Security → Encrypt on the display.",
-      "pairing_removing": "Encryption is turning off. The display turns it off when it connects."
+      "pairing_removing": "Encryption is turning off. The display turns it off when it connects.",
+      "no_access_entities": "First select locks or alarm panels under “Entity configuration”."
     }
   },
   "entity": {

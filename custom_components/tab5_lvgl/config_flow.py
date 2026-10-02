@@ -19,6 +19,7 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import get_url
 
+from .access_helpers import parse_access_codes
 from .binary_sensor_helpers import split_binary_sensor_entities
 from .panel_auth import ERROR_CANNOT_CONNECT, async_push_credentials
 from .capabilities import CAPABILITIES
@@ -27,6 +28,7 @@ from .control_helpers import ACTION_DOMAINS, SWITCH_DOMAINS, build_action_map, e
 from .editable_helpers import (EDITABLE_LISTS, EDITABLE_DOMAINS, NUMBER_DOMAINS, SELECT_DOMAINS, DATETIME_DOMAINS, editable_selection, domain_of, build_editable_payload, build_editable_service_call, add_number_history, MAX_CONTROL_BYTES)
 from .const import (
   CONF_NUMBERS, CONF_SELECTS, CONF_DATETIMES,
+  CONF_ACCESS_CODES,
   CONF_BASE_TOPIC,
   CONF_BINARY_SENSORS,
   CONF_CAMERAS,
@@ -446,7 +448,7 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
   async def async_step_init(self, user_input: Dict[str, Any] | None = None):
     return self.async_show_menu(
       step_id="init",
-      menu_options=["panel", "entities", "energy", "security"],
+      menu_options=["panel", "entities", "access_codes", "energy", "security"],
       description_placeholders={"security": _security_state(self.hass, self.config_entry)},
     )
 
@@ -613,6 +615,49 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
       }),
       errors=errors,
     )
+
+  # ---- Codes the Bridge checks for locks and alarm panels ----
+
+  async def async_step_access_codes(self, user_input: Dict[str, Any] | None = None):
+    """One masked field per offered lock and alarm panel (all displays).
+
+    A filled field makes the Bridge check every code from a panel itself
+    before Home Assistant gets the command: for devices that ignore a wrong
+    code silently, so "wrong code" and the lockout work there too. An empty
+    field leaves the check to Home Assistant and the device.
+    """
+    current = dict(self.config_entry.data)
+    merged = _merge_all_entities(self.hass, current)
+    entities = _unique(list(merged.get(CONF_LOCKS, [])) + list(merged.get(CONF_ALARM_PANELS, [])))
+    if not entities:
+      return self.async_abort(reason="no_access_entities")
+    stored = dict(current.get(CONF_ACCESS_CODES) or {})
+    errors: Dict[str, str] = {}
+    if user_input is not None:
+      codes: Dict[str, str] = {}
+      for entity_id in entities:
+        try:
+          parsed = parse_access_codes(user_input.get(entity_id))
+        except ValueError:
+          errors[entity_id] = "invalid_access_codes"
+          continue
+        if parsed:
+          codes[entity_id] = ",".join(parsed)
+      if not errors:
+        # Shared by all displays like the entity selection.
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+          other = dict(entry.data or {})
+          other[CONF_ACCESS_CODES] = codes
+          self.hass.config_entries.async_update_entry(entry, data=other)
+        return self.async_create_entry(title="", data={})
+      stored = {key: value for key, value in (user_input or {}).items() if isinstance(value, str)}
+    schema: Dict[Any, Any] = {}
+    for entity_id in entities:
+      # suggested_value, not default: a cleared field must stay empty.
+      schema[vol.Optional(entity_id, description={"suggested_value": stored.get(entity_id, "")})] = (
+        selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD))
+      )
+    return self.async_show_form(step_id="access_codes", data_schema=vol.Schema(schema), errors=errors)
 
   # ---- Section 3: Energy Dashboard ----
 

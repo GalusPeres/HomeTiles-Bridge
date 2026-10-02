@@ -47,6 +47,11 @@ CONF_FANS = "fans"
 # Locks and alarm panels that may be unlocked, opened or disarmed from a panel
 # without a code Home Assistant checks (only settable in the Bridge options).
 CONF_OPEN_WITHOUT_CODE = "open_without_code"
+# Codes the Bridge itself checks for a lock or alarm panel, entity_id ->
+# "1234,5678" (Bridge options): for devices that ignore a wrong code without
+# an error, so Home Assistant answers ok and the panel could show neither
+# "wrong code" nor the lockout.
+CONF_ACCESS_CODES = "access_codes"
 
 DEFAULT_BASE = "hometiles"
 DEFAULT_PREFIX = "ha/statestream"

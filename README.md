@@ -13,7 +13,7 @@ This integration is the Home Assistant companion for the **HomeTiles** firmware.
 - Weather forecasts (daily, twice-daily day/night periods, and hourly)
 - Energy dashboard data (consumption, solar, grid, battery, gas, water)
 - Light, switch, cover, climate, media player, fan and scene control from the display
-- Lock and alarm panel control from encrypted displays, with codes checked by Home Assistant
+- Lock and alarm panel control from encrypted displays, with codes checked by Home Assistant or, for devices that ignore wrong codes, by the Bridge
 - Experimental camera popups with local, receiver-paced JPEG video transport
 - Auto-discovery of integration-owned sensors and device-announced local I/O
 
@@ -91,8 +91,9 @@ Locks and alarm panels follow the rules of Home Assistant's own Google Assistant
 
 - They can only be operated from a display that is encrypted (paired) and has a Web Admin password; the display confirms the password in every encrypted command. Their commands are accepted only encrypted; there is no plain `cmnd` topic for them.
 - Home Assistant checks every code, exactly as when it is typed in the Home Assistant UI. Locking and arming need a code when the entity requires one; unlocking, opening and disarming always need the entity's code.
+- Many devices ignore a wrong code without an error, so Home Assistant reports success and a display could show neither "wrong code" nor the lockout. For them, enter their codes under **Codes for locks and alarm panels** (comma separated, up to ten per device): the Bridge then checks every code from a display itself, answers a wrong one with `wrong_code` and counts it towards the lockout, and passes only a correct one on to Home Assistant. Leave the field empty for devices whose wrong codes Home Assistant reports. When the code on the device changes, change it there too.
 - A lock or alarm panel without its own code, or with a default code, can only be unlocked, opened or disarmed without typing a code when it is listed under **Allow opening without a code**. Anyone at the display can then do so.
-- The Bridge never logs, stores or retains a code. Per entity and display, one command with a code runs at a time and at most ten per minute. After five wrong codes, code entry is blocked for 30 seconds, doubling with every further wrong code up to one hour, and Home Assistant shows a notification. Only a correct code ends the block early.
+- The Bridge never logs or retains a code; it stores only the codes entered under **Codes for locks and alarm panels**, in its Home Assistant configuration. Per entity and display, one command with a code runs at a time and at most ten per minute. After five wrong codes, code entry is blocked for 30 seconds, doubling with every further wrong code up to one hour, and Home Assistant shows a notification. Only a correct code ends the block early.
 - Arming modes follow the entity's supported features; triggering the alarm is not offered.
 
 Fan tiles control on/off, speed, preset, oscillation and direction, each only when the entity supports it. Fans also remain selectable as switchable entities.

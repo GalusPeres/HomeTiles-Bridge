@@ -134,6 +134,7 @@ from .const import (
   CONF_MEDIA_PLAYERS,
   CONF_MODEL,
   CONF_OPEN_WITHOUT_CODE,
+  CONF_ACCESS_CODES,
   CONF_SCENE_MAP,
   CONF_SENSORS,
   CONF_SWITCHES,
@@ -180,9 +181,11 @@ from .access_helpers import (
   AccessError,
   AnsweredAccessError,
   CodeGuard,
+  access_code_matches,
   build_access_detail,
   classify_service_error,
   default_code_usable,
+  parse_access_codes,
   parse_access_command,
   plan_access_call,
 )
@@ -1160,6 +1163,8 @@ class Tab5Bridge:
     # Locks and alarm panels that may be unlocked/opened/disarmed without a
     # code Home Assistant checks (access_helpers.plan_access_call).
     self.open_without_code: List[str] = _unique_entities(list(data.get(CONF_OPEN_WITHOUT_CODE, [])))
+    # Codes the Bridge checks itself per lock or alarm panel (options).
+    self.access_codes: Dict[str, List[str]] = _access_codes_of(data)
     self.tracked_entities: List[str] = []
     self._media_cover_cache: Dict[str, Dict[str, Any]] = {}
     self._media_cover_warning_last: Dict[Tuple[str, str], float] = {}
@@ -1301,6 +1306,7 @@ class Tab5Bridge:
     all_alarm_panels: List[str] = []
     all_fans: List[str] = []
     all_open_without_code: List[str] = []
+    all_access_codes: Dict[str, List[str]] = {}
     all_scene_map: Dict[str, str] = {}
     for entry in self.hass.config_entries.async_entries(DOMAIN):
       data = dict(entry.data or {})
@@ -1333,6 +1339,8 @@ class Tab5Bridge:
       all_alarm_panels.extend(list(data.get(CONF_ALARM_PANELS, [])))
       all_fans.extend(list(data.get(CONF_FANS, [])))
       all_open_without_code.extend(list(data.get(CONF_OPEN_WITHOUT_CODE, [])))
+      for entity_id, codes in _access_codes_of(data).items():
+        all_access_codes.setdefault(entity_id, codes)
       all_weathers.extend(weathers)
       for alias, entity in (data.get(CONF_SCENE_MAP, {}) or {}).items():
         if alias and entity:
@@ -1356,6 +1364,7 @@ class Tab5Bridge:
       ],
       "fans": [item for item in _unique_entities(all_fans) if entity_domain(item) == FAN_DOMAIN],
       "open_without_code": _unique_entities(all_open_without_code),
+      "access_codes": all_access_codes,
       "scene_map": all_scene_map,
     }
 
@@ -1387,6 +1396,7 @@ class Tab5Bridge:
     self.alarm_panels = merged["alarm_panels"]
     self.fans = merged["fans"]
     self.open_without_code = merged["open_without_code"]
+    self.access_codes = merged["access_codes"]
     self.scene_map = dict(merged["scene_map"])
     self.tracked_entities = _unique_entities(
       self.sensors
@@ -1958,10 +1968,30 @@ class Tab5Bridge:
     # Only commands carrying a code pass the guard: one at a time, at most
     # ten per minute, and none while wrong codes keep it locked.
     with_code = "code" in service_data
+
+    def lockout_started(seconds: int) -> None:
+      if not seconds:
+        return
+      _LOGGER.warning(
+        "HomeTiles code entry for %s on %s blocked for %d s after repeated wrong codes",
+        entity_id, self.base_topic, seconds,
+      )
+      self._notify_code_lockout(entity_id, seconds)
+
     if with_code:
       refused, blocked = guard.admit(entity_id)
       if refused:
         await answer(refused, blocked)
+        return
+      # A device with codes in the Bridge options gets only those: many
+      # devices ignore a wrong code without an error, Home Assistant answers
+      # ok, and neither "wrong code" nor the lockout could reach the panel.
+      known = self.access_codes.get(entity_id)
+      if known and not access_code_matches(service_data.get("code"), known):
+        service_data = {}
+        lockout_started(guard.finish(entity_id, STATUS_WRONG_CODE))
+        _LOGGER.debug("HomeTiles %s %s for %s: wrong code (Bridge)", leaf, command["action"], entity_id)
+        await answer(STATUS_WRONG_CODE, guard.retry_after(entity_id))
         return
 
     def outcome(task: asyncio.Future) -> str:
@@ -1975,13 +2005,7 @@ class Tab5Bridge:
       status = outcome(task)
       if not with_code:
         return
-      seconds = guard.finish(entity_id, status)
-      if seconds:
-        _LOGGER.warning(
-          "HomeTiles code entry for %s on %s blocked for %d s after repeated wrong codes",
-          entity_id, self.base_topic, seconds,
-        )
-        self._notify_code_lockout(entity_id, seconds)
+      lockout_started(guard.finish(entity_id, status))
 
     task = self.hass.async_create_task(self.hass.services.async_call(
       domain, service, {"entity_id": entity_id, **service_data}, blocking=True,
@@ -4983,6 +5007,28 @@ class Tab5Bridge:
       entries = [e for e in entries if e["category"] in categories]
 
     return entries
+
+
+def _access_codes_of(data: Dict[str, Any]) -> Dict[str, List[str]]:
+  """CONF_ACCESS_CODES of one config entry: entity_id -> codes.
+
+  Entries a newer or edited configuration made unusable are skipped, so a
+  broken entry falls back to the check of Home Assistant and the device.
+  """
+  result: Dict[str, List[str]] = {}
+  raw = data.get(CONF_ACCESS_CODES)
+  if not isinstance(raw, dict):
+    return result
+  for entity_id, text in raw.items():
+    if not isinstance(entity_id, str):
+      continue
+    try:
+      codes = parse_access_codes(text)
+    except ValueError:
+      continue
+    if codes:
+      result[entity_id] = codes
+  return result
 
 
 def _unique_entities(entities: List[str]) -> List[str]:

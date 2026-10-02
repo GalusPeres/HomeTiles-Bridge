@@ -55,6 +55,24 @@ class FeatureValuesTest(unittest.TestCase):
     self.assertEqual(caught.exception.status, "not_allowed")
 
 
+class AccessCodesTest(unittest.TestCase):
+  """Codes the Bridge itself checks for devices that ignore wrong codes."""
+
+  def test_codes_are_split_cleaned_and_limited(self) -> None:
+    self.assertEqual(ACCESS.parse_access_codes(" 1234, 5678;1234 \n 9 "), ["1234", "5678", "9"])
+    self.assertEqual(ACCESS.parse_access_codes(""), [])
+    self.assertEqual(ACCESS.parse_access_codes(None), [])
+    for bad in (5, "x" * 33, ",".join(str(i) for i in range(11)), "12\x0034"):
+      with self.assertRaises(ValueError, msg=repr(bad)):
+        ACCESS.parse_access_codes(bad)
+
+  def test_only_a_known_code_matches(self) -> None:
+    self.assertTrue(ACCESS.access_code_matches("5678", ["1234", "5678"]))
+    for wrong in ("567", "56789", "", None, 5678):
+      self.assertFalse(ACCESS.access_code_matches(wrong, ["1234", "5678"]), repr(wrong))
+    self.assertFalse(ACCESS.access_code_matches("1234", []))
+
+
 class CodeFormatTest(unittest.TestCase):
   def test_lock_regex_is_classified_like_home_assistant_matches_it(self) -> None:
     self.assertEqual(ACCESS.lock_code_format(r"^\d{4}$"), "number")

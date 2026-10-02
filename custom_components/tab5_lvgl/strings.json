@@ -75,6 +75,7 @@
         "menu_options": {
           "panel": "Panel-Einstellungen",
           "entities": "Entity-Konfiguration (alle Displays)",
+          "access_codes": "Codes f\u00fcr Schl\u00f6sser und Alarmanlagen (alle Displays)",
           "energy": "Energie Dashboard (alle Displays)",
           "security": "Sicherheit: {security}"
         }
@@ -113,10 +114,14 @@
           "open_without_code": "Ohne Code \u00f6ffnen erlauben"
         },
         "data_description": {
-          "locks": "Bedienbar nur von einem gekoppelten (verschl\u00fcsselten) Display mit Web-Admin-Passwort. Den Code pr\u00fcft Home Assistant.",
-          "alarm_panels": "Bedienbar nur von einem gekoppelten (verschl\u00fcsselten) Display mit Web-Admin-Passwort. Den Code pr\u00fcft Home Assistant.",
+          "locks": "Bedienbar nur von einem gekoppelten (verschl\u00fcsselten) Display mit Web-Admin-Passwort. Den Code pr\u00fcft Home Assistant oder, wenn unter \u201eCodes f\u00fcr Schl\u00f6sser und Alarmanlagen\u201c einer hinterlegt ist, die Bridge.",
+          "alarm_panels": "Bedienbar nur von einem gekoppelten (verschl\u00fcsselten) Display mit Web-Admin-Passwort. Den Code pr\u00fcft Home Assistant oder, wenn unter \u201eCodes f\u00fcr Schl\u00f6sser und Alarmanlagen\u201c einer hinterlegt ist, die Bridge.",
           "open_without_code": "Achtung: Diese Schl\u00f6sser und Alarmanlagen kann jeder am Display ohne Code entsperren, \u00f6ffnen oder unscharf schalten. Nur f\u00fcr Ger\u00e4te ohne eigenen Code oder mit Standard-Code."
         }
+      },
+      "access_codes": {
+        "title": "Codes f\u00fcr Schl\u00f6sser und Alarmanlagen",
+        "description": "Optional. Viele Ger\u00e4te ignorieren einen falschen Code, ohne einen Fehler zu melden: Home Assistant meldet dann Erfolg, und das Display kann weder \u201eFalscher Code\u201c noch die Sperre nach mehreren Fehlversuchen zeigen. Steht hier ein Code, pr\u00fcft die Bridge jeden Code vom Display selbst und gibt nur einen richtigen an Home Assistant weiter. Mehrere Codes mit Komma trennen. Leer lassen, wenn Home Assistant einen falschen Code schon meldet. \u00c4ndert sich der Code am Ger\u00e4t, hier ebenfalls \u00e4ndern."
       },
       "energy": {
         "title": "Energie Dashboard",
@@ -138,12 +143,14 @@
     "error": {
       "invalid_scene_map": "Alias muss dem Muster alias=entity_id folgen (eine Zeile pro Alias).",
       "invalid_editable_entities": "Bitte passende Zahlen-, Auswahl- oder Datum-/Uhrzeit-Entit\u00e4ten ausw\u00e4hlen.",
-      "pairing_nothing_selected": "Nichts ge\u00e4ndert. Zum Ausschalten das H\u00e4kchen setzen."
+      "pairing_nothing_selected": "Nichts ge\u00e4ndert. Zum Ausschalten das H\u00e4kchen setzen.",
+      "invalid_access_codes": "Bis zu 10 Codes mit Komma getrennt, jeder h\u00f6chstens 32 Zeichen."
     },
     "abort": {
       "pairing_removed": "Verschl\u00fcsselung ausgeschaltet. Das Display schaltet sie beim Verbinden auch aus.",
       "pairing_not_paired": "Nicht verschl\u00fcsselt. Zum Einrichten am Display Einstellungen \u2192 System \u2192 Sicherheit \u2192 Verschl\u00fcsseln w\u00e4hlen.",
-      "pairing_removing": "Verschl\u00fcsselung wird ausgeschaltet. Das Display schaltet sie beim Verbinden aus."
+      "pairing_removing": "Verschl\u00fcsselung wird ausgeschaltet. Das Display schaltet sie beim Verbinden aus.",
+      "no_access_entities": "Zuerst unter \u201eEntity-Konfiguration\u201c Schl\u00f6sser oder Alarmanlagen ausw\u00e4hlen."
     }
   },
   "entity": {
