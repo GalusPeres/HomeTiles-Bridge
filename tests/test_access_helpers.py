@@ -265,8 +265,19 @@ class ServiceErrorTest(unittest.TestCase):
       _HAError("Invalid alarm code provided"),
       _HAError("Wrong PIN"),
       _HAError("The code is incorrect"),
+      # Total Connect and Elmax (Home Assistant core, strings.json).
+      _HAError("Usercode is invalid, did not arm away", "arm_away_invalid_code"),
+      _HAError("Usercode is invalid, did not disarm"),
+      _HAError("Invalid disarm code provided.", "invalid_disarm_code"),
+      _HAError("The provided PIN is invalid", "invalid_pin"),
+      # Alarmo answers with an event; the Bridge raises this for it.
+      ACCESS.AlarmoRejected("invalid_code"),
     ):
       self.assertEqual(ACCESS.classify_service_error(error), "wrong_code", str(error))
+
+  def test_alarmo_refusals_other_than_the_code_are_failures(self) -> None:
+    for reason in ("open_sensors", "not_allowed", ""):
+      self.assertEqual(ACCESS.classify_service_error(ACCESS.AlarmoRejected(reason)), "failed", reason)
 
   def test_other_errors(self) -> None:
     self.assertEqual(ACCESS.classify_service_error(_HAError("", "code_arm_required")), "code_required")

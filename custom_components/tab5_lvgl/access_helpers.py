@@ -297,13 +297,35 @@ def plan_access_call(domain: str, command: Mapping[str, Any], state: Optional[st
 # Translation keys and texts Home Assistant and its alarm/lock integrations
 # use for a rejected code. Only these count towards the lockout; a text such
 # as "invalid response code" must not.
-_WRONG_CODE_KEYS = frozenset({"invalid_code", "add_default_code", "invalid_alarm_code", "wrong_code"})
+_WRONG_CODE_KEYS = frozenset({
+  "invalid_code", "add_default_code", "invalid_alarm_code", "wrong_code",
+  # Elmax ("Invalid disarm code provided.", "The provided PIN is invalid"),
+  # Total Connect ("Usercode is invalid ...", also as <action>_invalid_code).
+  "invalid_disarm_code", "invalid_pin",
+})
 _WRONG_CODE_TEXT = re.compile(
-  r"\b(invalid|incorrect|wrong|bad)\s+((alarm|lock|user|access|pin)\s+)?(code|pin)\b"
-  r"|\b(code|pin)\s+(is\s+)?(invalid|incorrect|wrong)\b"
+  r"\b(invalid|incorrect|wrong|bad)\s+((alarm|lock|user|access|pin|disarm|arm)\s+)?(code|pin)\b"
+  r"|\b(user)?(code|pin)\s+(is\s+)?(invalid|incorrect|wrong)\b"
   r"|\b(doesn't|does not) match pattern\b",
   re.IGNORECASE,
 )
+
+# Alarmo (custom integration) answers a wrong code with an event instead of
+# an error, right after its service returns: alarmo_failed_to_arm with
+# reason "invalid_code" (also "open_sensors", "not_allowed"), or
+# alarmo_command_success.
+ALARMO_PLATFORM = "alarmo"
+ALARMO_EVENT_SUCCESS = "alarmo_command_success"
+ALARMO_EVENT_FAILED = "alarmo_failed_to_arm"
+
+
+class AlarmoRejected(Exception):
+  """Alarmo refused a command; raised like the error of other integrations."""
+
+  def __init__(self, reason: str) -> None:
+    super().__init__(f"Alarmo refused the command ({reason or 'no reason'})")
+    self.reason = reason
+    self.translation_key = "invalid_code" if reason == "invalid_code" else None
 
 
 def classify_service_error(error: BaseException) -> str:
@@ -311,7 +333,8 @@ def classify_service_error(error: BaseException) -> str:
   key = getattr(error, "translation_key", None)
   if key == "code_arm_required":
     return STATUS_CODE_REQUIRED
-  if key in _WRONG_CODE_KEYS or _WRONG_CODE_TEXT.search(str(error) or ""):
+  if (key in _WRONG_CODE_KEYS or (isinstance(key, str) and key.endswith("_invalid_code"))
+      or _WRONG_CODE_TEXT.search(str(error) or "")):
     return STATUS_WRONG_CODE
   return STATUS_FAILED
 

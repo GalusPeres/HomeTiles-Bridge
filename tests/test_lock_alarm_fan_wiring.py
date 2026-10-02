@@ -24,7 +24,7 @@ METHODS = {
   "_access_secured", "_async_publish_access_result", "_notify_code_lockout",
   "_async_handle_lock_command", "_async_handle_alarm_command", "_async_handle_access_command",
   "_async_handle_fan_command", "_resolve_target_entity", "_secure_log_due", "_owns_state_publish",
-  "_ha_topic_for_entity",
+  "_ha_topic_for_entity", "_async_call_access_service",
 }
 
 
@@ -76,8 +76,14 @@ class AccessWiringTest(unittest.IsolatedAsyncioTestCase):
     def notify(hass, message, title=None, notification_id=None):
       self.notifications.append((notification_id, message))
 
+    self.registry_platforms: dict[str, str] = {}
     registry = types.SimpleNamespace(async_get=lambda entity_id: types.SimpleNamespace(
-      options=self.registry_options.get(entity_id, {})))
+      options=self.registry_options.get(entity_id, {}), platform=self.registry_platforms.get(entity_id)))
+    self.bus_listeners: dict[str, list] = {}
+
+    def listen(event_type, handler):
+      self.bus_listeners.setdefault(event_type, []).append(handler)
+      return lambda: self.bus_listeners[event_type].remove(handler)
     self.records = _Records()
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(logging.DEBUG)
@@ -90,6 +96,8 @@ class AccessWiringTest(unittest.IsolatedAsyncioTestCase):
     scope.update({
       "ACCESS_COMMAND_WINDOW_S": ACCESS.COMMAND_WINDOW_S,
       "ACCESS_SERVICE_TIMEOUT_S": 0.05,
+      "ALARMO_EVENT_WAIT_S": 0.01,
+      "callback": lambda function: function,
       "ACCESS_SEEN_MAX": 128,
       "DOMAIN": "tab5_lvgl",
       "asyncio": asyncio,
@@ -110,6 +118,7 @@ class AccessWiringTest(unittest.IsolatedAsyncioTestCase):
       data={"tab5_lvgl": {}},
       states=types.SimpleNamespace(get=lambda entity_id: self.states.get(entity_id)),
       services=types.SimpleNamespace(async_call=call),
+      bus=types.SimpleNamespace(async_listen=listen),
       async_create_task=lambda coro: asyncio.ensure_future(coro),
     )
     self.bridge = self.make_bridge()
@@ -271,6 +280,57 @@ class AccessWiringTest(unittest.IsolatedAsyncioTestCase):
     # A device without codes in the Bridge keeps the check of Home Assistant.
     self.bridge.access_codes = {}
     self.assertEqual((await self.lock(code="5555"))[1]["status"], "ok")
+
+  def fire(self, event_type: str, **data) -> None:
+    for handler in list(self.bus_listeners.get(event_type, [])):
+      handler(types.SimpleNamespace(event_type=event_type, data=data))
+
+  async def test_alarmo_reports_a_wrong_code_with_an_event(self) -> None:
+    # Alarmo answers a code with an event right after its service returns
+    # (alarmo_failed_to_arm, reason invalid_code), never with an error.
+    entity = "alarm_control_panel.coded"
+    self.registry_platforms[entity] = "alarmo"
+    # Real waits: the loop clock on Windows ticks in about 15 ms steps, so a
+    # few milliseconds could expire before the event's loop turn.
+    shared = type(self.bridge)._async_call_access_service.__globals__
+    shared["ALARMO_EVENT_WAIT_S"] = 0.5
+    shared["ACCESS_SERVICE_TIMEOUT_S"] = 2.0
+    verdicts: list[str] = []
+
+    async def alarmo():
+      verdict = verdicts.pop(0)
+
+      async def later():
+        await asyncio.sleep(0)
+        if verdict == "success":
+          self.fire("alarmo_command_success", entity_id=entity, action="disarm")
+        elif verdict:
+          self.fire("alarmo_failed_to_arm", entity_id="alarm_control_panel.other", reason="invalid_code")
+          self.fire("alarmo_failed_to_arm", entity_id=entity, reason=verdict)
+
+      asyncio.ensure_future(later())
+
+    self.behaviour = alarmo
+    verdicts.extend(["invalid_code"] * 5)
+    statuses = [(await self.alarm(entity_id=entity, action="disarm"))[1] for _ in range(5)]
+    self.assertEqual([item["status"] for item in statuses], ["wrong_code"] * 5)
+    self.assertEqual(statuses[4]["retry_after"], 30)
+    self.assertEqual((await self.alarm(entity_id=entity, action="disarm"))[1]["status"], "locked_out")
+    self.clock += 31
+    verdicts.append("open_sensors")
+    self.assertEqual((await self.alarm(entity_id=entity, action="arm_home"))[1]["status"], "failed")
+    verdicts.append("success")
+    self.assertEqual((await self.alarm(entity_id=entity, action="disarm"))[1]["status"], "ok")
+    self.assertEqual(self.guard().retry_after(entity), 0)
+    # No verdict in time counts as ok, like any other integration.
+    shared["ALARMO_EVENT_WAIT_S"] = 0.05
+    verdicts.append("")
+    self.assertEqual((await self.alarm(entity_id=entity, action="disarm"))[1]["status"], "ok")
+    self.assertTrue(all(not handlers for handlers in self.bus_listeners.values()))
+    # Other alarm panels never wait for Alarmo's events.
+    self.behaviour = None
+    self.assertEqual((await self.alarm(entity_id="alarm_control_panel.porch", action="disarm"))[1]["status"], "ok")
+    self.assertEqual(self.bus_listeners.get("alarmo_failed_to_arm", []), [])
 
   async def test_a_command_without_code_does_not_lift_the_lockout(self) -> None:
     async def reject_disarm():

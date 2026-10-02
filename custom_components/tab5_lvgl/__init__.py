@@ -178,7 +178,11 @@ from .access_helpers import (
   STATUS_OK,
   STATUS_PENDING,
   STATUS_WRONG_CODE,
+  ALARMO_EVENT_FAILED,
+  ALARMO_EVENT_SUCCESS,
+  ALARMO_PLATFORM,
   AccessError,
+  AlarmoRejected,
   AnsweredAccessError,
   CodeGuard,
   access_code_matches,
@@ -273,6 +277,8 @@ MEDIA_COVER_WARNING_MAX_KEYS = 64
 # A Lock/Alarm service call that has not finished after this time is answered
 # "pending"; it keeps running and the panel follows the entity state.
 ACCESS_SERVICE_TIMEOUT_S = 10.0
+# Alarmo's verdict on a code follows its service at once; at most this long.
+ALARMO_EVENT_WAIT_S = 2.0
 ACCESS_SEEN_MAX = 128
 
 
@@ -2007,8 +2013,8 @@ class Tab5Bridge:
         return
       lockout_started(guard.finish(entity_id, status))
 
-    task = self.hass.async_create_task(self.hass.services.async_call(
-      domain, service, {"entity_id": entity_id, **service_data}, blocking=True,
+    task = self.hass.async_create_task(self._async_call_access_service(
+      domain, service, {"entity_id": entity_id, **service_data}, entity_id,
     ))
     service_data = {}
     task.add_done_callback(finished)
@@ -2026,6 +2032,45 @@ class Tab5Bridge:
     retry_after = guard.retry_after(entity_id) if status == STATUS_WRONG_CODE else 0
     _LOGGER.debug("HomeTiles %s %s for %s: %s", leaf, command["action"], entity_id, status)
     await answer(status, retry_after)
+
+  async def _async_call_access_service(
+    self, domain: str, service: str, data: Dict[str, Any], entity_id: str,
+  ) -> None:
+    """Run a Lock or Alarm service; for an Alarmo panel also wait for its verdict.
+
+    Alarmo reports a wrong code with an event instead of an error, right
+    after its service returns; without waiting for it the panel saw ok and
+    neither "wrong code" nor the lockout. Other integrations are unchanged.
+    """
+    registry_entry = er.async_get(self.hass).async_get(entity_id)
+    if getattr(registry_entry, "platform", None) != ALARMO_PLATFORM:
+      await self.hass.services.async_call(domain, service, data, blocking=True)
+      return
+    verdict: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    @callback
+    def heard(event: Any) -> None:
+      event_data = event.data or {}
+      if verdict.done() or event_data.get("entity_id") != entity_id:
+        return
+      verdict.set_result(
+        "success" if event.event_type == ALARMO_EVENT_SUCCESS else str(event_data.get("reason") or "")
+      )
+
+    unsubscribes = [
+      self.hass.bus.async_listen(name, heard) for name in (ALARMO_EVENT_SUCCESS, ALARMO_EVENT_FAILED)
+    ]
+    try:
+      await self.hass.services.async_call(domain, service, data, blocking=True)
+      try:
+        reason = await asyncio.wait_for(verdict, ALARMO_EVENT_WAIT_S)
+      except asyncio.TimeoutError:
+        return
+    finally:
+      for unsubscribe in unsubscribes:
+        unsubscribe()
+    if reason != "success":
+      raise AlarmoRejected(reason)
 
   async def _async_handle_fan_command(self, msg: Any) -> None:
     """Execute Fan tile commands; only features the entity supports."""
