@@ -6,7 +6,7 @@ import asyncio
 import ipaddress
 import logging
 import socket
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 import aiohttp
@@ -17,6 +17,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.network import get_url
 
 from .access_helpers import parse_access_codes
@@ -87,6 +88,13 @@ _PAIRING_RESULTS = {"paired": "pairing_done", "waiting": "pairing_confirmed", "r
 # confirm on the display.
 LINK_PROMPT_TIMEOUT_S = 90.0
 LINK_FINISH_TIMEOUT_S = 120.0
+# A card for a panel whose Pair button was pressed lives as long as the
+# panel's pair window (two minutes, firmware kLinkWindowMs), plus a moment
+# because the discovery arrives just after the press.
+LINK_CARD_TIMEOUT_S = 125.0
+# Steps of such a card while it waits for Add; later steps belong to a setup
+# that is already running.
+_LINK_CARD_STEPS = ("link_confirm", "link_switch")
 # State of the pairing in the options menu ("Security: encrypted").
 _SECURITY_STATES = {
   "de": {"paired": "verschl\u00fcsselt", "removing": "wird ausgeschaltet", "off": "nicht verschl\u00fcsselt"},
@@ -141,6 +149,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   _link_task: Optional[asyncio.Task] = None
   # An entry set up over MQTT that this dialog switches to the link.
   _link_entry_id: Optional[str] = None
+  # Removes this card when the panel's pair window has run out.
+  _link_card_unsub: Optional[Callable[[], None]] = None
 
   def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
@@ -360,16 +370,21 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       _LOGGER.warning("Tab5 LVGL: Zeroconf-Discovery ohne device_id in den TXT-Records, ignoriert. properties=%r", props)
       return self.async_abort(reason="missing_device_id")
 
-    # Erste Zeile, bei JEDEM Aufruf: HA ruft diese Stufe bei jedem Re-Announce /
-    # jedem Neustart erneut auf, solange das Geraet sendet. Ohne konsistente
-    # unique_id wuerden mehrere "Neues Geraet gefunden"-Karten fuer dasselbe
-    # physische Panel entstehen.
-    await self.async_set_unique_id(device_id)
     # Firmware with the direct link announces itself only while Pair was
     # pressed on the panel (TXT pair=1). Then an existing entry is switched to
     # the link instead of being skipped.
     link = _txt(props, "link") == "1"
     pairing = link and _txt(props, "pair") == "1"
+    if link and not pairing:
+      # The pair window closed (time up, cancelled, or answered by this Home
+      # Assistant). A card still waiting for Add would only fail on Submit;
+      # remove it before the unique id check below drops this announcement.
+      self._async_dismiss_link_cards(device_id)
+    # Erste Zeile, bei JEDEM Aufruf: HA ruft diese Stufe bei jedem Re-Announce /
+    # jedem Neustart erneut auf, solange das Geraet sendet. Ohne konsistente
+    # unique_id wuerden mehrere "Neues Geraet gefunden"-Karten fuer dasselbe
+    # physische Panel entstehen.
+    await self.async_set_unique_id(device_id)
     if not pairing:
       self._abort_if_unique_id_configured()
     if link and not pairing:
@@ -399,6 +414,9 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       await async_ensure_link_runtime(self.hass)
       existing = self._link_existing_entry(device_id)
       self._link_entry_id = existing.entry_id if existing is not None else None
+      # Also when the panel goes away within its window and never announces
+      # the end (an MQTT panel stops mDNS instead).
+      self._link_card_unsub = async_call_later(self.hass, LINK_CARD_TIMEOUT_S, self._async_link_card_expired)
       if existing is not None:
         self.context["title_placeholders"] = {"name": existing.title}
         return await self.async_step_link_switch()
@@ -652,9 +670,43 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       self._link_pending.close()
       self._link_pending = None
 
+  def _link_setup_running(self, device_id: str) -> bool:
+    """True from Submit on: the address is sent or pairing is under way."""
+    runtime = _link_runtime(self.hass)
+    return runtime is not None and device_id in runtime.pending
+
+  @callback
+  def _async_dismiss_link_cards(self, device_id: str) -> None:
+    """Remove the panel's cards that still wait for Add.
+
+    A card whose setup already runs stays: its panel closed the window
+    because this Home Assistant sent the address.
+    """
+    if self._link_setup_running(device_id):
+      return
+    manager = self.hass.config_entries.flow
+    for flow in manager.async_progress_by_handler(DOMAIN, match_context={"unique_id": device_id}):
+      if flow["flow_id"] != self.flow_id and flow.get("step_id") in _LINK_CARD_STEPS:
+        _LOGGER.info("HomeTiles Bridge removed the card of %s: its pair window closed", device_id)
+        manager.async_abort(flow["flow_id"])
+
+  @callback
+  def _async_link_card_expired(self, _now: Any = None) -> None:
+    """The panel's pair window has run out: remove the card unless its setup runs."""
+    self._link_card_unsub = None
+    step_id = (self.cur_step or {}).get("step_id")
+    if step_id not in _LINK_CARD_STEPS or self._link_setup_running(str(self._discovered_device_id)):
+      return
+    _LOGGER.info("HomeTiles Bridge removed the card of %s: its pair window ran out",
+                 self._discovered_device_id)
+    self.hass.config_entries.flow.async_abort(self.flow_id)
+
   @callback
   def async_remove(self) -> None:
     """The dialog was closed: stop waiting for the panel."""
+    if self._link_card_unsub is not None:
+      self._link_card_unsub()
+      self._link_card_unsub = None
     self._close_link()
 
   @staticmethod
