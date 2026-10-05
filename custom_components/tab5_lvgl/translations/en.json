@@ -46,7 +46,7 @@
       },
       "link_confirm": {
         "title": "Panel found",
-        "description": "Pair was pressed on the panel **{name}** ({model}, {host}). It connects to Home Assistant directly; no MQTT broker is needed.\n\nAfter you add it, the panel restarts. The panel and this dialog then show the same six-digit number."
+        "description": "Pair was pressed on the panel **{name}** ({model}, {host}). It connects to Home Assistant directly; no MQTT broker is needed.\n\nAfter you add it, the panel and this dialog show the same six-digit number."
       },
       "link_number": {
         "title": "Compare the number",
@@ -58,11 +58,11 @@
       },
       "link_switch": {
         "title": "Connect the panel",
-        "description": "Pair was pressed on the panel **{name}** ({host}). It is already set up here and now connects to Home Assistant directly, without MQTT. Its entry, area, names and entities stay.\n\nAfter you confirm, the panel restarts. The panel and this dialog then show the same six-digit number."
+        "description": "Pair was pressed on the panel **{name}** ({host}). It is already set up here and now connects to Home Assistant directly, without MQTT. Its entry, area, names and entities stay.\n\nAfter you confirm, the panel and this dialog show the same six-digit number."
       }
     },
     "progress": {
-      "link_wait": "The panel **{name}** restarts and connects to Home Assistant. This takes about half a minute.",
+      "link_wait": "The panel **{name}** connects to Home Assistant. This takes a few seconds.",
       "link_finish": "Now tap Confirm on the panel **{name}**."
     },
     "error": {

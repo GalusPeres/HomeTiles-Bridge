@@ -287,6 +287,13 @@ class SetupPairingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending.key, result["key"])
         panel_client.close()
 
+        # The panel reconnects encrypted before the dialog created the entry.
+        early = PanelClient(self.port)
+        frame_type, _ = await early.hello(LINK.MODE_SESSION, key=result["key"],
+                                          kid=CC.key_id_for_key(result["key"]))
+        self.assertEqual(frame_type, LINK.TYPE_WELCOME)
+        early.close()
+
         # The dialog creates the entry with the key; the panel reconnects.
         self.entries.append(entry(key=pending.key))
         pending.close()

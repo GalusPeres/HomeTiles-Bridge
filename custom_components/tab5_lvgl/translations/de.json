@@ -46,7 +46,7 @@
       },
       "link_confirm": {
         "title": "Panel gefunden",
-        "description": "Am Panel **{name}** ({model}, {host}) wurde Koppeln gedr\u00fcckt. Es verbindet sich direkt mit Home Assistant, ein MQTT-Broker wird nicht gebraucht.\n\nNach dem Hinzuf\u00fcgen startet das Panel neu. Danach zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl."
+        "description": "Am Panel **{name}** ({model}, {host}) wurde Koppeln gedr\u00fcckt. Es verbindet sich direkt mit Home Assistant, ein MQTT-Broker wird nicht gebraucht.\n\nNach dem Hinzuf\u00fcgen zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl."
       },
       "link_number": {
         "title": "Zahl vergleichen",
@@ -58,11 +58,11 @@
       },
       "link_switch": {
         "title": "Panel verbinden",
-        "description": "Am Panel **{name}** ({host}) wurde Koppeln gedr\u00fcckt. Es ist hier schon eingerichtet und verbindet sich jetzt direkt mit Home Assistant, ohne MQTT. Eintrag, Bereich, Namen und Entit\u00e4ten bleiben erhalten.\n\nNach dem Best\u00e4tigen startet das Panel neu. Danach zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl."
+        "description": "Am Panel **{name}** ({host}) wurde Koppeln gedr\u00fcckt. Es ist hier schon eingerichtet und verbindet sich jetzt direkt mit Home Assistant, ohne MQTT. Eintrag, Bereich, Namen und Entit\u00e4ten bleiben erhalten.\n\nNach dem Best\u00e4tigen zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl."
       }
     },
     "progress": {
-      "link_wait": "Das Panel **{name}** startet neu und verbindet sich mit Home Assistant. Das dauert etwa eine halbe Minute.",
+      "link_wait": "Das Panel **{name}** verbindet sich mit Home Assistant. Das dauert ein paar Sekunden.",
       "link_finish": "Jetzt am Panel **{name}** auf Best\u00e4tigen tippen."
     },
     "error": {

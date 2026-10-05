@@ -176,6 +176,12 @@ class LinkRuntime:
             if str(_entry_values(entry).get(CONF_DEVICE_ID) or "") == device_id]
 
   def resolve_session(self, device_id: str, key_id: str, base: str) -> Union[SessionTarget, str]:
+    pending = self.pending.get(device_id)
+    if (pending is not None and pending.key is not None and pending.base == base
+        and key_id_for_key(pending.key) == key_id):
+      # Paired a moment ago; the dialog is about to create the entry. The
+      # panel must not be refused in between, it would treat that as removed.
+      return SessionTarget(pending.key, pending.ha_prefix)
     reason = REFUSE_UNKNOWN
     for entry in self._entries_for(device_id):
       key = entry_pairing_key(entry) or entry_removing_key(entry)

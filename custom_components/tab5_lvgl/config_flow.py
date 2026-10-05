@@ -82,8 +82,9 @@ CONF_PROVISION_PANEL_PASSWORD = "panel_password"
 CONF_REMOVE_PAIRING = "remove_pairing"
 # Result of the user's answer on a pairing card (pairing.ANSWER_*).
 _PAIRING_RESULTS = {"paired": "pairing_done", "waiting": "pairing_confirmed", "rejected": "pairing_rejected"}
-# Direct link setup: the panel restarts before it pairs; the user then has the
-# pairing's own two minutes to confirm on the display.
+# Direct link setup: the panel connects within seconds (older test firmware
+# restarted first); the user then has the pairing's own two minutes to
+# confirm on the display.
 LINK_PROMPT_TIMEOUT_S = 90.0
 LINK_FINISH_TIMEOUT_S = 120.0
 # State of the pairing in the options menu ("Security: encrypted").
