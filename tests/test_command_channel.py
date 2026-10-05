@@ -496,6 +496,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         async def noop(*_args):
             return None
         bridge._async_setup_requests = noop
+        bridge._async_load_panel_entities = noop
         for leaf in ("scene", "light", "switch", "value", "media", "climate", "cover", "camera",
                      "fan", "lock", "alarm", "entities", "tiles"):
             async def handler(msg, leaf=leaf):

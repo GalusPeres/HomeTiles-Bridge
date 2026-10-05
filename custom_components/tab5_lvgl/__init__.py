@@ -62,6 +62,7 @@ from homeassistant.helpers import discovery_flow
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.sun import get_astral_event_date
 try:
   from homeassistant.helpers.network import get_url
@@ -1133,10 +1134,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
   """A removed panel on the direct link loses its connection at once."""
+  await Store(hass, 1, panel_entities_store_key(entry.entry_id)).async_remove()
   runtime = hass.data.get(DOMAIN, {}).get(DATA_LINK)
   device_id = entry_device_id(entry)
   if runtime is not None and device_id:
     runtime.server.disconnect(str(device_id))
+
+
+def panel_entities_store_key(entry_id: str) -> str:
+  """Storage of a panel's last entity declaration (Tab5Bridge)."""
+  return f"{DOMAIN}.panel_entities.{entry_id}"
 
 
 def entry_transport(entry: ConfigEntry) -> Optional[str]:
@@ -1317,10 +1324,12 @@ class Tab5Bridge:
     self._config_publish_lock = asyncio.Lock()
     self._last_config_signature: Optional[str] = None
     self._icon_cache: Dict[str, str] = {}
-    # Entities the panel's tiles use beyond the released lists (entity
-    # search, a paired panel with a Web Admin password). The panel reports
-    # them on every session, so they live in memory only.
-    self._panel_extras: Dict[str, List[str]] = {}
+    # Every entity the panel's tiles use, as the paired panel with a Web
+    # Admin password declared it (entity_search.py). Kept with the pairing's
+    # key id, so a restart serves the tiles before the panel declares again.
+    self._panel_entities: Dict[str, List[str]] = {}
+    self._declaration_parts = entity_search.DeclarationParts()
+    self._panel_entities_store = Store(hass, 1, panel_entities_store_key(entry.entry_id))
     self._icon_refresh_handle = None
     self._forecast_cache: Dict[Tuple[str, str], Tuple[datetime, List[Dict[str, Any]]]] = {}
     self._weather_subscriptions = {}
@@ -1479,7 +1488,7 @@ class Tab5Bridge:
     self.open_without_code = merged["open_without_code"]
     self.access_codes = merged["access_codes"]
     self.scene_map = dict(merged["scene_map"])
-    extras = self._panel_extras
+    extras = self._panel_entities
     for key, name in (("sensors", "sensors"), ("binary_sensors", "binary_sensors"), ("numbers", "numbers"),
                       ("selects", "selects"), ("datetimes", "datetimes"), ("weathers", "weathers"),
                       ("media", "media_players"), ("climates", "climates"), ("covers", "covers"),
@@ -1524,6 +1533,7 @@ class Tab5Bridge:
 
   async def async_setup(self) -> None:
     """Subscribe to MQTT topics and start observers."""
+    await self._async_load_panel_entities()
     self._refresh_runtime_entity_lists()
     self._unsub_connected = await mqtt.async_subscribe(
       self.hass,
@@ -1836,8 +1846,9 @@ class Tab5Bridge:
           "fan_meta": self._build_entity_meta(self.fans),
           "scene_meta": self._build_scene_meta(),
           "scene_map": self.scene_map,
-          # The picker searches through this Bridge (entity_search.py).
-          "entity_search": 1,
+          # The picker searches through this Bridge, and the panel declares
+          # its tiles' entities (entity_search.py): 2 = declarations.
+          "entity_search": 2,
       }
       energy_cats = set()
       if self.entry.data.get(CONF_ENERGY_ELECTRICITY):
@@ -2732,28 +2743,49 @@ class Tab5Bridge:
         return
 
   async def _async_handle_tiles_command(self, msg: Any) -> None:
-    """The entities the panel's tiles use beyond the released lists. Only with
-    a Web Admin password on the panel; without one they are dropped again."""
+    """The panel declares every entity its tiles use; a complete declaration
+    replaces the previous one. Served only with a Web Admin password on the
+    panel (the Lock/Alarm rule), otherwise nothing is served. Each complete
+    version is acknowledged, so the panel stops repeating it."""
     if not isinstance(msg, _OpenedCommand):
       return
-    try:
-      data = json.loads(msg.payload)
-    except (TypeError, ValueError):
-      data = None
-    if not isinstance(data, dict):
-      return
-    extras = entity_search.parse_tiles(data) if self._access_secured(msg, data) else {}
-    if extras is None:
+    part = entity_search.parse_declaration(msg.payload)
+    if part is None:
       if self._secure_log_due("tiles_invalid"):
-        _LOGGER.warning("HomeTiles panel %s sent an invalid tile entity list", self.base_topic)
+        _LOGGER.warning("HomeTiles panel %s sent an invalid entity declaration", self.base_topic)
       return
-    if extras == self._panel_extras:
+    complete = self._declaration_parts.add(part)
+    if complete is None:
       return
-    before = set(self.tracked_entities)
-    self._panel_extras = extras
-    self._refresh_runtime_entity_lists()
-    await self.async_publish_config_to_device()
-    await self.async_publish_snapshot([item for item in self.tracked_entities if item not in before])
+    lists, web_auth = complete
+    declared = lists if self._access_secured(msg, {"web_auth": web_auth}) else {}
+    if declared != self._panel_entities:
+      before = set(self.tracked_entities)
+      self._panel_entities = declared
+      await self._async_save_panel_entities()
+      self._refresh_runtime_entity_lists()
+      await self.async_publish_config_to_device()
+      await self.async_publish_snapshot([item for item in self.tracked_entities if item not in before])
+    await self._async_publish_sealed_data("tiles", json.dumps({"v": part["v"]}))
+
+  async def _async_load_panel_entities(self) -> None:
+    """The last declaration of this pairing; another pairing key ignores it."""
+    channel = self._command_channel
+    if channel is None:
+      return
+    data = await self._panel_entities_store.async_load()
+    if not isinstance(data, dict) or data.get("key_id") != channel.keys.key_id:
+      return
+    lists = entity_search.clean_lists(data.get("lists"))
+    if lists:
+      self._panel_entities = lists
+
+  async def _async_save_panel_entities(self) -> None:
+    channel = self._command_channel
+    if channel is None:
+      return
+    await self._panel_entities_store.async_save(
+      {"key_id": channel.keys.key_id, "lists": self._panel_entities})
 
   def _secure_log_due(self, reason: str, interval: float = 60.0) -> bool:
     now = monotonic()

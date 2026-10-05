@@ -1,12 +1,17 @@
-"""Entity search for the panel's Web Admin picker and the tiles' own entities.
+"""Entity search for the panel's Web Admin picker and the panel's entity
+declaration.
 
 A paired panel asks over the sealed command channel ("entities") for the
-entities of one tile field matching a search, and reports the entities its
-tiles use beyond the released lists ("tiles"). With a Web Admin password on
-the panel (the claim travels sealed, like Lock and Alarm) the search covers
-every Home Assistant entity of the field's domains and the reported entities
-are served like released ones; otherwise only the released entities are
-found and reports are ignored. Nothing here performs I/O.
+entities of one tile field matching a search. It also declares every entity
+its tiles use ("tiles"), like an ESPHome device names the Home Assistant
+states it needs: on every connection and after every tile change, always the
+complete list, built from its tiles alone. A declaration therefore never
+depends on what the Bridge serves, and a new one replaces the previous one.
+With a Web Admin password on the panel (the claim travels sealed, like Lock
+and Alarm) the search covers every Home Assistant entity of the field's
+domains and the declared entities are served like released ones; otherwise
+only the released entities are found and declarations serve nothing.
+Nothing here performs I/O.
 """
 from __future__ import annotations
 
@@ -39,7 +44,8 @@ MAX_RESULTS = 60  # one page; the picker asks for the next one while scrolling
 MAX_OFFSET = 5000
 MAX_PART_BYTES = 1900  # below command_channel.MAX_BODY with the envelope fields
 MAX_PARTS = 6
-MAX_TILE_ENTITIES = 200
+MAX_PANEL_ENTITIES = 300
+MAX_DECLARATION_PARTS = 8
 
 
 def parse_search(body: Any) -> Optional[Dict[str, Any]]:
@@ -110,29 +116,66 @@ def pack_answer(request_id: int, results: List[Mapping[str, Any]], full: bool, m
           for index, items in enumerate(parts)]
 
 
-def parse_tiles(body: Any) -> Optional[Dict[str, List[str]]]:
-  """{"lists": {list: [entity ids]}} with each list's domains; None if invalid."""
+def clean_lists(lists: Any) -> Optional[Dict[str, List[str]]]:
+  """{list: [entity ids]}, sorted and without duplicates; None unless a dict.
+  An unknown list or an entity outside its list's domains is left out, so
+  one stray tile value never voids the whole declaration."""
+  if not isinstance(lists, dict):
+    return None
+  result: Dict[str, List[str]] = {}
+  for key, items in lists.items():
+    if key not in LIST_DOMAINS or not isinstance(items, list):
+      continue
+    valid = {item for item in items if isinstance(item, str) and entity_domain(item) in LIST_DOMAINS[key]}
+    if valid:
+      result[key] = sorted(valid)
+  return result
+
+
+def parse_declaration(body: Any) -> Optional[Dict[str, Any]]:
+  """One part of a declaration, {"v": version, "p": part, "n": parts,
+  "lists": {list: [entity ids]}, "web_auth": bool}; None if invalid."""
   try:
     data = json.loads(body) if isinstance(body, (str, bytes, bytearray)) else body
   except (TypeError, ValueError):
     return None
-  lists = data.get("lists") if isinstance(data, dict) else None
-  if not isinstance(lists, dict):
+  if not isinstance(data, dict):
     return None
-  result: Dict[str, List[str]] = {}
-  total = 0
-  for key, items in lists.items():
-    if key not in LIST_DOMAINS or not isinstance(items, list):
+  version, part, parts = data.get("v"), data.get("p"), data.get("n")
+  for value, low, high in ((version, 0, 0xFFFFFFFF), (part, 0, MAX_DECLARATION_PARTS - 1),
+                           (parts, 1, MAX_DECLARATION_PARTS)):
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
       return None
-    clean: List[str] = []
-    for item in items:
-      if not isinstance(item, str) or entity_domain(item) not in LIST_DOMAINS[key]:
-        return None
-      if item not in clean:
-        clean.append(item)
-    total += len(clean)
-    if total > MAX_TILE_ENTITIES:
+  lists = clean_lists(data.get("lists"))
+  if part >= parts or lists is None:
+    return None
+  return {"v": version, "p": part, "n": parts, "lists": lists, "web_auth": data.get("web_auth") is True}
+
+
+class DeclarationParts:
+  """Joins the parts of one declaration version; another version starts over."""
+
+  def __init__(self) -> None:
+    self._version: Optional[int] = None
+    self._count = 0
+    self._parts: Dict[int, Mapping[str, Any]] = {}
+
+  def add(self, part: Mapping[str, Any]) -> Optional[Tuple[Dict[str, List[str]], bool]]:
+    """(lists, web_auth) once every part of the version arrived; None while
+    parts are missing or for more than MAX_PANEL_ENTITIES entities. web_auth
+    holds only when every part claims it."""
+    if part["v"] != self._version or part["n"] != self._count:
+      self._version, self._count, self._parts = part["v"], part["n"], {}
+    self._parts[part["p"]] = part
+    if len(self._parts) < self._count:
       return None
-    if clean:
-      result[key] = clean
-  return result
+    parts = [self._parts[index] for index in range(self._count)]
+    self._version, self._count, self._parts = None, 0, {}
+    joined: Dict[str, List[str]] = {}
+    for item in parts:
+      for key, ids in item["lists"].items():
+        joined.setdefault(key, []).extend(ids)
+    lists = {key: sorted(set(ids)) for key, ids in joined.items()}
+    if sum(len(ids) for ids in lists.values()) > MAX_PANEL_ENTITIES:
+      return None
+    return lists, all(item["web_auth"] for item in parts)

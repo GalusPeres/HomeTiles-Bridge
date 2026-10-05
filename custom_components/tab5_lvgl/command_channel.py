@@ -60,7 +60,7 @@ SEALED_COMMANDS = frozenset({
 SEALED_ONLY_COMMANDS = frozenset({"lock", "alarm", "entities", "tiles"})
 # Bridge-to-panel messages that travel sealed: stream tokens and the entity
 # search answers.
-SEALED_DATA = frozenset({"camera", "local_camera", "entities"})
+SEALED_DATA = frozenset({"camera", "local_camera", "entities", "tiles"})
 
 TYPE_HELLO = "hello"
 TYPE_SESSION = "session"
