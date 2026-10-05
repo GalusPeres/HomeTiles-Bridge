@@ -381,8 +381,11 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     _LOGGER.warning("Tab5 LVGL DEBUG: neues Panel per Zeroconf gefunden: device_id=%s host=%s name=%s model=%s base=%s",
                     device_id, self._discovered_host, name, self._discovered_model, self._discovered_base_topic)
-    if _txt(props, "link") == "1" and _link_runtime(self.hass) is not None:
-      # Firmware with the direct link: no MQTT, pairing in this dialog.
+    if _txt(props, "link") == "1":
+      # Firmware with the direct link: no MQTT, pairing in this dialog. The
+      # first panel arrives before Home Assistant set the integration up.
+      from . import async_ensure_link_runtime
+      await async_ensure_link_runtime(self.hass)
       return await self.async_step_link_confirm()
     return await self.async_step_zeroconf_confirm()
 

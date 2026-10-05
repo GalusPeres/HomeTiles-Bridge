@@ -442,6 +442,32 @@ def _config_signature(config_data: Dict[str, Any]) -> str:
   )
 
 
+async def async_ensure_link_runtime(hass: HomeAssistant) -> LinkRuntime:
+  """Start the direct link once (docs-dev/bridge-link.md).
+
+  async_setup starts it, and so does the setup dialog: Home Assistant sets the
+  integration up only with its first entry, but the first panel already needs
+  the link to pair. Without a free port the panels on MQTT keep working;
+  linked panels cannot connect.
+  """
+  domain_data = hass.data.setdefault(DOMAIN, {"entries": {}})
+  runtime = domain_data.get(DATA_LINK)
+  if runtime is not None:
+    return runtime
+  runtime = LinkRuntime(lambda: hass.config_entries.async_entries(DOMAIN))
+  domain_data[DATA_LINK] = runtime
+  await runtime.async_start()
+
+  async def _async_stop_link(_event: Event) -> None:
+    await runtime.async_stop()
+
+  domain_data["_link_stop_unsub"] = hass.bus.async_listen_once(
+    EVENT_HOMEASSISTANT_STOP,
+    _async_stop_link,
+  )
+  return runtime
+
+
 async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
   """Set up the integration namespace and service."""
   domain_data = hass.data.setdefault(DOMAIN, {"entries": {}})
@@ -449,20 +475,7 @@ async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
   # no publishes at all (link_mqtt.py).
   domain_data.setdefault(DATA_MQTT_ENTRIES, set())
 
-  if DATA_LINK not in domain_data:
-    # The direct link (docs-dev/bridge-link.md). Without a free port the
-    # panels on MQTT keep working; linked panels cannot connect.
-    runtime = LinkRuntime(lambda: hass.config_entries.async_entries(DOMAIN))
-    domain_data[DATA_LINK] = runtime
-    await runtime.async_start()
-
-    async def _async_stop_link(_event: Event) -> None:
-      await runtime.async_stop()
-
-    domain_data["_link_stop_unsub"] = hass.bus.async_listen_once(
-      EVENT_HOMEASSISTANT_STOP,
-      _async_stop_link,
-    )
+  await async_ensure_link_runtime(hass)
 
   if "camera_stream_manager" not in domain_data:
     camera_stream_manager = CameraStreamManager(hass)
