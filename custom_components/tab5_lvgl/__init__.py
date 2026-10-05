@@ -11,7 +11,7 @@ import json
 import logging
 import secrets
 from time import monotonic
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import voluptuous as vol
 
@@ -54,6 +54,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, ServiceCall, State, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import device_registry as dr
@@ -238,6 +239,7 @@ from .announcement_guard import (
 )
 from .local_camera import is_local_camera_self_loop, local_camera_command_topic
 from . import entity_icons
+from . import entity_search
 from .numeric_history import fetch_numeric_history_values
 from .request_limits import RequestGate
 from .sun_times import sun_days, sun_entries
@@ -1315,6 +1317,10 @@ class Tab5Bridge:
     self._config_publish_lock = asyncio.Lock()
     self._last_config_signature: Optional[str] = None
     self._icon_cache: Dict[str, str] = {}
+    # Entities the panel's tiles use beyond the released lists (entity
+    # search, a paired panel with a Web Admin password). The panel reports
+    # them on every session, so they live in memory only.
+    self._panel_extras: Dict[str, List[str]] = {}
     self._icon_refresh_handle = None
     self._forecast_cache: Dict[Tuple[str, str], Tuple[datetime, List[Dict[str, Any]]]] = {}
     self._weather_subscriptions = {}
@@ -1473,6 +1479,18 @@ class Tab5Bridge:
     self.open_without_code = merged["open_without_code"]
     self.access_codes = merged["access_codes"]
     self.scene_map = dict(merged["scene_map"])
+    extras = self._panel_extras
+    for key, name in (("sensors", "sensors"), ("binary_sensors", "binary_sensors"), ("numbers", "numbers"),
+                      ("selects", "selects"), ("datetimes", "datetimes"), ("weathers", "weathers"),
+                      ("media", "media_players"), ("climates", "climates"), ("covers", "covers"),
+                      ("cameras", "cameras"), ("locks", "locks"), ("alarm_panels", "alarm_panels"),
+                      ("fans", "fans")):
+      if extras.get(key):
+        setattr(self, name, _unique_entities(getattr(self, name) + extras[key]))
+    switch_extras = extras.get("switches", [])
+    if switch_extras:
+      self.lights = _unique_entities(self.lights + [item for item in switch_extras if entity_domain(item) == "light"])
+      self.switches = _unique_entities(self.switches + [item for item in switch_extras if entity_domain(item) != "light"])
     self.tracked_entities = _unique_entities(
       self.sensors
       + self.binary_sensors
@@ -1818,6 +1836,8 @@ class Tab5Bridge:
           "fan_meta": self._build_entity_meta(self.fans),
           "scene_meta": self._build_scene_meta(),
           "scene_map": self.scene_map,
+          # The picker searches through this Bridge (entity_search.py).
+          "entity_search": 1,
       }
       energy_cats = set()
       if self.entry.data.get(CONF_ENERGY_ELECTRICITY):
@@ -1854,11 +1874,11 @@ class Tab5Bridge:
       self._last_config_signature = signature
       await self._async_publish_icon_update()
 
-  async def async_publish_snapshot(self) -> None:
-    """Push all configured entities to MQTT."""
+  async def async_publish_snapshot(self, entity_ids: Optional[Iterable[str]] = None) -> None:
+    """Push all configured entities (or only `entity_ids`) to MQTT."""
     # Lock, Alarm and Fan tiles also read the additive detail topic.
     detail_entities = getattr(self, "locks", []) + getattr(self, "alarm_panels", []) + getattr(self, "fans", [])
-    for entity_id in self.tracked_entities:
+    for entity_id in (self.tracked_entities if entity_ids is None else list(entity_ids)):
       state = self.hass.states.get(entity_id)
       if entity_id in getattr(self, "numbers", []) + getattr(self, "selects", []) + getattr(self, "datetimes", []) and not state:
         await self._async_publish_editable_state(entity_id, None)
@@ -2642,7 +2662,98 @@ class Tab5Bridge:
       "fan": self._async_handle_fan_command,
       "lock": self._async_handle_lock_command,
       "alarm": self._async_handle_alarm_command,
+      "entities": self._async_handle_entities_command,
+      "tiles": self._async_handle_tiles_command,
     }
+
+  # ---- Entity picker of the panel's Web Admin (entity_search.py) ----
+
+  def _released_for_list(self, key: str) -> List[str]:
+    """The entities of one picker list this panel may use without a password."""
+    names = {"switches": ("lights", "switches"), "media": ("media_players",)}.get(key, (key,))
+    return _unique_entities([item for name in names for item in getattr(self, name, [])])
+
+  def _search_entries(self, entity_ids: Iterable[str]) -> List[Dict[str, str]]:
+    """Name, area and device of entities, the picker's search fields."""
+    entities = er.async_get(self.hass)
+    devices = dr.async_get(self.hass)
+    areas = ar.async_get(self.hass)
+    area_names: Dict[str, str] = {}
+    found: List[Dict[str, str]] = []
+    for entity_id in entity_ids:
+      state = self.hass.states.get(entity_id)
+      entry = entities.async_get(entity_id)
+      device = devices.async_get(entry.device_id) if entry is not None and entry.device_id else None
+      area_id = (getattr(entry, "area_id", None) if entry is not None else None) or (
+        device.area_id if device is not None else None)
+      if area_id and area_id not in area_names:
+        area = areas.async_get_area(area_id)
+        area_names[area_id] = area.name if area is not None else ""
+      found.append({
+        "v": entity_id,
+        "t": state.name if state is not None else entity_id,
+        "a": area_names.get(area_id, "") if area_id else "",
+        "d": (device.name_by_user or device.name or "") if device is not None else "",
+      })
+    return found
+
+  def _search_icon(self, entity_id: str) -> str:
+    state = self.hass.states.get(entity_id)
+    if state is None:
+      return ""
+    if entity_id.startswith("media_player."):
+      return _extract_media_player_mdi_icon(state, self.hass) or ""
+    if _is_weather_entity(entity_id):
+      return _weather_icon_from_state(state, self.hass) or ""
+    return _extract_mdi_icon(state, self.hass) or ""
+
+  async def _async_handle_entities_command(self, msg: Any) -> None:
+    """Search for the picker: every entity of the list's domains with a Web
+    Admin password on the panel (the Lock/Alarm rule), else the released ones."""
+    if not isinstance(msg, _OpenedCommand):
+      return
+    request = entity_search.parse_search(msg.payload)
+    if request is None:
+      if self._secure_log_due("entities_invalid"):
+        _LOGGER.warning("HomeTiles panel %s sent an invalid entity search", self.base_topic)
+      return
+    full = self._access_secured(msg, request)
+    if full:
+      entity_ids = [state.entity_id for state in self.hass.states.async_all(entity_search.LIST_DOMAINS[request["list"]])]
+    else:
+      entity_ids = self._released_for_list(request["list"])
+    results, more = entity_search.search(self._search_entries(entity_ids), request["q"])
+    # Icons only for what the panel gets: icon translations load per integration.
+    await entity_icons.async_load_entity_icons(self.hass, [item["v"] for item in results])
+    for item in results:
+      item["i"] = self._search_icon(item["v"])
+    for part in entity_search.pack_answer(request["id"], results, full, more):
+      if not await self._async_publish_sealed_data("entities", part):
+        return
+
+  async def _async_handle_tiles_command(self, msg: Any) -> None:
+    """The entities the panel's tiles use beyond the released lists. Only with
+    a Web Admin password on the panel; without one they are dropped again."""
+    if not isinstance(msg, _OpenedCommand):
+      return
+    try:
+      data = json.loads(msg.payload)
+    except (TypeError, ValueError):
+      data = None
+    if not isinstance(data, dict):
+      return
+    extras = entity_search.parse_tiles(data) if self._access_secured(msg, data) else {}
+    if extras is None:
+      if self._secure_log_due("tiles_invalid"):
+        _LOGGER.warning("HomeTiles panel %s sent an invalid tile entity list", self.base_topic)
+      return
+    if extras == self._panel_extras:
+      return
+    before = set(self.tracked_entities)
+    self._panel_extras = extras
+    self._refresh_runtime_entity_lists()
+    await self.async_publish_config_to_device()
+    await self.async_publish_snapshot([item for item in self.tracked_entities if item not in before])
 
   def _secure_log_due(self, reason: str, interval: float = 60.0) -> bool:
     now = monotonic()

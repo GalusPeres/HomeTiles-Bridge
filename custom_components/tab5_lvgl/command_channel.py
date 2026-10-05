@@ -53,11 +53,14 @@ CONF_LEGACY_CODE = "command_pairing_code"
 # Panel command topics that arrive sealed once pairing is active.
 SEALED_COMMANDS = frozenset({
   "scene", "light", "switch", "media", "climate", "cover", "camera", "value", "fan", "lock", "alarm",
+  "entities", "tiles",
 })
-# Commands that exist only sealed: Lock and Alarm never have a plain topic.
-SEALED_ONLY_COMMANDS = frozenset({"lock", "alarm"})
-# Bridge-to-panel messages that carry stream tokens and travel sealed.
-SEALED_DATA = frozenset({"camera", "local_camera"})
+# Commands that exist only sealed: Lock and Alarm, the entity search and the
+# tiles' entities (entity_search.py) never have a plain topic.
+SEALED_ONLY_COMMANDS = frozenset({"lock", "alarm", "entities", "tiles"})
+# Bridge-to-panel messages that travel sealed: stream tokens and the entity
+# search answers.
+SEALED_DATA = frozenset({"camera", "local_camera", "entities"})
 
 TYPE_HELLO = "hello"
 TYPE_SESSION = "session"

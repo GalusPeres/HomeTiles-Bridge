@@ -497,7 +497,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
             return None
         bridge._async_setup_requests = noop
         for leaf in ("scene", "light", "switch", "value", "media", "climate", "cover", "camera",
-                     "fan", "lock", "alarm"):
+                     "fan", "lock", "alarm", "entities", "tiles"):
             async def handler(msg, leaf=leaf):
                 self.handled.append((leaf, msg.topic, msg.payload, msg.retain))
             setattr(bridge, f"_async_handle_{leaf}_command", handler)
@@ -551,11 +551,12 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
             payload=panel_seal(f"cmd {session} 1 light\n".encode() + b'{"entity_id":"light.kitchen"}'),
             retain=False))
         self.assertEqual(self.handled, [("light", f"{BASE}/cmnd/light", '{"entity_id":"light.kitchen"}', False)])
-        # Lock, Alarm and Fan commands arrive sealed like the others.
-        for seq, leaf in ((10, "lock"), (11, "alarm"), (12, "fan")):
+        # Lock, Alarm and Fan commands, the entity search and the tiles'
+        # entities arrive sealed like the others.
+        for seq, leaf in ((10, "lock"), (11, "alarm"), (12, "fan"), (13, "entities"), (14, "tiles")):
             await deliver(types.SimpleNamespace(
                 payload=panel_seal(f"cmd {session} {seq} {leaf}\n{{}}".encode()), retain=False))
-        self.assertEqual([item[0] for item in self.handled[1:]], ["lock", "alarm", "fan"])
+        self.assertEqual([item[0] for item in self.handled[1:]], ["lock", "alarm", "fan", "entities", "tiles"])
         del self.handled[1:]
         # Retained or replayed copies never run again.
         replay = panel_seal(f"cmd {session} 1 light\n".encode() + b'{"entity_id":"light.kitchen"}')
