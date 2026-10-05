@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ast
 import logging
+import sys
 import types
 import unittest
+from unittest import mock
 
 from test_view_navigation import ROOT
 
@@ -188,10 +190,15 @@ class ZeroconfOrderTest(unittest.TestCase):
     closed = source[source.index("if link and not pairing:"):source.index("elif pairing:")]
     self.assertIn("_link_only_panels(self.hass).add(device_id.upper())", closed)
     discovery = ast.get_source_segment(SOURCE, method("async_step_integration_discovery"))
-    blocked = discovery.index("if str(device_id).upper() in _link_only_panels(self.hass):")
+    blocked = discovery.index("if retained and (str(device_id).upper() in _link_only_panels(self.hass)")
+    self.assertIn("or await _async_mdns_new_link_panel(self.hass, str(device_id))", discovery[blocked:])
     self.assertLess(discovery.index("return await self._async_start_pairing_card(discovery_info)"), blocked)
     self.assertLess(blocked, discovery.index("await self.async_set_unique_id(device_id)"))
-    self.assertIn('return self.async_abort(reason="link_press_pair")', discovery[blocked:])
+    rest = discovery[blocked:discovery.index("await self.async_set_unique_id(device_id)")]
+    self.assertIn("link_mqtt.async_clear_mqtt_announcement(self.hass, str(device_id))", rest)
+    self.assertIn('return self.async_abort(reason="link_press_pair")', rest)
+    # The marker never reaches the entry data.
+    self.assertIn("self._discovered_data.pop(DISCOVERY_RETAINED, None)", discovery)
 
   def test_a_live_mqtt_announcement_makes_the_card_real_again(self):
     init = (ROOT / "__init__.py").read_text(encoding="utf-8")
@@ -203,6 +210,9 @@ class ZeroconfOrderTest(unittest.TestCase):
     # Only for panels without an entry, before a card can be created.
     self.assertLess(process.index("  if entry:"), live)
     self.assertLess(live, process.index("discovery_flow.async_create_flow("))
+    marked = process.index("data[DISCOVERY_RETAINED] = True")
+    self.assertLess(process.index("  if retained:"), marked)
+    self.assertLess(marked, process.index("discovery_flow.async_create_flow("))
 
   def test_a_new_card_arms_its_timer(self):
     source = ast.get_source_segment(SOURCE, method("async_step_zeroconf"))
@@ -210,6 +220,66 @@ class ZeroconfOrderTest(unittest.TestCase):
     self.assertIn("self._link_card_unsub = async_call_later(self.hass, LINK_CARD_TIMEOUT_S, "
                   "self._async_link_card_expired)", branch)
     self.assertLess(branch.index("async_call_later"), branch.index("return await self.async_step_link_confirm()"))
+
+
+def mdns_helper(properties=None, cached=True, fail=False):
+  """_async_mdns_new_link_panel against a fake Home Assistant mDNS cache."""
+  node = next(node for node in TREE.body if getattr(node, "name", None) == "_async_mdns_new_link_panel")
+  constant = next(node for node in TREE.body if isinstance(node, ast.Assign)
+                  and getattr(node.targets[0], "id", None) == "ZEROCONF_SERVICE_TYPE")
+  module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
+                            constant, node], type_ignores=[])
+  asked = []
+
+  class AsyncServiceInfo:
+    def __init__(self, type_, name):
+      self.name = name
+      self.properties = properties
+
+    def load_from_cache(self, zc):
+      assert zc == "zeroconf"
+      asked.append(self.name)
+      return cached and self.name.startswith("8AF1E60AF6E8.")
+
+  async def async_get_async_instance(hass):
+    if fail:
+      raise RuntimeError("zeroconf is not set up")
+    return types.SimpleNamespace(zeroconf="zeroconf")
+
+  ha_zeroconf = types.ModuleType("homeassistant.components.zeroconf")
+  ha_zeroconf.async_get_async_instance = async_get_async_instance
+  components = types.ModuleType("homeassistant.components")
+  components.zeroconf = ha_zeroconf
+  zc_asyncio = types.ModuleType("zeroconf.asyncio")
+  zc_asyncio.AsyncServiceInfo = AsyncServiceInfo
+  stubs = {"homeassistant": types.ModuleType("homeassistant"), "homeassistant.components": components,
+           "homeassistant.components.zeroconf": ha_zeroconf, "zeroconf": types.ModuleType("zeroconf"),
+           "zeroconf.asyncio": zc_asyncio}
+  scope = {"HomeAssistant": object, "_LOGGER": logging.getLogger("test_link_card")}
+  exec(compile(ast.fix_missing_locations(module), "config_flow.py", "exec"), scope)
+
+  async def run(device_id):
+    with mock.patch.dict(sys.modules, stubs):
+      return await scope["_async_mdns_new_link_panel"](None, device_id)
+
+  return run, asked
+
+
+class MdnsCacheTest(unittest.IsolatedAsyncioTestCase):
+  async def test_a_new_link_panel_is_recognised(self):
+    run, asked = mdns_helper({b"link": b"1", b"device_id": b"8AF1E60AF6E8"})
+    self.assertTrue(await run("8af1e60af6e8"))
+    # The instance is named after the device id; both spellings are tried.
+    self.assertEqual(asked, ["8af1e60af6e8._hometiles._tcp.local.", "8AF1E60AF6E8._hometiles._tcp.local."])
+
+  async def test_everything_else_keeps_the_card(self):
+    for properties in ({b"link": b"1", b"pair": b"1"}, {b"device_id": b"8AF1E60AF6E8"}, {}, None):
+      run, _asked = mdns_helper(properties)
+      self.assertFalse(await run("8AF1E60AF6E8"), properties)
+    run, _asked = mdns_helper({b"link": b"1"}, cached=False)
+    self.assertFalse(await run("8AF1E60AF6E8"))
+    run, _asked = mdns_helper({b"link": b"1"}, fail=True)
+    self.assertFalse(await run("8AF1E60AF6E8"))
 
 
 if __name__ == "__main__":

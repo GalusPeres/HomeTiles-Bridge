@@ -150,6 +150,7 @@ from .const import (
   CONFIG_TOPIC_SUB,
   DEFAULT_BASE,
   DISCOVERY_ADOPT_ENTRY,
+  DISCOVERY_RETAINED,
   DISCOVERY_PAIRING_ATTEMPT,
   DISCOVERY_PAIRING_ENTRY,
   DEFAULT_PREFIX,
@@ -6091,6 +6092,8 @@ async def _async_process_bridge_config(
     data.get(CONF_SENSORS, []),
     _runtime_managed_sensor_entity_ids(hass, None, data),
   )
+  if retained:
+    data[DISCOVERY_RETAINED] = True
   # Home Assistant shows a discovery card; the entry is created on confirm.
   discovery_flow.async_create_flow(
     hass,

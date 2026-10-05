@@ -65,6 +65,7 @@ from .const import (
   DEFAULT_BASE,
   DEFAULT_PREFIX,
   DISCOVERY_ADOPT_ENTRY,
+  DISCOVERY_RETAINED,
   DISCOVERY_PAIRING_ATTEMPT,
   DISCOVERY_PAIRING_ENTRY,
   DOMAIN,
@@ -97,6 +98,8 @@ LINK_CARD_TIMEOUT_S = 125.0
 # Steps of such a card while it waits for Add; later steps belong to a setup
 # that is already running.
 _LINK_CARD_STEPS = ("link_confirm", "link_switch")
+# The panels' mDNS service (manifest.json "zeroconf").
+ZEROCONF_SERVICE_TYPE = "_hometiles._tcp.local."
 # Steps of a card made from a panel's MQTT announcement.
 _MQTT_CARD_STEPS = ("discovery_confirm", "adopt_confirm")
 # State of the pairing in the options menu ("Security: encrypted").
@@ -228,13 +231,22 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     device_id = discovery_info.get(CONF_DEVICE_ID)
     if not device_id:
       return self.async_abort(reason="missing_device_id")
-    if str(device_id).upper() in _link_only_panels(self.hass):
-      # The panel has neither MQTT nor the link (async_step_zeroconf): this
-      # announcement is left over, and Add would create a dead entry.
+    retained = bool(discovery_info.get(DISCOVERY_RETAINED))
+    if retained and (str(device_id).upper() in _link_only_panels(self.hass)
+                     or await _async_mdns_new_link_panel(self.hass, str(device_id))):
+      # The panel has neither MQTT nor the link (it says so over mDNS): this
+      # announcement is left over from its MQTT days, and Add would create
+      # a dead entry. Delete it on the broker, so it stays away.
+      _link_only_panels(self.hass).add(str(device_id).upper())
+      self.hass.async_create_background_task(
+        link_mqtt.async_clear_mqtt_announcement(self.hass, str(device_id)),
+        f"{DOMAIN} clear MQTT announcement {device_id}",
+      )
       return self.async_abort(reason="link_press_pair")
     await self.async_set_unique_id(device_id)
     self._abort_if_unique_id_configured()
     self._discovered_data = dict(discovery_info)
+    self._discovered_data.pop(DISCOVERY_RETAINED, None)
     self._adopt_entry_id = self._discovered_data.pop(DISCOVERY_ADOPT_ENTRY, None)
     self.context["title_placeholders"] = {"name": _entry_title(self._discovered_data)}
     if self._adopt_entry_id:
@@ -1458,6 +1470,32 @@ async def _push_credentials_to_device(
     return await async_push_credentials(session, device_host, form, panel_password, timeout)
   except (aiohttp.ClientError, asyncio.TimeoutError):
     return ERROR_CANNOT_CONNECT
+
+
+async def _async_mdns_new_link_panel(hass: HomeAssistant, device_id: str) -> bool:
+  """True when Home Assistant's mDNS cache shows the panel as a new link panel.
+
+  Firmware with the direct link announces itself over mDNS only while it
+  has neither MQTT nor the link, or while Pair was pressed (TXT pair=1).
+  Unknown, unreadable or older panels count as not shown.
+  """
+  try:
+    from homeassistant.components import zeroconf as ha_zeroconf
+    from zeroconf.asyncio import AsyncServiceInfo
+
+    aiozc = await ha_zeroconf.async_get_async_instance(hass)
+    for instance in dict.fromkeys((device_id, device_id.upper())):
+      info = AsyncServiceInfo(ZEROCONF_SERVICE_TYPE, f"{instance}.{ZEROCONF_SERVICE_TYPE}")
+      if not info.load_from_cache(aiozc.zeroconf):
+        continue
+      txt = {}
+      for key, value in (info.properties or {}).items():
+        name = key.decode("utf-8", "replace") if isinstance(key, bytes) else str(key)
+        txt[name] = value.decode("utf-8", "replace") if isinstance(value, bytes) else value
+      return txt.get("link") == "1" and txt.get("pair") != "1"
+  except Exception as err:  # Optional evidence; without it the card stays.
+    _LOGGER.debug("HomeTiles Bridge could not read the mDNS cache for %s: %s", device_id, err)
+  return False
 
 
 def _link_only_panels(hass: HomeAssistant) -> set:
