@@ -158,6 +158,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   _link_entry_id: Optional[str] = None
   # Removes this card when the panel's pair window has run out.
   _link_card_unsub: Optional[Callable[[], None]] = None
+  # Removes the number card when the panel ends the pairing (Cancel there).
+  _link_number_watch: Optional[asyncio.Task] = None
 
   def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
@@ -618,6 +620,10 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     pending = self._link_pending
     if pending is None or pending.number is None or pending.failure:
       return await self.async_step_link_failed()
+    if self._link_number_watch is None:
+      self._link_number_watch = self.hass.async_create_background_task(
+        self._async_watch_link_number(pending), f"{DOMAIN} link number {self.flow_id}",
+      )
     return self.async_show_menu(
       step_id="link_number",
       menu_options=["link_accept", "link_reject"],
@@ -696,7 +702,24 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     _LOGGER.info("HomeTiles Bridge paired %s over the direct link", data.get(CONF_DEVICE_ID))
     return self.async_create_entry(title=_entry_title(data), data=data)
 
+  async def _async_watch_link_number(self, pending: Any) -> None:
+    """A menu waits for a click: end the card once the panel ended the pairing.
+
+    Without this the card kept the number after Cancel on the display, and
+    only a click on it showed that the pairing was over.
+    """
+    await pending.finished.wait()
+    self._link_number_watch = None
+    if pending.key is not None or (self.cur_step or {}).get("step_id") != "link_number":
+      return
+    _LOGGER.info("HomeTiles Bridge removed the number card of %s: the panel ended the pairing",
+                 self._discovered_device_id)
+    self.hass.config_entries.flow.async_abort(self.flow_id)
+
   def _close_link(self) -> None:
+    if self._link_number_watch is not None and not self._link_number_watch.done():
+      self._link_number_watch.cancel()
+    self._link_number_watch = None
     if self._link_task is not None and not self._link_task.done():
       self._link_task.cancel()
     self._link_task = None

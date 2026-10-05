@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import logging
 import sys
 import types
@@ -23,7 +24,7 @@ def method(name):
 def link_card_flow_class():
   """The card steps that end a link card, on a small flow, without HA."""
   names = {"_link_setup_running", "_async_dismiss_link_cards", "_async_dismiss_cards",
-           "_async_link_card_expired", "async_remove", "_close_link"}
+           "_async_link_card_expired", "async_remove", "_close_link", "_async_watch_link_number"}
   functions = [node for node in FLOW.body if getattr(node, "name", None) in names]
   constants = [node for node in TREE.body
                if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None)
@@ -36,6 +37,7 @@ def link_card_flow_class():
 
   class FlowBase:
     _link_card_unsub = None
+    _link_number_watch = None
     _link_pending = None
     _link_task = None
     _discovered_device_id = None
@@ -280,6 +282,62 @@ class MdnsCacheTest(unittest.IsolatedAsyncioTestCase):
     self.assertFalse(await run("8AF1E60AF6E8"))
     run, _asked = mdns_helper({b"link": b"1"}, fail=True)
     self.assertFalse(await run("8AF1E60AF6E8"))
+
+
+class LinkNumberCardTest(unittest.IsolatedAsyncioTestCase):
+  """Cancel on the display while Home Assistant shows the number."""
+
+  def setUp(self):
+    self.Flow, _scope = link_card_flow_class()
+    self.manager = FakeFlowManager()
+    self.hass = types.SimpleNamespace(data={"tab5_lvgl": {"link": types.SimpleNamespace(pending={})}},
+                                      config_entries=types.SimpleNamespace(flow=self.manager))
+
+  def number_card(self):
+    flow = self.Flow(self.hass, "card", "link_number")
+    self.manager.add(flow)
+    pending = types.SimpleNamespace(finished=asyncio.Event(), key=None, closed=False)
+    pending.close = lambda: setattr(pending, "closed", True)
+    flow._link_pending = pending
+    flow._link_number_watch = asyncio.get_running_loop().create_task(flow._async_watch_link_number(pending))
+    return flow, pending
+
+  async def test_the_card_goes_when_the_panel_ends_the_pairing(self):
+    flow, pending = self.number_card()
+    await asyncio.sleep(0)
+    self.assertEqual(self.manager.aborted, [])
+    pending.finished.set()  # The panel sent abort: cancel, timeout or error.
+    await asyncio.sleep(0)
+    self.assertEqual(self.manager.aborted, ["card"])
+    self.assertTrue(pending.closed)
+    self.assertIsNone(flow._link_number_watch)
+
+  async def test_a_paired_or_moved_on_card_stays(self):
+    flow, pending = self.number_card()
+    pending.key = b"k" * 32
+    pending.finished.set()
+    await asyncio.sleep(0)
+    flow, pending = self.number_card()
+    flow.cur_step = {"step_id": "link_finish"}
+    pending.finished.set()
+    await asyncio.sleep(0)
+    self.assertEqual(self.manager.aborted, [])
+
+  async def test_closing_the_card_stops_watching(self):
+    flow, pending = self.number_card()
+    watch = flow._link_number_watch
+    flow._close_link()
+    await asyncio.sleep(0)
+    self.assertTrue(watch.cancelled())
+    self.assertIsNone(flow._link_number_watch)
+
+
+class LinkNumberWiringTest(unittest.TestCase):
+  def test_the_number_menu_starts_watching_once(self):
+    source = ast.get_source_segment(SOURCE, method("async_step_link_number"))
+    watch = source.index("if self._link_number_watch is None:")
+    self.assertLess(watch, source.index("return self.async_show_menu("))
+    self.assertIn("self.hass.async_create_background_task(", source[watch:])
 
 
 if __name__ == "__main__":
