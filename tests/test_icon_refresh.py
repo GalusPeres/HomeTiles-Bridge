@@ -16,7 +16,13 @@ def helpers():
              "_normalize_mdi_icon_value", "_fallback_icon_from_state", "_build_entity_meta"}
     nodes = [n for n in ast.walk(ast.parse(SOURCE.read_text(encoding="utf-8")))
              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
-    scope = {"json": json, "icon_for_entity": None,
+    async def load_icons(hass, entities):
+        return None
+    # Icon translations are covered by test_entity_icons.py.
+    no_translations = SimpleNamespace(async_load_entity_icons=load_icons,
+                                      cached_entity_icon=lambda *args, **kwargs: None,
+                                      cached_component_icon=lambda *args, **kwargs: None)
+    scope = {"json": json, "entity_icons": no_translations,
              "er": SimpleNamespace(async_get=lambda hass: hass.registry),
              "_is_weather_entity": lambda entity: entity.startswith("weather.")}
     tree = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), *nodes], type_ignores=[])

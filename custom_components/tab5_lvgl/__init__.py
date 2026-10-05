@@ -63,10 +63,6 @@ from homeassistant.helpers.event import async_call_later, async_track_state_chan
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.sun import get_astral_event_date
 try:
-  from homeassistant.helpers.icon import icon_for_entity
-except Exception:  # pragma: no cover - optional fallback
-  icon_for_entity = None
-try:
   from homeassistant.helpers.network import get_url
 except Exception:  # pragma: no cover - older HA fallback
   get_url = None
@@ -241,6 +237,7 @@ from .announcement_guard import (
   check_signature,
 )
 from .local_camera import is_local_camera_self_loop, local_camera_command_topic
+from . import entity_icons
 from .numeric_history import fetch_numeric_history_values
 from .request_limits import RequestGate
 from .sun_times import sun_days, sun_entries
@@ -1785,6 +1782,7 @@ class Tab5Bridge:
       return
     async with self._config_publish_lock:
       self._refresh_runtime_entity_lists()
+      await entity_icons.async_load_entity_icons(self.hass, self.tracked_entities)
       config_data: dict[str, Any] = {
           "device_id": self.device_id,
           "base_topic": self.base_topic,
@@ -4440,6 +4438,8 @@ class Tab5Bridge:
     """Publish only the icon map; lightweight, no full config push."""
     if not self.icons_topic:
       return
+    # Icon translations of new entities' integrations first (entity_icons).
+    await entity_icons.async_load_entity_icons(self.hass, self.tracked_entities)
     # Entities and registry overrides may become available after startup without
     # a state event. Never follow a fresh config with an older empty icon map.
     self._prime_icon_cache()
@@ -5687,9 +5687,13 @@ def _normalize_mdi_icon_value(icon: Any) -> Optional[str]:
 
 
 def _extract_mdi_icon(state: State, hass: Optional[HomeAssistant] = None) -> Optional[str]:
+  """The entity icon in Home Assistant's order: the user's registry icon, the
+  icon attribute, the integration's icon translation, the Bridge's own
+  device-class rules (battery level), then the domain's icon translation."""
   if not state:
     return None
   icon = ""
+  registry_entry = None
   if hass:
     try:
       registry_entry = er.async_get(hass).async_get(state.entity_id)
@@ -5699,32 +5703,12 @@ def _extract_mdi_icon(state: State, hass: Optional[HomeAssistant] = None) -> Opt
   if not icon:
     raw_icon = state.attributes.get("icon")
     icon = raw_icon.strip() if isinstance(raw_icon, str) else ""
-  if not icon and hass and icon_for_entity:
-    try:
-      # HA 2025+ typically supports state kwarg.
-      icon = icon_for_entity(hass, state.entity_id, state=state)
-    except TypeError:
-      try:
-        # Older signature: (hass, entity_id, state)
-        icon = icon_for_entity(hass, state.entity_id, state)
-      except TypeError:
-        try:
-          # Older signature: (hass, entity_id)
-          icon = icon_for_entity(hass, state.entity_id)
-        except TypeError:
-          try:
-            # Legacy fallback: (hass, state)
-            icon = icon_for_entity(hass, state)
-          except Exception:
-            icon = None
-        except Exception:
-          icon = None
-      except Exception:
-        icon = None
-    except Exception:
-      icon = None
+  if not icon and hass:
+    icon = entity_icons.cached_entity_icon(hass, state, registry_entry) or ""
   if not icon:
     icon = _fallback_icon_from_state(state)
+  if not icon and hass:
+    icon = entity_icons.cached_component_icon(hass, state) or ""
   return _normalize_mdi_icon_value(icon)
 
 
@@ -5738,17 +5722,17 @@ def _extract_media_player_mdi_icon(state: State, hass: Optional[HomeAssistant] =
   if icon:
     return icon
 
-  if hass and icon_for_entity:
+  if hass:
     try:
-      icon = icon_for_entity(hass, state.entity_id)
-    except TypeError:
-      try:
-        icon = icon_for_entity(hass, state)
-      except Exception:
-        icon = None
+      registry_entry = er.async_get(hass).async_get(state.entity_id)
     except Exception:
-      icon = None
-    icon = _normalize_mdi_icon_value(icon)
+      registry_entry = None
+    icon = _normalize_mdi_icon_value(getattr(registry_entry, "icon", None))
+    if icon:
+      return icon
+    # The integration's default icon, never one of its playback states.
+    icon = _normalize_mdi_icon_value(
+      entity_icons.cached_entity_icon(hass, state, registry_entry, use_state=False))
     if icon:
       return icon
 
