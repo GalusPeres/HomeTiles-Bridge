@@ -45,8 +45,25 @@ def load_shim(fake):
     return module
 
 
+class Entries:
+    def __init__(self, entries):
+        self.entries = entries
+
+    def async_entries(self, domain):
+        assert domain == "tab5_lvgl"
+        return self.entries
+
+
+def config_entry(base, device_id, transport=None):
+    data = {"base_topic": base, "device_id": device_id}
+    if transport:
+        data["transport"] = transport
+    return types.SimpleNamespace(data=data, options={})
+
+
 class Hass:
-    def __init__(self, components=("mqtt",), link=True, mqtt_entries=None):
+    def __init__(self, components=("mqtt",), link=True, mqtt_entries=None, entries=()):
+        self.config_entries = Entries(list(entries))
         self.config = types.SimpleNamespace(components=set(components))
         self.data = {"tab5_lvgl": {}}
         self.broker = BROKER.LinkBroker() if link else None
@@ -115,6 +132,60 @@ class LinkMqttTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fake.subscribed, [("a/b", None)])
         unsubscribe()
         self.assertEqual(self.fake.subscribed, [])
+
+    async def test_linked_panel_never_sees_its_old_mqtt_retained_messages(self):
+        # The V2 left MQTT with "0" retained on its connected topic. On the
+        # link that stale "0" overrode the live "1" and made the view select
+        # and the panel camera unavailable.
+        hass = Hass(mqtt_entries=["s3"], entries=[
+            config_entry("hometiles_v2", "V2ID", transport="link"),
+            config_entry("hometiles_s3", "S3ID"),
+        ])
+        session = Session(base="hometiles_v2")
+        session.device_id = "V2ID"
+        hass.broker.attach(session)
+        hass.broker.panel_publish(session, "hometiles_v2/stat/connected", b"1", True)
+        seen = []
+        await self.mqtt.async_subscribe(hass, "hometiles_v2/stat/connected", lambda msg: seen.append(msg.payload))
+        await self.mqtt.async_subscribe(hass, "hometiles_s3/stat/connected", lambda msg: None)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        self.assertEqual(seen, ["1"])
+        self.assertEqual(self.fake.subscribed, [("hometiles_s3/stat/connected", "utf-8")])
+
+        # Commands for the linked panel stay on the link; others and the
+        # shared states still reach the MQTT panels.
+        hass.broker.panel_subscribe(session, "hometiles_v2/cmnd/light")
+        await self.mqtt.async_publish(hass, "hometiles_v2/cmnd/light", "x")
+        await self.mqtt.async_publish(hass, "tab5_lvgl/config/V2ID/bridge/apply", "{}", 0, True)
+        await self.mqtt.async_publish(hass, "hometiles_s3/cmnd/light", "y")
+        await self.mqtt.async_publish(hass, "ha/statestream/light/desk/state", "on", 0, True)
+        self.assertEqual([topic for topic, _payload, _retain in self.fake.published],
+                         ["hometiles_s3/cmnd/light", "ha/statestream/light/desk/state"])
+        self.assertEqual(session.sent, [("hometiles_v2/cmnd/light", b"x", False)])
+
+    async def test_wildcards_drop_mqtt_messages_of_linked_panels(self):
+        hass = Hass(mqtt_entries=["s3"], entries=[
+            config_entry("hometiles_v2", "V2ID", transport="link"),
+            config_entry("hometiles_s3", "S3ID"),
+        ])
+        stored = {}
+
+        async def subscribe(hass_, topic, handler, qos=0, encoding="utf-8"):
+            stored[topic] = handler
+            return lambda: None
+
+        self.fake.async_subscribe = subscribe
+        seen = []
+
+        async def handler(msg):
+            seen.append(msg.topic)
+
+        await self.mqtt.async_subscribe(hass, "tab5_lvgl/config/+/bridge", handler)
+        mqtt_handler = stored["tab5_lvgl/config/+/bridge"]
+        await mqtt_handler(types.SimpleNamespace(topic="tab5_lvgl/config/V2ID/bridge", payload="{}"))
+        await mqtt_handler(types.SimpleNamespace(topic="tab5_lvgl/config/S3ID/bridge", payload="{}"))
+        self.assertEqual(seen, ["tab5_lvgl/config/S3ID/bridge"])
 
     async def test_subscriptions_decode_flag_retained_and_run_coroutines(self):
         hass = Hass(mqtt_entries=[])

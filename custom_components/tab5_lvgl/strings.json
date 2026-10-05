@@ -46,13 +46,7 @@
       },
       "link_confirm": {
         "title": "Panel gefunden",
-        "description": "**{name}** ({model}) wurde im Netzwerk unter {host} gefunden. Es verbindet sich direkt mit Home Assistant, ein MQTT-Broker wird nicht gebraucht.\n\nNach dem Hinzuf\u00fcgen startet das Panel neu. Danach zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl.",
-        "data": {
-          "panel_password": "Web-Admin-Passwort des Panels (nur falls gesetzt)"
-        },
-        "data_description": {
-          "panel_password": "Leer lassen, wenn am Panel kein Web-Admin-Passwort gesetzt ist. Es wird nur f\u00fcr diese Einrichtung verwendet und nicht gespeichert."
-        }
+        "description": "Am Panel **{name}** ({model}, {host}) wurde Koppeln gedr\u00fcckt. Es verbindet sich direkt mit Home Assistant, ein MQTT-Broker wird nicht gebraucht.\n\nNach dem Hinzuf\u00fcgen startet das Panel neu. Danach zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl."
       },
       "link_number": {
         "title": "Zahl vergleichen",
@@ -61,6 +55,10 @@
           "link_accept": "Zahlen stimmen: verbinden",
           "link_reject": "Ablehnen"
         }
+      },
+      "link_switch": {
+        "title": "Auf direkte Verbindung umstellen",
+        "description": "Am Panel **{name}** ({host}) wurde Koppeln gedr\u00fcckt. Es ist schon \u00fcber MQTT eingerichtet und wechselt jetzt auf die direkte Verbindung ohne MQTT. Eintrag, Bereich, Namen und Entit\u00e4ten bleiben erhalten.\n\nNach dem Best\u00e4tigen startet das Panel neu. Danach zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl."
       }
     },
     "progress": {
@@ -76,7 +74,8 @@
       "panel_password_required": "The panel's Web Admin is protected by a password. Enter the Web Admin password.",
       "panel_locked": "Too many wrong passwords. Wait a few minutes and try again.",
       "panel_identity_failed": "The device could not prove that it is the panel with this password. No credentials were sent.",
-      "link_unsupported": "Die Firmware des Panels kann sich noch nicht direkt verbinden. Bitte das Panel zuerst aktualisieren."
+      "link_unsupported": "Die Firmware des Panels kann sich noch nicht direkt verbinden. Bitte das Panel zuerst aktualisieren.",
+      "link_window_closed": "Das Panel nimmt die Verbindung nicht mehr an. Am Panel erneut auf Koppeln dr\u00fccken und es innerhalb von zwei Minuten hinzuf\u00fcgen."
     },
     "abort": {
       "missing_device_id": "Das gefundene Ger\u00e4t hat keine g\u00fcltige Kennung gesendet.",
@@ -92,7 +91,9 @@
       "pairing_expired": "Dieser Versuch ist beendet. Am Display erneut auf Verschl\u00fcsseln tippen.",
       "link_unavailable": "Der Verbindungsdienst der HomeTiles Bridge l\u00e4uft nicht. Details stehen im Home-Assistant-Protokoll.",
       "link_failed": "Das Panel hat sich nicht gemeldet oder das Koppeln wurde abgebrochen. Das Panel bleibt erreichbar; am Panel unter Einstellungen > System > Sicherheit erneut koppeln oder es hier noch einmal hinzuf\u00fcgen.",
-      "link_rejected": "Abgelehnt. Das Panel wurde nicht hinzugef\u00fcgt."
+      "link_rejected": "Abgelehnt. Das Panel wurde nicht hinzugef\u00fcgt.",
+      "link_press_pair": "Am Panel unter Einstellungen > System > Sicherheit auf Koppeln dr\u00fccken, dann erscheint es hier.",
+      "link_switched": "Umgestellt. Das Panel ist jetzt direkt und verschl\u00fcsselt verbunden."
     }
   },
   "options": {

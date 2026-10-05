@@ -138,6 +138,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   _link_pending: Any = None
   _link_data: Optional[Dict[str, Any]] = None
   _link_task: Optional[asyncio.Task] = None
+  # An entry set up over MQTT that this dialog switches to the link.
+  _link_entry_id: Optional[str] = None
 
   def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
@@ -362,7 +364,15 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     # unique_id wuerden mehrere "Neues Geraet gefunden"-Karten fuer dasselbe
     # physische Panel entstehen.
     await self.async_set_unique_id(device_id)
-    self._abort_if_unique_id_configured()
+    # Firmware with the direct link announces itself only while Pair was
+    # pressed on the panel (TXT pair=1). Then an existing entry is switched to
+    # the link instead of being skipped.
+    link = _txt(props, "link") == "1"
+    pairing = link and _txt(props, "pair") == "1"
+    if not pairing:
+      self._abort_if_unique_id_configured()
+    if link and not pairing:
+      return self.async_abort(reason="link_press_pair")
 
     name = _txt(props, "name") or device_id
     self._discovered_host = _discovery_host(discovery_info)
@@ -381,11 +391,16 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     _LOGGER.warning("Tab5 LVGL DEBUG: neues Panel per Zeroconf gefunden: device_id=%s host=%s name=%s model=%s base=%s",
                     device_id, self._discovered_host, name, self._discovered_model, self._discovered_base_topic)
-    if _txt(props, "link") == "1":
-      # Firmware with the direct link: no MQTT, pairing in this dialog. The
-      # first panel arrives before Home Assistant set the integration up.
+    if pairing:
+      # No MQTT, pairing in this dialog. The first panel arrives before Home
+      # Assistant set the integration up, so the link starts here if needed.
       from . import async_ensure_link_runtime
       await async_ensure_link_runtime(self.hass)
+      existing = self._link_existing_entry(device_id)
+      self._link_entry_id = existing.entry_id if existing is not None else None
+      if existing is not None:
+        self.context["title_placeholders"] = {"name": existing.title}
+        return await self.async_step_link_switch()
       return await self.async_step_link_confirm()
     return await self.async_step_zeroconf_confirm()
 
@@ -452,24 +467,48 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
   # ---- Direct link: add a panel without MQTT and pair it in this dialog ----
 
+  def _link_existing_entry(self, device_id: str) -> Optional[config_entries.ConfigEntry]:
+    """The entry of this panel, unless the user ignored its discovery."""
+    for entry in self._async_current_entries(include_ignore=False):
+      values = dict(entry.data or {})
+      values.update(entry.options or {})
+      if entry.unique_id == device_id or str(values.get(CONF_DEVICE_ID) or "") == device_id:
+        return entry
+    return None
+
   async def async_step_link_confirm(self, user_input: Dict[str, Any] | None = None):
-    """Add a panel with the direct link (docs-dev/bridge-link.md, Setup)."""
+    """Add a panel whose Pair button was pressed (docs-dev/bridge-link.md, Setup)."""
+    return await self._async_link_start("link_confirm", user_input)
+
+  async def async_step_link_switch(self, user_input: Dict[str, Any] | None = None):
+    """Move a panel set up over MQTT to the link; its entry stays."""
+    return await self._async_link_start("link_switch", user_input)
+
+  async def _async_link_start(self, step_id: str, user_input: Dict[str, Any] | None):
     errors: Dict[str, str] = {}
     runtime = _link_runtime(self.hass)
     if runtime is None or runtime.port is None:
       return self.async_abort(reason="link_unavailable")
+    existing = (self.hass.config_entries.async_get_entry(self._link_entry_id)
+                if self._link_entry_id else None)
+    if self._link_entry_id and existing is None:
+      return self.async_abort(reason="pairing_expired")
     if user_input is not None:
-      self._abort_if_unique_id_configured()
-      base = _default_base_for_discovery(
-        self._discovered_base_topic, self._discovered_device_id, self._async_current_entries(),
-      )
-      prefix = _normalise_topic(self._discovered_ha_prefix, DEFAULT_PREFIX)
+      if existing is None:
+        self._abort_if_unique_id_configured()
+        base = _default_base_for_discovery(
+          self._discovered_base_topic, self._discovered_device_id, self._async_current_entries(),
+        )
+        prefix = _normalise_topic(self._discovered_ha_prefix, DEFAULT_PREFIX)
+      else:
+        # The panel keeps its topics, so every tile keeps working.
+        values = dict(existing.data or {})
+        values.update(existing.options or {})
+        base = _entry_base_topic(existing)
+        prefix = _normalise_topic(values.get(CONF_HA_PREFIX), DEFAULT_PREFIX)
       self._close_link()
       pending = runtime.begin_setup(str(self._discovered_device_id), base, prefix)
-      error = await _push_link_to_device(
-        self.hass, self._discovered_host, runtime.port, base, prefix,
-        str(user_input.get(CONF_PROVISION_PANEL_PASSWORD) or ""),
-      )
+      error = await _push_link_to_device(self.hass, self._discovered_host, runtime.port, base, prefix)
       if error:
         pending.close()
         _LOGGER.warning("HomeTiles Bridge could not set up the link of %s (%s): %s",
@@ -492,14 +531,12 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
           data[CONF_MODEL] = self._discovered_model
         self._link_data = data
         return await self.async_step_link_wait()
+    self._set_confirm_only()
     return self.async_show_form(
-      step_id="link_confirm",
-      data_schema=vol.Schema({
-        # Never prefilled: the panel password is typed for each setup.
-        vol.Optional(CONF_PROVISION_PANEL_PASSWORD, default=""): _password_schema(),
-      }),
+      step_id=step_id,
       description_placeholders={
-        "name": self._discovered_name or self._discovered_device_id or "",
+        "name": (existing.title if existing is not None else None)
+                or self._discovered_name or self._discovered_device_id or "",
         "model": self._discovered_model or "HomeTiles",
         "host": self._discovered_host or "",
       },
@@ -584,8 +621,24 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
   def _async_create_link_entry(self):
     pending = self._link_pending
-    data = with_pairing_key(dict(self._link_data or {}), pending.key)
+    key = pending.key
+    link_data = dict(self._link_data or {})
     self._close_link()
+    existing = (self.hass.config_entries.async_get_entry(self._link_entry_id)
+                if self._link_entry_id else None)
+    if existing is not None:
+      # Keep everything the user set up; only the transport and the key
+      # change. The update listener reloads the entry on the link.
+      data = with_pairing_key(dict(existing.data or {}), key)
+      data[CONF_TRANSPORT] = TRANSPORT_LINK
+      data[CONF_BASE_TOPIC] = link_data.get(CONF_BASE_TOPIC, data.get(CONF_BASE_TOPIC))
+      data[CONF_HA_PREFIX] = link_data.get(CONF_HA_PREFIX, data.get(CONF_HA_PREFIX))
+      self.hass.config_entries.async_update_entry(
+        existing, data=data, options=without_pairing(existing.options),
+      )
+      _LOGGER.info("HomeTiles Bridge switched %s to the direct link", data.get(CONF_DEVICE_ID))
+      return self.async_abort(reason="link_switched")
+    data = with_pairing_key(link_data, key)
     self._abort_if_unique_id_configured()
     _LOGGER.info("HomeTiles Bridge paired %s over the direct link", data.get(CONF_DEVICE_ID))
     return self.async_create_entry(title=_entry_title(data), data=data)
@@ -1346,12 +1399,13 @@ async def _push_link_to_device(
   port: int,
   base_topic: str,
   ha_prefix: str,
-  panel_password: str = "",
 ) -> Optional[str]:
   """Send the Bridge's link address with POST /api/link (panel_auth.py).
 
-  The host is the address of Home Assistant on the panel's network, like the
-  camera stream URL. Returns None on success or a config flow error code.
+  The panel accepts it only within two minutes after Pair was pressed on it,
+  which replaces the Web Admin password. The host is the address of Home
+  Assistant on the panel's network, like the camera stream URL. Returns None
+  on success or a config flow error code.
   """
   host = _source_ip_for_target(device_host) or _ha_url_host(hass, prefer_external=False)
   if not host:
@@ -1365,7 +1419,7 @@ async def _push_link_to_device(
     "ha_prefix": ha_prefix,
   }
   try:
-    return await async_push_link(session, device_host, form, panel_password, timeout)
+    return await async_push_link(session, device_host, form, timeout)
   except (aiohttp.ClientError, asyncio.TimeoutError):
     return ERROR_CANNOT_CONNECT
 

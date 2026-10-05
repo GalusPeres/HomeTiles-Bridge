@@ -447,7 +447,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
                 async_create_flow=lambda hass, domain, context, data: self.cards.append((domain, context, data))),
             "config_entries": types.SimpleNamespace(SOURCE_INTEGRATION_DISCOVERY="integration_discovery"),
             "DISCOVERY_PAIRING_ENTRY": "pairing_entry_id", "DISCOVERY_PAIRING_ATTEMPT": "pairing_attempt",
-            "PAIRING_UNIQUE_ID_PREFIX": "pairing_",
+            "PAIRING_UNIQUE_ID_PREFIX": "pairing_", "DATA_LINK": "link",
         }
         self.Bridge = bridge_class(scope)
         self.handled = []
@@ -691,6 +691,22 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         # The card closes and the entry reloads with the key.
         self.assertEqual(self.aborted, ["card"])
         self.assertEqual(self.updates, [{"data": {"base_topic": BASE, "command_pairing_key": KEY}, "options": {}}])
+
+    async def test_a_link_setup_dialog_owns_the_pairing_of_its_panel(self):
+        # Pair on a panel set up over MQTT: the setup dialog switches it to
+        # the direct link and pairs it; the entry's own pairing stays out.
+        bridge = self.make(paired=True)
+        bridge.device_id = "A1B2C3D4E5F6"
+        bridge.hass.data["tab5_lvgl"] = {"link": types.SimpleNamespace(pending={"A1B2C3D4E5F6": object()})}
+        await bridge._async_handle_pair_message(
+            types.SimpleNamespace(payload=PairingPanel().start(), retain=False))
+        self.assertEqual(self.mqtt.published, [])
+        self.assertEqual(self.cards, [])
+        # Without the dialog the paired entry refuses as before.
+        bridge.hass.data["tab5_lvgl"]["link"].pending.clear()
+        await bridge._async_handle_pair_message(
+            types.SimpleNamespace(payload=PairingPanel().start(), retain=False))
+        self.assertEqual(json.loads(self.mqtt.published[0][1])["r"], "paired")
 
     async def test_the_answering_card_is_not_aborted_under_its_feet(self):
         bridge = self.make(paired=False)

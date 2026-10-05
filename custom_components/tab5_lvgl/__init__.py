@@ -2762,6 +2762,11 @@ class Tab5Bridge:
     """A pairing message from the panel ({base}/pair/panel)."""
     if getattr(msg, "retain", False):
       return
+    runtime = self.hass.data.get(DOMAIN, {}).get(DATA_LINK)
+    if runtime is not None and self.device_id and self.device_id in runtime.pending:
+      # A setup dialog switches this panel to the direct link and pairs it
+      # itself; the entry's own (MQTT) pairing would refuse as "paired".
+      return
     # A removal in progress counts as paired: the panel turns it off first.
     events = self._pairing.handle(msg.payload, paired=self._command_channel is not None)
     await self._async_apply_pairing_events(events)
