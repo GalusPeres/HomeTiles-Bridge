@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.components import mqtt
 from homeassistant.components import network as ha_network
 from homeassistant.components import persistent_notification
 from homeassistant.components.weather import WeatherEntityFeature
@@ -73,6 +72,9 @@ except Exception:  # pragma: no cover - older HA fallback
   get_url = None
 from homeassistant.util import dt as dt_util, slugify
 
+# Every MQTT call also reaches panels on the direct link (link_mqtt.py).
+from . import link_mqtt as mqtt
+from .link_runtime import LinkRuntime
 from .binary_history import (
   BINARY_HISTORY_KIND,
   BINARY_HISTORY_RECORDER_MAX_CHANGES,
@@ -138,7 +140,11 @@ from .const import (
   CONF_SCENE_MAP,
   CONF_SENSORS,
   CONF_SWITCHES,
+  CONF_TRANSPORT,
   CONF_WEATHERS,
+  DATA_LINK,
+  DATA_MQTT_ENTRIES,
+  TRANSPORT_LINK,
   CONFIG_TOPIC_ROOT,
   CONFIG_TOPIC_SUB,
   DEFAULT_BASE,
@@ -439,6 +445,24 @@ def _config_signature(config_data: Dict[str, Any]) -> str:
 async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
   """Set up the integration namespace and service."""
   domain_data = hass.data.setdefault(DOMAIN, {"entries": {}})
+  # Loaded entries whose panel still uses MQTT; while it is empty, MQTT gets
+  # no publishes at all (link_mqtt.py).
+  domain_data.setdefault(DATA_MQTT_ENTRIES, set())
+
+  if DATA_LINK not in domain_data:
+    # The direct link (docs-dev/bridge-link.md). Without a free port the
+    # panels on MQTT keep working; linked panels cannot connect.
+    runtime = LinkRuntime(lambda: hass.config_entries.async_entries(DOMAIN))
+    domain_data[DATA_LINK] = runtime
+    await runtime.async_start()
+
+    async def _async_stop_link(_event: Event) -> None:
+      await runtime.async_stop()
+
+    domain_data["_link_stop_unsub"] = hass.bus.async_listen_once(
+      EVENT_HOMEASSISTANT_STOP,
+      _async_stop_link,
+    )
 
   if "camera_stream_manager" not in domain_data:
     camera_stream_manager = CameraStreamManager(hass)
@@ -537,6 +561,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.config_entries.async_update_entry(
       entry, data=without_pairing(entry.data), options=without_pairing(entry.options),
     )
+  mqtt_entries = hass.data[DOMAIN].setdefault(DATA_MQTT_ENTRIES, set())
+  if entry_transport(entry) == TRANSPORT_LINK:
+    mqtt_entries.discard(entry.entry_id)
+  else:
+    mqtt_entries.add(entry.entry_id)
   bridge = Tab5Bridge(hass, entry)
   await bridge.async_setup()
   hass.data[DOMAIN]["entries"][entry.entry_id] = bridge
@@ -1076,7 +1105,25 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   if unload_ok and bridge is not None:
     await bridge.async_unload()
     hass.data[DOMAIN]["entries"].pop(entry.entry_id, None)
+  if unload_ok:
+    hass.data[DOMAIN].get(DATA_MQTT_ENTRIES, set()).discard(entry.entry_id)
   return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+  """A removed panel on the direct link loses its connection at once."""
+  runtime = hass.data.get(DOMAIN, {}).get(DATA_LINK)
+  device_id = entry_device_id(entry)
+  if runtime is not None and device_id:
+    runtime.server.disconnect(str(device_id))
+
+
+def entry_transport(entry: ConfigEntry) -> Optional[str]:
+  """TRANSPORT_LINK for a panel on the direct link; None for MQTT."""
+  data = dict(entry.data or {})
+  if entry.options:
+    data.update(entry.options)
+  return data.get(CONF_TRANSPORT)
 
 
 async def async_remove_config_entry_device(

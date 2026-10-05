@@ -43,7 +43,29 @@
           "pairing_accept": "Zahlen stimmen: verschl\u00fcsseln",
           "pairing_reject": "Ablehnen (bleibt unverschl\u00fcsselt)"
         }
+      },
+      "link_confirm": {
+        "title": "Panel gefunden",
+        "description": "**{name}** ({model}) wurde im Netzwerk unter {host} gefunden. Es verbindet sich direkt mit Home Assistant, ein MQTT-Broker wird nicht gebraucht.\n\nNach dem Hinzuf\u00fcgen startet das Panel neu. Danach zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl.",
+        "data": {
+          "panel_password": "Web-Admin-Passwort des Panels (nur falls gesetzt)"
+        },
+        "data_description": {
+          "panel_password": "Leer lassen, wenn am Panel kein Web-Admin-Passwort gesetzt ist. Es wird nur f\u00fcr diese Einrichtung verwendet und nicht gespeichert."
+        }
+      },
+      "link_number": {
+        "title": "Zahl vergleichen",
+        "description": "Das Panel **{name}** zeigt jetzt eine Zahl.\n\n# {number}\n\nNur best\u00e4tigen, wenn das Panel genau diese Zahl zeigt. Danach auch am Panel best\u00e4tigen.",
+        "menu_options": {
+          "link_accept": "Zahlen stimmen: verbinden",
+          "link_reject": "Ablehnen"
+        }
       }
+    },
+    "progress": {
+      "link_wait": "Das Panel **{name}** startet neu und verbindet sich mit Home Assistant. Das dauert etwa eine halbe Minute.",
+      "link_finish": "Jetzt am Panel **{name}** auf Best\u00e4tigen tippen."
     },
     "error": {
       "topic_already_configured": "Ein Panel mit diesem MQTT-Topic ist bereits konfiguriert.",
@@ -53,7 +75,8 @@
       "invalid_panel_password": "Das Panel hat das Web-Admin-Passwort abgelehnt.",
       "panel_password_required": "Das Web Admin des Panels ist mit einem Passwort gesch\u00fctzt. Bitte das Web-Admin-Passwort eintragen.",
       "panel_locked": "Zu viele falsche Passw\u00f6rter. Bitte einige Minuten warten und erneut versuchen.",
-      "panel_identity_failed": "Das Ger\u00e4t konnte nicht nachweisen, dass es das Panel mit diesem Passwort ist. Es wurden keine Zugangsdaten gesendet."
+      "panel_identity_failed": "Das Ger\u00e4t konnte nicht nachweisen, dass es das Panel mit diesem Passwort ist. Es wurden keine Zugangsdaten gesendet.",
+      "link_unsupported": "Die Firmware des Panels kann sich noch nicht direkt verbinden. Bitte das Panel zuerst aktualisieren."
     },
     "abort": {
       "missing_device_id": "Das gefundene Ger\u00e4t hat keine g\u00fcltige Kennung gesendet.",
@@ -66,7 +89,10 @@
       "pairing_done": "Verschl\u00fcsselt. Das Display sendet seine Befehle jetzt verschl\u00fcsselt.",
       "pairing_confirmed": "Best\u00e4tigt. Jetzt auch am Display best\u00e4tigen.",
       "pairing_rejected": "Abgelehnt. Das Display bleibt unverschl\u00fcsselt verbunden.",
-      "pairing_expired": "Dieser Versuch ist beendet. Am Display erneut auf Verschl\u00fcsseln tippen."
+      "pairing_expired": "Dieser Versuch ist beendet. Am Display erneut auf Verschl\u00fcsseln tippen.",
+      "link_unavailable": "Der Verbindungsdienst der HomeTiles Bridge l\u00e4uft nicht. Details stehen im Home-Assistant-Protokoll.",
+      "link_failed": "Das Panel hat sich nicht gemeldet oder das Koppeln wurde abgebrochen. Das Panel bleibt erreichbar; am Panel unter Einstellungen > System > Sicherheit erneut koppeln oder es hier noch einmal hinzuf\u00fcgen.",
+      "link_rejected": "Abgelehnt. Das Panel wurde nicht hinzugef\u00fcgt."
     }
   },
   "options": {

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 
-from homeassistant.components import mqtt
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 
+# MQTT calls also reach panels on the direct link (link_mqtt.py).
+from . import link_mqtt as mqtt
 from .capabilities import merged_capabilities_data, supports
 from .command_channel import entry_pairing_key
 from .const import DOMAIN, LOCAL_CAMERA_MAX_BYTES, TOPIC_DISPLAY_ROTATE, TOPIC_DISPLAY_SLEEP

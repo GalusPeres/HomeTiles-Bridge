@@ -16,12 +16,13 @@ import json
 import logging
 from time import monotonic
 
-from homeassistant.components import mqtt
 from homeassistant.components import network as ha_network
 from homeassistant.components.camera import Camera, CameraEntityFeature, async_get_still_stream
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
+# MQTT calls also reach panels on the direct link (link_mqtt.py).
+from . import link_mqtt as mqtt
 from .capabilities import merged_capabilities_data, supports
 from .command_channel import entry_pairing_key
 from .const import (

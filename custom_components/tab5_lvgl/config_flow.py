@@ -21,9 +21,10 @@ from homeassistant.helpers.network import get_url
 
 from .access_helpers import parse_access_codes
 from .binary_sensor_helpers import split_binary_sensor_entities
-from .panel_auth import ERROR_CANNOT_CONNECT, async_push_credentials
+from .panel_auth import ERROR_CANNOT_CONNECT, async_push_credentials, async_push_link
 from .capabilities import CAPABILITIES
-from .command_channel import entry_pairing_key, entry_removing_key, key_id_for_key, without_pairing
+from .command_channel import entry_pairing_key, entry_removing_key, key_id_for_key, with_pairing_key, without_pairing
+from .pairing import ANSWER_PAIRED, ANSWER_WAITING
 from .control_helpers import ACTION_DOMAINS, SWITCH_DOMAINS, build_action_map, entity_domain
 from .editable_helpers import (EDITABLE_LISTS, EDITABLE_DOMAINS, NUMBER_DOMAINS, SELECT_DOMAINS, DATETIME_DOMAINS, editable_selection, domain_of, build_editable_payload, build_editable_service_call, add_number_history, MAX_CONTROL_BYTES)
 from .const import (
@@ -55,6 +56,8 @@ from .const import (
   CONF_SCENE_MAP_TEXT,
   CONF_SENSORS,
   CONF_SWITCHES,
+  CONF_TRANSPORT,
+  DATA_LINK,
   CONF_WEATHERS,
   DEFAULT_BASE,
   DEFAULT_PREFIX,
@@ -63,6 +66,7 @@ from .const import (
   DISCOVERY_PAIRING_ENTRY,
   DOMAIN,
   PAIRING_UNIQUE_ID_PREFIX,
+  TRANSPORT_LINK,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -78,6 +82,10 @@ CONF_PROVISION_PANEL_PASSWORD = "panel_password"
 CONF_REMOVE_PAIRING = "remove_pairing"
 # Result of the user's answer on a pairing card (pairing.ANSWER_*).
 _PAIRING_RESULTS = {"paired": "pairing_done", "waiting": "pairing_confirmed", "rejected": "pairing_rejected"}
+# Direct link setup: the panel restarts before it pairs; the user then has the
+# pairing's own two minutes to confirm on the display.
+LINK_PROMPT_TIMEOUT_S = 90.0
+LINK_FINISH_TIMEOUT_S = 120.0
 # State of the pairing in the options menu ("Security: encrypted").
 _SECURITY_STATES = {
   "de": {"paired": "verschl\u00fcsselt", "removing": "wird ausgeschaltet", "off": "nicht verschl\u00fcsselt"},
@@ -125,6 +133,11 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   # Pairing card: the entry whose panel asks to pair, and the attempt.
   _pairing_entry_id: Optional[str] = None
   _pairing_attempt: Optional[str] = None
+  # Direct link setup (link_runtime.PendingLink): the pairing this dialog
+  # waits for, the entry data it creates and the task behind a progress step.
+  _link_pending: Any = None
+  _link_data: Optional[Dict[str, Any]] = None
+  _link_task: Optional[asyncio.Task] = None
 
   def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
@@ -368,6 +381,9 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     _LOGGER.warning("Tab5 LVGL DEBUG: neues Panel per Zeroconf gefunden: device_id=%s host=%s name=%s model=%s base=%s",
                     device_id, self._discovered_host, name, self._discovered_model, self._discovered_base_topic)
+    if _txt(props, "link") == "1" and _link_runtime(self.hass) is not None:
+      # Firmware with the direct link: no MQTT, pairing in this dialog.
+      return await self.async_step_link_confirm()
     return await self.async_step_zeroconf_confirm()
 
   async def async_step_zeroconf_confirm(self, user_input: Dict[str, Any] | None = None):
@@ -430,6 +446,159 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       },
       errors=errors,
     )
+
+  # ---- Direct link: add a panel without MQTT and pair it in this dialog ----
+
+  async def async_step_link_confirm(self, user_input: Dict[str, Any] | None = None):
+    """Add a panel with the direct link (docs-dev/bridge-link.md, Setup)."""
+    errors: Dict[str, str] = {}
+    runtime = _link_runtime(self.hass)
+    if runtime is None or runtime.port is None:
+      return self.async_abort(reason="link_unavailable")
+    if user_input is not None:
+      self._abort_if_unique_id_configured()
+      base = _default_base_for_discovery(
+        self._discovered_base_topic, self._discovered_device_id, self._async_current_entries(),
+      )
+      prefix = _normalise_topic(self._discovered_ha_prefix, DEFAULT_PREFIX)
+      self._close_link()
+      pending = runtime.begin_setup(str(self._discovered_device_id), base, prefix)
+      error = await _push_link_to_device(
+        self.hass, self._discovered_host, runtime.port, base, prefix,
+        str(user_input.get(CONF_PROVISION_PANEL_PASSWORD) or ""),
+      )
+      if error:
+        pending.close()
+        _LOGGER.warning("HomeTiles Bridge could not set up the link of %s (%s): %s",
+                        self._discovered_device_id, self._discovered_host, error)
+        errors["base"] = error
+      else:
+        _LOGGER.info("HomeTiles Bridge sent its link address to %s (%s); waiting for pairing",
+                     self._discovered_device_id, self._discovered_host)
+        self._link_pending = pending
+        data: Dict[str, Any] = {
+          CONF_BASE_TOPIC: base,
+          CONF_HA_PREFIX: prefix,
+          CONF_DEVICE_ID: self._discovered_device_id,
+          CONF_TRANSPORT: TRANSPORT_LINK,
+        }
+        if self._discovered_name:
+          data[CONF_DEVICE_NAME] = self._discovered_name
+        if self._discovered_model:
+          data[CONF_MANUFACTURER] = "HomeTiles"
+          data[CONF_MODEL] = self._discovered_model
+        self._link_data = data
+        return await self.async_step_link_wait()
+    return self.async_show_form(
+      step_id="link_confirm",
+      data_schema=vol.Schema({
+        # Never prefilled: the panel password is typed for each setup.
+        vol.Optional(CONF_PROVISION_PANEL_PASSWORD, default=""): _password_schema(),
+      }),
+      description_placeholders={
+        "name": self._discovered_name or self._discovered_device_id or "",
+        "model": self._discovered_model or "HomeTiles",
+        "host": self._discovered_host or "",
+      },
+      errors=errors,
+    )
+
+  async def async_step_link_wait(self, user_input: Dict[str, Any] | None = None):
+    """The panel restarts and starts pairing; then the number is shown."""
+    pending = self._link_pending
+    if pending is None:
+      return self.async_abort(reason="pairing_expired")
+    if self._link_task is None:
+      self._link_task = self.hass.async_create_task(_wait_event(pending.prompted, LINK_PROMPT_TIMEOUT_S))
+    if not self._link_task.done():
+      return self.async_show_progress(
+        step_id="link_wait", progress_action="link_wait", progress_task=self._link_task,
+        description_placeholders={"name": self._discovered_name or self._discovered_device_id or ""},
+      )
+    self._link_task = None
+    if pending.number is None or pending.failure:
+      return self.async_show_progress_done(next_step_id="link_failed")
+    return self.async_show_progress_done(next_step_id="link_number")
+
+  async def async_step_link_number(self, user_input: Dict[str, Any] | None = None):
+    """The user compares the number with the one on the display."""
+    pending = self._link_pending
+    if pending is None or pending.number is None or pending.failure:
+      return await self.async_step_link_failed()
+    return self.async_show_menu(
+      step_id="link_number",
+      menu_options=["link_accept", "link_reject"],
+      description_placeholders={
+        "name": self._discovered_name or self._discovered_device_id or "",
+        "number": pending.number,
+      },
+    )
+
+  async def async_step_link_accept(self, user_input: Dict[str, Any] | None = None):
+    pending = self._link_pending
+    if pending is None:
+      return self.async_abort(reason="pairing_expired")
+    outcome = pending.answer(True)
+    if outcome == ANSWER_PAIRED and pending.key is not None:
+      return self._async_create_link_entry()
+    if outcome == ANSWER_WAITING:
+      return await self.async_step_link_finish()
+    return await self.async_step_link_failed()
+
+  async def async_step_link_finish(self, user_input: Dict[str, Any] | None = None):
+    """Confirmed here; waiting for the confirmation on the display."""
+    pending = self._link_pending
+    if pending is None:
+      return self.async_abort(reason="pairing_expired")
+    if self._link_task is None:
+      self._link_task = self.hass.async_create_task(_wait_event(pending.finished, LINK_FINISH_TIMEOUT_S))
+    if not self._link_task.done():
+      return self.async_show_progress(
+        step_id="link_finish", progress_action="link_finish", progress_task=self._link_task,
+        description_placeholders={"name": self._discovered_name or self._discovered_device_id or ""},
+      )
+    self._link_task = None
+    if pending.key is None:
+      return self.async_show_progress_done(next_step_id="link_failed")
+    return self.async_show_progress_done(next_step_id="link_create")
+
+  async def async_step_link_create(self, user_input: Dict[str, Any] | None = None):
+    pending = self._link_pending
+    if pending is None or pending.key is None:
+      return await self.async_step_link_failed()
+    return self._async_create_link_entry()
+
+  async def async_step_link_reject(self, user_input: Dict[str, Any] | None = None):
+    pending = self._link_pending
+    if pending is not None:
+      pending.answer(False)
+    self._close_link()
+    return self.async_abort(reason="link_rejected")
+
+  async def async_step_link_failed(self, user_input: Dict[str, Any] | None = None):
+    self._close_link()
+    return self.async_abort(reason="link_failed")
+
+  def _async_create_link_entry(self):
+    pending = self._link_pending
+    data = with_pairing_key(dict(self._link_data or {}), pending.key)
+    self._close_link()
+    self._abort_if_unique_id_configured()
+    _LOGGER.info("HomeTiles Bridge paired %s over the direct link", data.get(CONF_DEVICE_ID))
+    return self.async_create_entry(title=_entry_title(data), data=data)
+
+  def _close_link(self) -> None:
+    if self._link_task is not None and not self._link_task.done():
+      self._link_task.cancel()
+    self._link_task = None
+    if self._link_pending is not None:
+      self._link_pending.close()
+      self._link_pending = None
+
+  @callback
+  def async_remove(self) -> None:
+    """The dialog was closed: stop waiting for the panel."""
+    self._close_link()
 
   @staticmethod
   @callback
@@ -1151,6 +1320,49 @@ async def _push_credentials_to_device(
   }
   try:
     return await async_push_credentials(session, device_host, form, panel_password, timeout)
+  except (aiohttp.ClientError, asyncio.TimeoutError):
+    return ERROR_CANNOT_CONNECT
+
+
+def _link_runtime(hass: HomeAssistant) -> Any:
+  """The running direct link (link_runtime.LinkRuntime), or None."""
+  return hass.data.get(DOMAIN, {}).get(DATA_LINK)
+
+
+async def _wait_event(event: asyncio.Event, timeout: float) -> None:
+  """Progress task of a link step; ends on the event or after the timeout."""
+  try:
+    await asyncio.wait_for(event.wait(), timeout)
+  except asyncio.TimeoutError:
+    pass
+
+
+async def _push_link_to_device(
+  hass: HomeAssistant,
+  device_host: str,
+  port: int,
+  base_topic: str,
+  ha_prefix: str,
+  panel_password: str = "",
+) -> Optional[str]:
+  """Send the Bridge's link address with POST /api/link (panel_auth.py).
+
+  The host is the address of Home Assistant on the panel's network, like the
+  camera stream URL. Returns None on success or a config flow error code.
+  """
+  host = _source_ip_for_target(device_host) or _ha_url_host(hass, prefer_external=False)
+  if not host:
+    return ERROR_CANNOT_CONNECT
+  session = async_get_clientsession(hass)
+  timeout = aiohttp.ClientTimeout(total=5)
+  form = {
+    "host": host,
+    "port": str(port),
+    "base": base_topic,
+    "ha_prefix": ha_prefix,
+  }
+  try:
+    return await async_push_link(session, device_host, form, panel_password, timeout)
   except (aiohttp.ClientError, asyncio.TimeoutError):
     return ERROR_CANNOT_CONNECT
 

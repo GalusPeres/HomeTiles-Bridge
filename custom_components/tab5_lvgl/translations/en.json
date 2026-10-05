@@ -43,7 +43,29 @@
           "pairing_accept": "Numbers match: encrypt",
           "pairing_reject": "Reject (stays unencrypted)"
         }
+      },
+      "link_confirm": {
+        "title": "Panel found",
+        "description": "**{name}** ({model}) was found on the network at {host}. It connects to Home Assistant directly; no MQTT broker is needed.\n\nAfter you add it, the panel restarts. The panel and this dialog then show the same six-digit number.",
+        "data": {
+          "panel_password": "Panel Web Admin password (only if set)"
+        },
+        "data_description": {
+          "panel_password": "Leave empty if the panel has no Web Admin password. It is used for this setup only and never stored."
+        }
+      },
+      "link_number": {
+        "title": "Compare the number",
+        "description": "The panel **{name}** now shows a number.\n\n# {number}\n\nConfirm only if the panel shows exactly this number. Then confirm on the panel as well.",
+        "menu_options": {
+          "link_accept": "Numbers match: connect",
+          "link_reject": "Reject"
+        }
       }
+    },
+    "progress": {
+      "link_wait": "The panel **{name}** restarts and connects to Home Assistant. This takes about half a minute.",
+      "link_finish": "Now tap Confirm on the panel **{name}**."
     },
     "error": {
       "topic_already_configured": "A panel with this MQTT topic is already configured.",
@@ -53,7 +75,8 @@
       "invalid_panel_password": "The panel rejected the Web Admin password.",
       "panel_password_required": "The panel's Web Admin is protected by a password. Enter the Web Admin password.",
       "panel_locked": "Too many wrong passwords. Wait a few minutes and try again.",
-      "panel_identity_failed": "The device could not prove that it is the panel with this password. No credentials were sent."
+      "panel_identity_failed": "The device could not prove that it is the panel with this password. No credentials were sent.",
+      "link_unsupported": "The panel's firmware cannot connect directly yet. Update the panel first."
     },
     "abort": {
       "missing_device_id": "The discovered device did not send a valid identifier.",
@@ -66,7 +89,10 @@
       "pairing_done": "Encrypted. The display now sends encrypted commands.",
       "pairing_confirmed": "Confirmed. Now confirm on the display too.",
       "pairing_rejected": "Rejected. The display stays connected unencrypted.",
-      "pairing_expired": "This attempt has ended. Tap Encrypt on the display again."
+      "pairing_expired": "This attempt has ended. Tap Encrypt on the display again.",
+      "link_unavailable": "The connection service of the HomeTiles Bridge is not running. The Home Assistant log has the details.",
+      "link_failed": "The panel did not answer or the pairing was cancelled. Pair again on the panel under Settings > System > Security, or add it here once more.",
+      "link_rejected": "Rejected. The panel was not added."
     }
   },
   "options": {

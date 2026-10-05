@@ -48,6 +48,8 @@ ERROR_INVALID_PASSWORD = "invalid_panel_password"
 ERROR_PASSWORD_REQUIRED = "panel_password_required"
 ERROR_LOCKED = "panel_locked"
 ERROR_IDENTITY = "panel_identity_failed"
+# The panel's firmware has no direct link (POST /api/link answers 404).
+ERROR_LINK_UNSUPPORTED = "link_unsupported"
 
 KDF_MIN_ITERATIONS = 10_000
 KDF_MAX_ITERATIONS = 1_000_000
@@ -160,6 +162,29 @@ async def async_login(session: Any, host: str, password: str, timeout: Any) -> P
       protected=True,
     )
   return PanelLogin(error=ERROR_CANNOT_CONNECT, protected=True)
+
+
+async def async_push_link(session: Any, host: str, form: Dict[str, str],
+                          password: str, timeout: Any) -> Optional[str]:
+  """POST /api/link (Bridge address, base topic, prefix), logging in first.
+
+  The panel stores the address, starts pairing over the link and restarts by
+  itself. Returns None on success or an error code for the config flow form;
+  ERROR_LINK_UNSUPPORTED for firmware without the direct link.
+  """
+  login = await async_login(session, host, password, timeout)
+  if login.error:
+    _LOGGER.warning("HomeTiles panel login at %s failed: %s", host, login.error)
+    return login.error
+  async with session.post(f"http://{host}/api/link", data=form, headers=login.headers,
+                          timeout=timeout, allow_redirects=False) as response:
+    if response.status in (401, 403):
+      return ERROR_INVALID_PASSWORD if password else ERROR_PASSWORD_REQUIRED
+    if response.status == 404:
+      return ERROR_LINK_UNSUPPORTED
+    if response.status != 200:
+      return ERROR_CANNOT_CONNECT
+  return None
 
 
 async def async_push_credentials(session: Any, host: str, form: Dict[str, str],

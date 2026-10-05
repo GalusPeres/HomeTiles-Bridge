@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from homeassistant.components import mqtt
 from homeassistant.components.light import ColorMode, LightEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 
+# MQTT calls also reach panels on the direct link (link_mqtt.py).
+from . import link_mqtt as mqtt
 from .const import TOPIC_DISPLAY_BRIGHTNESS, TOPIC_SCREENSAVER_BRIGHTNESS
 from .device_helpers import (
     command_topic,

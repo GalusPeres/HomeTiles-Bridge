@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import math
 
-from homeassistant.components import mqtt
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
+# MQTT calls also reach panels on the direct link (link_mqtt.py).
+from . import link_mqtt as mqtt
 from .capabilities import merged_capabilities_data, supports
 from .const import CONF_HA_PREFIX, DEFAULT_PREFIX, TOPIC_SENSOR_SOC
 from .device_helpers import (

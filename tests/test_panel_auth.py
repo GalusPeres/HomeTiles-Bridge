@@ -196,3 +196,40 @@ class ConfigFlowContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+class LinkPanel(FakePanel):
+  """Firmware with the direct link: POST /api/link answers 200 (404 before)."""
+
+  def __init__(self, *, link=True, **kwargs):
+    super().__init__(**kwargs)
+    self.link = link
+
+  def post(self, url, **kwargs):
+    response = super().post(url, **kwargs)
+    if not url.endswith("/api/link") or response.status == 401:
+      return response
+    return FakeResponse(200 if self.link else 404, {"ok": True} if self.link else None)
+
+
+LINK_FORM = {"host": "192.168.1.2", "port": "8140", "base": "hometiles", "ha_prefix": "ha/statestream"}
+
+
+class LinkPushTest(unittest.IsolatedAsyncioTestCase):
+  async def push(self, panel, password):
+    return await AUTH.async_push_link(panel, "192.168.1.50", LINK_FORM, password, timeout=5)
+
+  async def test_link_push_logs_in_first_and_sends_no_restart(self):
+    panel = LinkPanel()
+    self.assertIsNone(await self.push(panel, PASSWORD))
+    paths = [request[1].split("192.168.1.50", 1)[1] for request in panel.requests]
+    self.assertEqual(paths, ["/api/auth/challenge", "/api/auth/login", "/api/link"])
+    self.assertEqual(panel.requests[2][2]["data"], LINK_FORM)
+    self.assertEqual(panel.requests[2][2]["headers"], {"Cookie": f"ht_session={SESSION}", "X-HomeTiles-CSRF": CSRF})
+
+  async def test_open_panel_and_missing_password(self):
+    self.assertIsNone(await self.push(LinkPanel(firmware="open"), ""))
+    self.assertEqual(await self.push(LinkPanel(), ""), AUTH.ERROR_PASSWORD_REQUIRED)
+
+  async def test_firmware_without_the_link_is_reported(self):
+    self.assertEqual(await self.push(LinkPanel(firmware="legacy", link=False), ""), AUTH.ERROR_LINK_UNSUPPORTED)

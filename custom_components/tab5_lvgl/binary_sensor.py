@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from homeassistant.components import mqtt
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
@@ -11,6 +10,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 
+# MQTT calls also reach panels on the direct link (link_mqtt.py).
+from . import link_mqtt as mqtt
 from .command_channel import entry_pairing_key, key_id_for_key
 from .device_helpers import entry_base_topic, entry_device_id, entry_device_info, state_topic
 

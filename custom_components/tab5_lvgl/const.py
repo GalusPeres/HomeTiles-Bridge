@@ -27,6 +27,14 @@ PAIRING_UNIQUE_ID_PREFIX = "pairing_"
 # Discovery data key: the existing entry a newly announcing panel would be
 # linked to once the user confirms (config_flow.async_step_adopt_confirm).
 DISCOVERY_ADOPT_ENTRY = "adopt_entry_id"
+# How a panel reaches the Bridge: absent means MQTT (as before), TRANSPORT_LINK
+# the direct link (link_server.py, docs-dev/bridge-link.md).
+CONF_TRANSPORT = "transport"
+TRANSPORT_LINK = "link"
+# hass.data[DOMAIN] keys (same values as in link_mqtt.py): the running link
+# (link_runtime.LinkRuntime) and the ids of loaded entries that use MQTT.
+DATA_LINK = "link"
+DATA_MQTT_ENTRIES = "mqtt_entries"
 
 CONF_ENERGY_ELECTRICITY = "energy_electricity"
 CONF_ENERGY_GAS = "energy_gas"
