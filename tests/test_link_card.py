@@ -20,12 +20,12 @@ def method(name):
 
 def link_card_flow_class():
   """The card steps that end a link card, on a small flow, without HA."""
-  names = {"_link_setup_running", "_async_dismiss_link_cards", "_async_link_card_expired",
-           "async_remove", "_close_link"}
+  names = {"_link_setup_running", "_async_dismiss_link_cards", "_async_dismiss_cards",
+           "_async_link_card_expired", "async_remove", "_close_link"}
   functions = [node for node in FLOW.body if getattr(node, "name", None) in names]
   constants = [node for node in TREE.body
                if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None)
-               in ("_LINK_CARD_STEPS", "LINK_CARD_TIMEOUT_S")]
+               in ("_LINK_CARD_STEPS", "_MQTT_CARD_STEPS", "LINK_CARD_TIMEOUT_S")]
   runtime = next(node for node in TREE.body if getattr(node, "name", None) == "_link_runtime")
   cls = ast.ClassDef(name="Flow", bases=[ast.Name("FlowBase", ast.Load())], keywords=[],
                      body=functions, decorator_list=[], type_params=[])
@@ -46,7 +46,7 @@ def link_card_flow_class():
       if step_id:
         self.cur_step = {"step_id": step_id}
 
-  scope = {"FlowBase": FlowBase, "DOMAIN": "tab5_lvgl", "DATA_LINK": "link", "Any": object,
+  scope = {"FlowBase": FlowBase, "DOMAIN": "tab5_lvgl", "DATA_LINK": "link", "Any": object, "Tuple": tuple,
            "HomeAssistant": object, "callback": lambda fn: fn, "_LOGGER": logging.getLogger("test_link_card")}
   exec(compile(ast.fix_missing_locations(module), "config_flow.py", "exec"), scope)
   return scope["Flow"], scope
@@ -106,6 +106,15 @@ class LinkCardTest(unittest.TestCase):
     self.Flow(self.hass, "new")._async_dismiss_link_cards("A1B2C3D4E5F6")
     self.assertEqual(self.manager.aborted, [])
 
+  def test_old_mqtt_cards_of_the_panel_are_removed(self):
+    self.card("mqtt", "discovery_confirm")
+    self.card("adopt", "adopt_confirm")
+    self.card("link", "link_confirm")
+    self.card("other", "discovery_confirm", device_id="0F0E0D0C0B0A")
+    self.Flow(self.hass, "new")._async_dismiss_cards(
+      "A1B2C3D4E5F6", self.scope["_MQTT_CARD_STEPS"], "it no longer uses MQTT")
+    self.assertEqual(self.manager.aborted, ["mqtt", "adopt"])
+
   def test_later_steps_are_not_cards(self):
     for step_id in ("link_wait", "link_number", "link_finish", "zeroconf_confirm"):
       self.card(step_id, step_id)
@@ -142,6 +151,7 @@ class LinkCardTest(unittest.TestCase):
   def test_timeout_covers_the_firmware_window(self):
     self.assertGreaterEqual(self.scope["LINK_CARD_TIMEOUT_S"], 120.0)
     self.assertEqual(self.scope["_LINK_CARD_STEPS"], ("link_confirm", "link_switch"))
+    self.assertEqual(self.scope["_MQTT_CARD_STEPS"], ("discovery_confirm", "adopt_confirm"))
 
 
 class ZeroconfOrderTest(unittest.TestCase):
@@ -151,6 +161,25 @@ class ZeroconfOrderTest(unittest.TestCase):
     self.assertLess(dismiss, source.index("await self.async_set_unique_id(device_id)"),
                     "otherwise the announcement aborts as already_in_progress and the old card stays")
     self.assertLess(source.index("if link and not pairing:"), dismiss)
+
+  def test_old_mqtt_cards_and_announcements_go(self):
+    source = ast.get_source_segment(SOURCE, method("async_step_zeroconf"))
+    unique = source.index("await self.async_set_unique_id(device_id)")
+    closed = source[source.index("if link and not pairing:"):source.index("elif pairing:")]
+    # The panel has neither MQTT nor the link: its MQTT card and announcement are old.
+    self.assertIn('self._async_dismiss_cards(device_id, _MQTT_CARD_STEPS, "it no longer uses MQTT")', closed)
+    self.assertIn("link_mqtt.async_clear_mqtt_announcement(self.hass, device_id)", closed)
+    self.assertIn("async_create_background_task", closed)
+    pressed = source[source.index("elif pairing:"):unique]
+    self.assertIn('self._async_dismiss_cards(device_id, _MQTT_CARD_STEPS, "Pair was pressed on it")', pressed)
+    self.assertLess(source.index("elif pairing:"), unique)
+
+  def test_linked_entries_clear_their_mqtt_announcement_without_delaying_the_start(self):
+    init = (ROOT / "__init__.py").read_text(encoding="utf-8")
+    setup = init[init.index("async def async_setup_entry("):init.index("async def async_migrate_entry(")]
+    linked = setup[setup.index("if entry_transport(entry) == TRANSPORT_LINK:"):setup.index("  else:")]
+    self.assertIn("hass.async_create_background_task(", linked)
+    self.assertIn("mqtt.async_clear_mqtt_announcement(hass, entry_device_id(entry))", linked)
 
   def test_a_new_card_arms_its_timer(self):
     source = ast.get_source_segment(SOURCE, method("async_step_zeroconf"))

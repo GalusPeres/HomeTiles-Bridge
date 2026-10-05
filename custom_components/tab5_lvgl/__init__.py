@@ -577,6 +577,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   mqtt_entries = hass.data[DOMAIN].setdefault(DATA_MQTT_ENTRIES, set())
   if entry_transport(entry) == TRANSPORT_LINK:
     mqtt_entries.discard(entry.entry_id)
+    # Its announcement from the MQTT days would offer the panel as new again
+    # once this entry is deleted. In the background: MQTT may come up later.
+    hass.async_create_background_task(
+      mqtt.async_clear_mqtt_announcement(hass, entry_device_id(entry)),
+      f"{DOMAIN} clear MQTT announcement {entry.entry_id}",
+    )
   else:
     mqtt_entries.add(entry.entry_id)
   bridge = Tab5Bridge(hass, entry)

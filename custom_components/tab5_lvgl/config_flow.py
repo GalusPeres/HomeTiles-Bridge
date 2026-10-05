@@ -20,6 +20,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.network import get_url
 
+from . import link_mqtt
 from .access_helpers import parse_access_codes
 from .binary_sensor_helpers import split_binary_sensor_entities
 from .panel_auth import ERROR_CANNOT_CONNECT, async_push_credentials, async_push_link
@@ -95,6 +96,8 @@ LINK_CARD_TIMEOUT_S = 125.0
 # Steps of such a card while it waits for Add; later steps belong to a setup
 # that is already running.
 _LINK_CARD_STEPS = ("link_confirm", "link_switch")
+# Steps of a card made from a panel's MQTT announcement.
+_MQTT_CARD_STEPS = ("discovery_confirm", "adopt_confirm")
 # State of the pairing in the options menu ("Security: encrypted").
 _SECURITY_STATES = {
   "de": {"paired": "verschl\u00fcsselt", "removing": "wird ausgeschaltet", "off": "nicht verschl\u00fcsselt"},
@@ -375,11 +378,23 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     # the link instead of being skipped.
     link = _txt(props, "link") == "1"
     pairing = link and _txt(props, "pair") == "1"
+    # Cards are removed before the unique id check below, which would drop
+    # this announcement while another card for the panel is open.
     if link and not pairing:
-      # The pair window closed (time up, cancelled, or answered by this Home
-      # Assistant). A card still waiting for Add would only fail on Submit;
-      # remove it before the unique id check below drops this announcement.
+      # The pair window closed (time up or cancelled). A card still waiting
+      # for Add would only fail on Submit.
       self._async_dismiss_link_cards(device_id)
+      # Without its window the panel announces itself only while it has
+      # neither MQTT nor the link: an MQTT announcement of it is left over
+      # from before, and Add on its card would create a dead entry.
+      self._async_dismiss_cards(device_id, _MQTT_CARD_STEPS, "it no longer uses MQTT")
+      self.hass.async_create_background_task(
+        link_mqtt.async_clear_mqtt_announcement(self.hass, device_id),
+        f"{DOMAIN} clear MQTT announcement {device_id}",
+      )
+    elif pairing:
+      # Pair moves the panel to the link: its card replaces an MQTT card.
+      self._async_dismiss_cards(device_id, _MQTT_CARD_STEPS, "Pair was pressed on it")
     # Erste Zeile, bei JEDEM Aufruf: HA ruft diese Stufe bei jedem Re-Announce /
     # jedem Neustart erneut auf, solange das Geraet sendet. Ohne konsistente
     # unique_id wuerden mehrere "Neues Geraet gefunden"-Karten fuer dasselbe
@@ -684,10 +699,15 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """
     if self._link_setup_running(device_id):
       return
+    self._async_dismiss_cards(device_id, _LINK_CARD_STEPS, "its pair window closed")
+
+  @callback
+  def _async_dismiss_cards(self, device_id: str, steps: Tuple[str, ...], reason: str) -> None:
+    """Remove the panel's other cards that wait in one of these steps."""
     manager = self.hass.config_entries.flow
     for flow in manager.async_progress_by_handler(DOMAIN, match_context={"unique_id": device_id}):
-      if flow["flow_id"] != self.flow_id and flow.get("step_id") in _LINK_CARD_STEPS:
-        _LOGGER.info("HomeTiles Bridge removed the card of %s: its pair window closed", device_id)
+      if flow["flow_id"] != self.flow_id and flow.get("step_id") in steps:
+        _LOGGER.info("HomeTiles Bridge removed the card of %s: %s", device_id, reason)
         manager.async_abort(flow["flow_id"])
 
   @callback

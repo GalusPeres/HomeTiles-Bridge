@@ -214,6 +214,43 @@ class LinkMqttTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
         self.assertEqual(len(received), 2)
 
+    async def test_a_linked_panel_loses_its_old_mqtt_announcement_only_on_mqtt(self):
+        topic = "tab5_lvgl/config/8AF1E60AF6E8/bridge"
+        hass = Hass(mqtt_entries=[], entries=[config_entry("hometiles_f6e8", "8AF1E60AF6E8", "link")])
+        hass.broker.publish(topic, b'{"device_id":"8AF1E60AF6E8"}', True)
+        await self.mqtt.async_clear_mqtt_announcement(hass, "8AF1E60AF6E8")
+        # Empty and retained deletes it on the broker, although the topic
+        # belongs to a linked panel; the link keeps the current announcement.
+        self.assertEqual(self.fake.published, [(topic, "", True)])
+        self.assertEqual(hass.broker.retained(topic), b'{"device_id":"8AF1E60AF6E8"}')
+
+    async def test_clearing_the_announcement_waits_for_mqtt_and_never_fails(self):
+        topic = "tab5_lvgl/config/8AF1E60AF6E8/bridge"
+        await self.mqtt.async_clear_mqtt_announcement(Hass(components=()), "8AF1E60AF6E8")
+        await self.mqtt.async_clear_mqtt_announcement(Hass(), "")
+        self.assertEqual(self.fake.published, [])
+        waits = []
+
+        async def wait_for_mqtt(hass):
+            waits.append(hass)
+            return False
+
+        self.fake.async_wait_for_mqtt_client = wait_for_mqtt
+        await self.mqtt.async_clear_mqtt_announcement(Hass(), "8AF1E60AF6E8")
+        self.assertEqual((len(waits), self.fake.published), (1, []))
+
+        async def ready(hass):
+            return True
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("MQTT is not connected")
+
+        self.fake.async_wait_for_mqtt_client = ready
+        await self.mqtt.async_clear_mqtt_announcement(Hass(), "8AF1E60AF6E8")
+        self.assertEqual(self.fake.published, [(topic, "", True)])
+        self.fake.async_publish = broken
+        await self.mqtt.async_clear_mqtt_announcement(Hass(), "8AF1E60AF6E8")
+
 
 if __name__ == "__main__":
     unittest.main()

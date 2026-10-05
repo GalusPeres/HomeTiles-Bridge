@@ -185,6 +185,26 @@ async def async_subscribe(hass: Any, topic: str, msg_callback: Callable[[Any], A
   return unsubscribe
 
 
+async def async_clear_mqtt_announcement(hass: Any, device_id: str) -> None:
+  """Delete a panel's retained announcement on the MQTT broker.
+
+  A panel on the direct link no longer announces itself over MQTT, but the
+  broker keeps its last announcement from the MQTT days. Home Assistant
+  would offer that panel as new again, and Add would create an entry the
+  panel never receives. Only MQTT is cleared; the link keeps the panel's
+  current announcement.
+  """
+  if not device_id or not mqtt_ready(hass):
+    return
+  try:
+    wait = getattr(_mqtt, "async_wait_for_mqtt_client", None)
+    if wait is not None and not await wait(hass):
+      return
+    await _mqtt.async_publish(hass, f"{CONFIG_ROOT}/{device_id}/bridge", "", 0, True)
+  except Exception as err:  # MQTT is optional for linked panels.
+    _LOGGER.debug("HomeTiles link: could not clear the MQTT announcement of %s: %s", device_id, err)
+
+
 def is_connected(hass: Any) -> bool:
   """The MQTT connection while it is used; the in-process broker otherwise."""
   if link_broker(hass) is not None and not mqtt_wanted(hass):
