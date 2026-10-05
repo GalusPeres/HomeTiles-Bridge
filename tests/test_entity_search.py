@@ -26,11 +26,13 @@ class SearchModuleTests(unittest.TestCase):
     def test_parse_search(self):
         parse = SEARCH.parse_search
         self.assertEqual(parse('{"id":7,"q":"  küche ","list":"sensors","web_auth":true}'),
-                         {"id": 7, "list": "sensors", "q": "küche", "web_auth": True})
+                         {"id": 7, "list": "sensors", "q": "küche", "o": 0, "web_auth": True})
+        self.assertEqual(parse('{"id":7,"list":"sensors","o":60}')["o"], 60, "The picker's next page")
         self.assertFalse(parse('{"id":7,"list":"switches","web_auth":"true"}')["web_auth"], "Only a real true counts")
         self.assertEqual(len(parse(json.dumps({"id": 1, "list": "covers", "q": "x" * 500}))["q"]), SEARCH.MAX_QUERY)
         for bad in ('{"id":-1,"list":"sensors"}', '{"id":true,"list":"sensors"}', '{"id":1,"list":"energy"}',
-                    '{"id":1,"list":"sensors","q":5}', '[]', 'nope', None):
+                    '{"id":1,"list":"sensors","q":5}', '{"id":1,"list":"sensors","o":-1}',
+                    '{"id":1,"list":"sensors","o":5001}', '{"id":1,"list":"sensors","o":"60"}', '[]', 'nope', None):
             self.assertIsNone(parse(bad), bad)
 
     def test_search_matches_every_word_in_name_id_area_and_device(self):
@@ -45,6 +47,8 @@ class SearchModuleTests(unittest.TestCase):
         self.assertEqual(len(SEARCH.search(entries, "")[0]), 3)
         found, more = SEARCH.search(entries, "", limit=2)
         self.assertEqual((len(found), more), (2, True))
+        found, more = SEARCH.search(entries, "", limit=2, offset=2)
+        self.assertEqual(([item["v"] for item in found], more), (["sensor.a"], False), "The last page")
 
     def test_answer_parts_fit_the_sealed_limit(self):
         results = [{"v": f"sensor.wohnzimmer_temperatur_{index}", "t": f"Wohnzimmer Temperatur Ä{index}",
@@ -187,6 +191,15 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         bridge._command_channel.removing = True
         await bridge._async_handle_entities_command(self.command({"id": 4, "q": "", "list": "sensors", "web_auth": True}))
         self.assertFalse(self.sent[-1][1]["full"], "A pairing being removed grants nothing")
+
+    async def test_next_page(self):
+        bridge = self.make()
+        await bridge._async_handle_entities_command(
+            self.command({"id": 6, "q": "", "list": "sensors", "o": 1, "web_auth": True}))
+        [(_, answer)] = self.sent
+        self.assertEqual([item["v"] for item in answer["r"]], ["sensor.kitchen"])
+        self.assertFalse(answer["more"])
+        self.assertEqual(self.loaded_icons, [["sensor.kitchen"]], "Icons only for the page")
 
     async def test_search_by_area(self):
         bridge = self.make()

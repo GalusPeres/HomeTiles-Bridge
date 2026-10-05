@@ -2722,7 +2722,7 @@ class Tab5Bridge:
       entity_ids = [state.entity_id for state in self.hass.states.async_all(entity_search.LIST_DOMAINS[request["list"]])]
     else:
       entity_ids = self._released_for_list(request["list"])
-    results, more = entity_search.search(self._search_entries(entity_ids), request["q"])
+    results, more = entity_search.search(self._search_entries(entity_ids), request["q"], offset=request["o"])
     # Icons only for what the panel gets: icon translations load per integration.
     await entity_icons.async_load_entity_icons(self.hass, [item["v"] for item in results])
     for item in results:

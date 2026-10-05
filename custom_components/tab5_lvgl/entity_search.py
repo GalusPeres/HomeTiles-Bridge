@@ -35,14 +35,15 @@ LIST_DOMAINS: Dict[str, Tuple[str, ...]] = {
 }
 
 MAX_QUERY = 64
-MAX_RESULTS = 60
+MAX_RESULTS = 60  # one page; the picker asks for the next one while scrolling
+MAX_OFFSET = 5000
 MAX_PART_BYTES = 1900  # below command_channel.MAX_BODY with the envelope fields
 MAX_PARTS = 6
 MAX_TILE_ENTITIES = 200
 
 
 def parse_search(body: Any) -> Optional[Dict[str, Any]]:
-  """{"id", "q", "list", "web_auth"} or None for an invalid request."""
+  """{"id", "q", "list", "o", "web_auth"} or None for an invalid request."""
   try:
     data = json.loads(body) if isinstance(body, (str, bytes, bytearray)) else body
   except (TypeError, ValueError):
@@ -58,7 +59,10 @@ def parse_search(body: Any) -> Optional[Dict[str, Any]]:
   query = data.get("q", "")
   if not isinstance(query, str):
     return None
-  return {"id": request_id, "list": key, "q": query.strip()[:MAX_QUERY],
+  offset = data.get("o", 0)
+  if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= MAX_OFFSET:
+    return None
+  return {"id": request_id, "list": key, "q": query.strip()[:MAX_QUERY], "o": offset,
           "web_auth": data.get("web_auth") is True}
 
 
@@ -67,12 +71,14 @@ def matches(entry: Mapping[str, Any], words: List[str]) -> bool:
   return all(word in text for word in words)
 
 
-def search(entries: Iterable[Mapping[str, Any]], query: str, limit: int = MAX_RESULTS) -> Tuple[List[Dict[str, Any]], bool]:
-  """Matching entries sorted by name, at most `limit`; True when more matched."""
+def search(entries: Iterable[Mapping[str, Any]], query: str, limit: int = MAX_RESULTS,
+           offset: int = 0) -> Tuple[List[Dict[str, Any]], bool]:
+  """Matching entries sorted by name, at most `limit` from `offset` on; True
+  when more follow."""
   words = [word for word in query.casefold().split() if word]
   found = [dict(entry) for entry in entries if matches(entry, words)]
   found.sort(key=lambda entry: (str(entry.get("t") or "").casefold(), str(entry.get("v"))))
-  return found[:limit], len(found) > limit
+  return found[offset:offset + limit], len(found) > offset + limit
 
 
 def compact(entry: Mapping[str, Any]) -> Dict[str, str]:
