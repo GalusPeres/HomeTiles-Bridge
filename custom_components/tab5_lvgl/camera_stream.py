@@ -1156,7 +1156,15 @@ class CameraStreamConnection:
     except (BrokenPipeError, ConnectionResetError):
       pass
     finally:
-      if image_task:
+      if image_task and image_task.done():
+        # The image can arrive in the same loop turn the feeder stops. It is
+        # still the newest one, and an FFmpeg restart resumes from it.
+        with suppress(asyncio.CancelledError, Exception):
+          image = image_task.result()
+          content = bytes(image.content) if image.content else b""
+          if content:
+            session.latest_image = content
+      elif image_task:
         image_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
           await image_task

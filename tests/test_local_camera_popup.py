@@ -701,6 +701,30 @@ class StillFeederTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.written, [newest])
         self.assertEqual(session.first_image, b"first")
 
+    async def test_image_that_arrives_while_the_feeder_stops_is_kept(self):
+        # The image task finishes in the same loop turn the feeder is
+        # cancelled; that image is still the newest one an FFmpeg restart
+        # must resume from. Losing it made the restart test above flaky.
+        session = self.session()
+        arrived = asyncio.Event()
+        original = self.get_image
+
+        async def get_image(hass, entity_id, **kwargs):
+            image = await original(hass, entity_id, **kwargs)
+            arrived.set()
+            return image
+
+        with mock.patch.object(self.module, "async_get_image", get_image):
+            task = asyncio.create_task(
+                self.connection._async_feed_camera_images(session, FakeProcess(echo=False)))
+            await arrived.wait()
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self.assertEqual(len(self.returned), 1)
+        self.assertEqual(session.latest_image, self.returned[0])
+        self.assertEqual(self.cancelled, 0)
+
     async def test_measured_still_rate_is_logged_once_per_session(self):
         session = self.session()
         with mock.patch.object(self.module, "CAMERA_STREAM_DIAGNOSTIC_INTERVAL_SECONDS", 0.15), \
