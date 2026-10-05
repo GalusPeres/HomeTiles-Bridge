@@ -181,6 +181,29 @@ class ZeroconfOrderTest(unittest.TestCase):
     self.assertIn("hass.async_create_background_task(", linked)
     self.assertIn("mqtt.async_clear_mqtt_announcement(hass, entry_device_id(entry))", linked)
 
+  def test_a_leftover_mqtt_card_cannot_follow_at_start_up(self):
+    # Both discoveries wait for the end of the start; the MQTT one may run
+    # after the mDNS one and must then not open a card.
+    source = ast.get_source_segment(SOURCE, method("async_step_zeroconf"))
+    closed = source[source.index("if link and not pairing:"):source.index("elif pairing:")]
+    self.assertIn("_link_only_panels(self.hass).add(device_id.upper())", closed)
+    discovery = ast.get_source_segment(SOURCE, method("async_step_integration_discovery"))
+    blocked = discovery.index("if str(device_id).upper() in _link_only_panels(self.hass):")
+    self.assertLess(discovery.index("return await self._async_start_pairing_card(discovery_info)"), blocked)
+    self.assertLess(blocked, discovery.index("await self.async_set_unique_id(device_id)"))
+    self.assertIn('return self.async_abort(reason="link_press_pair")', discovery[blocked:])
+
+  def test_a_live_mqtt_announcement_makes_the_card_real_again(self):
+    init = (ROOT / "__init__.py").read_text(encoding="utf-8")
+    handler = init[init.index("async def _handle_bridge_config("):init.index('if "_config_unsub" not in domain_data:')]
+    self.assertIn('retained=bool(getattr(msg, "retain", False))', handler)
+    process = init[init.index("async def _async_process_bridge_config("):init.index("def _announcement_log_due(")]
+    live = process.index("if link_only and not retained:")
+    self.assertIn("link_only.discard(str(device_id).upper())", process[live:live + 200])
+    # Only for panels without an entry, before a card can be created.
+    self.assertLess(process.index("  if entry:"), live)
+    self.assertLess(live, process.index("discovery_flow.async_create_flow("))
+
   def test_a_new_card_arms_its_timer(self):
     source = ast.get_source_segment(SOURCE, method("async_step_zeroconf"))
     branch = source[source.index("if pairing:"):]

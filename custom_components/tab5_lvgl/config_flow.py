@@ -60,6 +60,7 @@ from .const import (
   CONF_SWITCHES,
   CONF_TRANSPORT,
   DATA_LINK,
+  DATA_LINK_ONLY,
   CONF_WEATHERS,
   DEFAULT_BASE,
   DEFAULT_PREFIX,
@@ -227,6 +228,10 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     device_id = discovery_info.get(CONF_DEVICE_ID)
     if not device_id:
       return self.async_abort(reason="missing_device_id")
+    if str(device_id).upper() in _link_only_panels(self.hass):
+      # The panel has neither MQTT nor the link (async_step_zeroconf): this
+      # announcement is left over, and Add would create a dead entry.
+      return self.async_abort(reason="link_press_pair")
     await self.async_set_unique_id(device_id)
     self._abort_if_unique_id_configured()
     self._discovered_data = dict(discovery_info)
@@ -388,6 +393,8 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
       # neither MQTT nor the link: an MQTT announcement of it is left over
       # from before, and Add on its card would create a dead entry.
       self._async_dismiss_cards(device_id, _MQTT_CARD_STEPS, "it no longer uses MQTT")
+      # At start-up the card from that announcement may still follow.
+      _link_only_panels(self.hass).add(device_id.upper())
       self.hass.async_create_background_task(
         link_mqtt.async_clear_mqtt_announcement(self.hass, device_id),
         f"{DOMAIN} clear MQTT announcement {device_id}",
@@ -1451,6 +1458,11 @@ async def _push_credentials_to_device(
     return await async_push_credentials(session, device_host, form, panel_password, timeout)
   except (aiohttp.ClientError, asyncio.TimeoutError):
     return ERROR_CANNOT_CONNECT
+
+
+def _link_only_panels(hass: HomeAssistant) -> set:
+  """Panels without MQTT and link, seen over mDNS (const.DATA_LINK_ONLY)."""
+  return hass.data.setdefault(DOMAIN, {"entries": {}}).setdefault(DATA_LINK_ONLY, set())
 
 
 def _link_runtime(hass: HomeAssistant) -> Any:

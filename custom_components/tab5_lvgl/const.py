@@ -35,6 +35,10 @@ TRANSPORT_LINK = "link"
 # (link_runtime.LinkRuntime) and the ids of loaded entries that use MQTT.
 DATA_LINK = "link"
 DATA_MQTT_ENTRIES = "mqtt_entries"
+# hass.data[DOMAIN][DATA_LINK_ONLY]: ids of panels seen over mDNS without
+# MQTT and without the link (new panels). A retained MQTT announcement of
+# one of them is left over and gets no card (config_flow.py).
+DATA_LINK_ONLY = "link_only_panels"
 
 CONF_ENERGY_ELECTRICITY = "energy_electricity"
 CONF_ENERGY_GAS = "energy_gas"

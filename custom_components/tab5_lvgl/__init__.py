@@ -144,6 +144,7 @@ from .const import (
   CONF_WEATHERS,
   DATA_LINK,
   DATA_MQTT_ENTRIES,
+  DATA_LINK_ONLY,
   TRANSPORT_LINK,
   CONFIG_TOPIC_ROOT,
   CONFIG_TOPIC_SUB,
@@ -527,6 +528,7 @@ async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
       return
     await _async_process_bridge_config(
       hass, payload, topic=msg.topic, raw_payload=raw_payload,
+      retained=bool(getattr(msg, "retain", False)),
     )
 
   if "_config_unsub" not in domain_data:
@@ -5955,6 +5957,7 @@ async def _async_process_bridge_config(
   *,
   topic: Optional[str] = None,
   raw_payload: Any = None,
+  retained: bool = False,
 ) -> None:
   try:
     data = _payload_to_entry_data(payload)
@@ -6043,6 +6046,11 @@ async def _async_process_bridge_config(
         update["options"] = cleaned_options
       hass.config_entries.async_update_entry(entry, **update)
     return
+
+  link_only = hass.data.get(DOMAIN, {}).get(DATA_LINK_ONLY)
+  if link_only and not retained:
+    # Sent just now: the panel is on MQTT again, its card is real.
+    link_only.discard(str(device_id).upper())
 
   fallback = _find_entry_by_base(hass, data.get(CONF_BASE_TOPIC))
   if fallback and not _may_adopt_entry(fallback, device_id):
