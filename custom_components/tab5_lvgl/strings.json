@@ -57,8 +57,8 @@
         }
       },
       "link_switch": {
-        "title": "Auf direkte Verbindung umstellen",
-        "description": "Am Panel **{name}** ({host}) wurde Koppeln gedr\u00fcckt. Es ist schon \u00fcber MQTT eingerichtet und wechselt jetzt auf die direkte Verbindung ohne MQTT. Eintrag, Bereich, Namen und Entit\u00e4ten bleiben erhalten.\n\nNach dem Best\u00e4tigen startet das Panel neu. Danach zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl."
+        "title": "Panel verbinden",
+        "description": "Am Panel **{name}** ({host}) wurde Koppeln gedr\u00fcckt. Es ist hier schon eingerichtet und verbindet sich jetzt direkt mit Home Assistant, ohne MQTT. Eintrag, Bereich, Namen und Entit\u00e4ten bleiben erhalten.\n\nNach dem Best\u00e4tigen startet das Panel neu. Danach zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl."
       }
     },
     "progress": {
@@ -93,7 +93,7 @@
       "link_failed": "Das Panel hat sich nicht gemeldet oder das Koppeln wurde abgebrochen. Das Panel bleibt erreichbar; am Panel unter Einstellungen > System > Sicherheit erneut koppeln oder es hier noch einmal hinzuf\u00fcgen.",
       "link_rejected": "Abgelehnt. Das Panel wurde nicht hinzugef\u00fcgt.",
       "link_press_pair": "Am Panel unter Einstellungen > System > Sicherheit auf Koppeln dr\u00fccken, dann erscheint es hier.",
-      "link_switched": "Umgestellt. Das Panel ist jetzt direkt und verschl\u00fcsselt verbunden."
+      "link_switched": "Fertig. Das Panel ist jetzt direkt und verschl\u00fcsselt verbunden."
     }
   },
   "options": {

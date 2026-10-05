@@ -57,8 +57,8 @@
         }
       },
       "link_switch": {
-        "title": "Switch to the direct connection",
-        "description": "Pair was pressed on the panel **{name}** ({host}). It is set up over MQTT and now switches to the direct connection without MQTT. Its entry, area, names and entities stay.\n\nAfter you confirm, the panel restarts. The panel and this dialog then show the same six-digit number."
+        "title": "Connect the panel",
+        "description": "Pair was pressed on the panel **{name}** ({host}). It is already set up here and now connects to Home Assistant directly, without MQTT. Its entry, area, names and entities stay.\n\nAfter you confirm, the panel restarts. The panel and this dialog then show the same six-digit number."
       }
     },
     "progress": {
@@ -93,7 +93,7 @@
       "link_failed": "The panel did not answer or the pairing was cancelled. Pair again on the panel under Settings > System > Security, or add it here once more.",
       "link_rejected": "Rejected. The panel was not added.",
       "link_press_pair": "Press Pair on the panel under Settings > System > Security; it then appears here.",
-      "link_switched": "Switched. The panel is now connected directly and encrypted."
+      "link_switched": "Done. The panel is now connected directly and encrypted."
     }
   },
   "options": {
