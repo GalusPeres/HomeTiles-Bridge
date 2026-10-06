@@ -1329,6 +1329,7 @@ class Tab5Bridge:
     # Kept with the pairing's key id, so a restart serves the tiles before the
     # panel declares again.
     self._panel_declaration: Optional[Dict[str, Any]] = None
+    self._declaration_logged = False
     # Every entry's releases with the panel's own entities: what the panel may
     # use without a Web Admin password (search, declared entities).
     self._released: Dict[str, List[str]] = {}
@@ -2758,11 +2759,20 @@ class Tab5Bridge:
       return
     lists, web_auth, own = complete
     declaration = {"lists": lists, "secured": self._access_secured(msg, {"web_auth": web_auth}), "own": own}
-    if declaration != self._panel_declaration:
-      before = set(self.tracked_entities)
+    changed = declaration != self._panel_declaration
+    before = set(self.tracked_entities)
+    if changed:
       self._panel_declaration = declaration
       await self._async_save_panel_entities()
       self._refresh_runtime_entity_lists()
+    if changed or not self._declaration_logged:
+      # The first declaration after a start and every change.
+      self._declaration_logged = True
+      _LOGGER.info(
+        "HomeTiles panel %s declared %d entities%s%s; it gets %d entities (%d before)",
+        self.base_topic, sum(len(ids) for ids in lists.values()), ", only its own" if own else "",
+        ", with a Web Admin password" if declaration["secured"] else "", len(self.tracked_entities), len(before))
+    if changed:
       await self.async_publish_config_to_device()
       await self.async_publish_snapshot([item for item in self.tracked_entities if item not in before])
     await self._async_publish_sealed_data("tiles", json.dumps({"v": part["v"]}))

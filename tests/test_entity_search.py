@@ -165,6 +165,7 @@ class FakeStore:
 class BridgeHarness(unittest.IsolatedAsyncioTestCase):
     def make(self, web_auth_ok=True, disk=None, key_id="k1"):
         module, names = bridge_type()
+        self.logged = []
         self.loaded_icons = []
 
         async def load_icons(hass, ids):
@@ -181,7 +182,8 @@ class BridgeHarness(unittest.IsolatedAsyncioTestCase):
         devices = {"dev1": SimpleNamespace(name="Heizung", name_by_user=None, area_id="kitchen")}
         areas = {"kitchen": SimpleNamespace(name="OG Küche"), "garden": SimpleNamespace(name="Garten")}
         scope = {
-            "json": json, "entity_search": SEARCH, "_LOGGER": SimpleNamespace(warning=lambda *a: None),
+            "json": json, "entity_search": SEARCH,
+            "_LOGGER": SimpleNamespace(warning=lambda *a: None, info=lambda *a: self.logged.append(a[0] % a[1:])),
             "monotonic": lambda: 0.0, "_unique_entities": lambda items: list(dict.fromkeys(items)),
             "er": SimpleNamespace(async_get=lambda hass: SimpleNamespace(async_get=entities.get)),
             "dr": SimpleNamespace(async_get=lambda hass: SimpleNamespace(async_get=devices.get)),
@@ -209,6 +211,7 @@ class BridgeHarness(unittest.IsolatedAsyncioTestCase):
         bridge.sensors, bridge.lights, bridge.switches, bridge.selects = ["sensor.kitchen"], [], [], ["select.s3"]
         bridge.tracked_entities = ["sensor.kitchen", "select.s3"]
         bridge._panel_declaration = None
+        bridge._declaration_logged = False
         bridge._declaration_parts = SEARCH.DeclarationParts()
         self.disk = {} if disk is None else disk
         bridge._panel_entities_store = FakeStore(self.disk)
@@ -314,6 +317,11 @@ class WiringTests(BridgeHarness):
         await bridge._async_handle_tiles_command(
             self.command(self.declaration({"sensors": ["sensor.kitchen"]}, web_auth=False, own=True)))
         self.assertEqual(bridge.tracked_entities, ["sensor.kitchen"], "Another panel's unused release is left out")
+        self.assertEqual(self.logged, ["HomeTiles panel hometiles/test declared 1 entities, only its own; "
+                                       "it gets 1 entities (2 before)"], "Visible in the Home Assistant log")
+        await bridge._async_handle_tiles_command(
+            self.command(self.declaration({"sensors": ["sensor.kitchen"]}, web_auth=False, own=True)))
+        self.assertEqual(len(self.logged), 1, "An unchanged declaration logs nothing")
         await bridge._async_handle_tiles_command(
             self.command(self.declaration({"selects": ["select.s3"]}, 2, web_auth=False, own=True)))
         self.assertIn("select.s3", bridge.tracked_entities, "Released for another panel, on a tile here: served")
