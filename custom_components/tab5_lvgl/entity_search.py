@@ -10,8 +10,11 @@ depends on what the Bridge serves, and a new one replaces the previous one.
 With a Web Admin password on the panel (the claim travels sealed, like Lock
 and Alarm) the search covers every Home Assistant entity of the field's
 domains and the declared entities are served like released ones; otherwise
-only the released entities are found and declarations serve nothing.
-Nothing here performs I/O.
+only the released entities are found and served. A declaration marked "own"
+names everything the panel uses, so the panel gets its own entry's releases
+and its declared entities instead of every panel's releases (served_lists).
+Declaring only ever narrows what the released lists grant. Nothing here
+performs I/O.
 """
 from __future__ import annotations
 
@@ -37,6 +40,15 @@ LIST_DOMAINS: Dict[str, Tuple[str, ...]] = {
   "locks": ("lock",),
   "alarm_panels": ("alarm_control_panel",),
   "fans": ("fan",),
+}
+
+# Bridge entity list attributes of each picker list.
+LIST_ATTRS: Dict[str, Tuple[str, ...]] = {
+  "sensors": ("sensors",), "binary_sensors": ("binary_sensors",), "numbers": ("numbers",),
+  "selects": ("selects",), "datetimes": ("datetimes",), "weathers": ("weathers",),
+  "switches": ("lights", "switches"), "media": ("media_players",), "climates": ("climates",),
+  "covers": ("covers",), "cameras": ("cameras",), "locks": ("locks",),
+  "alarm_panels": ("alarm_panels",), "fans": ("fans",),
 }
 
 MAX_QUERY = 64
@@ -149,7 +161,8 @@ def parse_declaration(body: Any) -> Optional[Dict[str, Any]]:
   lists = clean_lists(data.get("lists"))
   if part >= parts or lists is None:
     return None
-  return {"v": version, "p": part, "n": parts, "lists": lists, "web_auth": data.get("web_auth") is True}
+  return {"v": version, "p": part, "n": parts, "lists": lists, "web_auth": data.get("web_auth") is True,
+          "own": data.get("own") is True}
 
 
 class DeclarationParts:
@@ -160,10 +173,10 @@ class DeclarationParts:
     self._count = 0
     self._parts: Dict[int, Mapping[str, Any]] = {}
 
-  def add(self, part: Mapping[str, Any]) -> Optional[Tuple[Dict[str, List[str]], bool]]:
-    """(lists, web_auth) once every part of the version arrived; None while
-    parts are missing or for more than MAX_PANEL_ENTITIES entities. web_auth
-    holds only when every part claims it."""
+  def add(self, part: Mapping[str, Any]) -> Optional[Tuple[Dict[str, List[str]], bool, bool]]:
+    """(lists, web_auth, own) once every part of the version arrived; None
+    while parts are missing or for more than MAX_PANEL_ENTITIES entities.
+    web_auth and own hold only when every part claims them."""
     if part["v"] != self._version or part["n"] != self._count:
       self._version, self._count, self._parts = part["v"], part["n"], {}
     self._parts[part["p"]] = part
@@ -178,4 +191,37 @@ class DeclarationParts:
     lists = {key: sorted(set(ids)) for key, ids in joined.items()}
     if sum(len(ids) for ids in lists.values()) > MAX_PANEL_ENTITIES:
       return None
-    return lists, all(item["web_auth"] for item in parts)
+    return lists, all(item["web_auth"] for item in parts), all(item.get("own") for item in parts)
+
+
+def served_lists(released: Mapping[str, List[str]], own: Mapping[str, List[str]],
+                 declaration: Optional[Mapping[str, Any]]) -> Dict[str, List[str]]:
+  """The entity lists a panel gets, by Bridge attribute.
+
+  released: every entry's releases (with the panel's own entities); own:
+  the panel's own entry only. Without a declaration the panel gets every
+  release, as before. A declaration marked "own" replaces them with the own
+  entry's releases. Declared entities join when the declaration is
+  "secured" (paired, Web Admin password) or when any panel's releases hold
+  them, so declaring never grants what the released lists do not.
+  """
+  base = own if declaration and declaration.get("own") else released
+  result = {name: list(items) for name, items in base.items()}
+  if not declaration:
+    return result
+  secured = declaration.get("secured") is True
+  for key, ids in (declaration.get("lists") or {}).items():
+    names = LIST_ATTRS.get(key)
+    if not names:
+      continue
+    allowed = {item for name in names for item in released.get(name, [])}
+    for item in ids:
+      if not secured and item not in allowed:
+        continue
+      name = names[0]
+      if key == "switches":
+        name = "lights" if entity_domain(item) == "light" else "switches"
+      target = result.setdefault(name, [])
+      if item not in target:
+        target.append(item)
+  return result

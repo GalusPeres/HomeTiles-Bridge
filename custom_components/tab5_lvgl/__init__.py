@@ -1324,10 +1324,14 @@ class Tab5Bridge:
     self._config_publish_lock = asyncio.Lock()
     self._last_config_signature: Optional[str] = None
     self._icon_cache: Dict[str, str] = {}
-    # Every entity the panel's tiles use, as the paired panel with a Web
-    # Admin password declared it (entity_search.py). Kept with the pairing's
-    # key id, so a restart serves the tiles before the panel declares again.
-    self._panel_entities: Dict[str, List[str]] = {}
+    # The paired panel's declaration of every entity it uses
+    # (entity_search.py): {"lists", "secured", "own"}, None before the first.
+    # Kept with the pairing's key id, so a restart serves the tiles before the
+    # panel declares again.
+    self._panel_declaration: Optional[Dict[str, Any]] = None
+    # Every entry's releases with the panel's own entities: what the panel may
+    # use without a Web Admin password (search, declared entities).
+    self._released: Dict[str, List[str]] = {}
     self._declaration_parts = entity_search.DeclarationParts()
     self._panel_entities_store = Store(hass, 1, panel_entities_store_key(entry.entry_id))
     self._icon_refresh_handle = None
@@ -1378,8 +1382,9 @@ class Tab5Bridge:
         by_unique_id[entity.unique_id] = entity.entity_id
     return [by_unique_id[item] for item in expected if item in by_unique_id]
 
-  def _collect_all_entries_entities(self) -> Dict[str, Any]:
-    """Merge entity lists from all config entries in this integration."""
+  def _collect_all_entries_entities(self, entries: Optional[Iterable[ConfigEntry]] = None) -> Dict[str, Any]:
+    """Merge entity lists from all config entries in this integration (or
+    from `entries`)."""
     all_sensors: List[str] = []
     all_binary_sensors: List[str] = []
     all_lights: List[str] = []
@@ -1398,7 +1403,7 @@ class Tab5Bridge:
     all_open_without_code: List[str] = []
     all_access_codes: Dict[str, List[str]] = {}
     all_scene_map: Dict[str, str] = {}
-    for entry in self.hass.config_entries.async_entries(DOMAIN):
+    for entry in entries if entries is not None else self.hass.config_entries.async_entries(DOMAIN):
       data = dict(entry.data or {})
       if entry.options:
         data.update(entry.options)
@@ -1467,39 +1472,30 @@ class Tab5Bridge:
       "sensor", LOCAL_IO_TEMPERATURE
     )
     local_relays = self._resolve_local_io_entities("switch", LOCAL_IO_RELAY)
-    self._configured_sensors = merged["sensors"]
-    self.sensors = _unique_entities(
-      merged["sensors"] + internal_sensors + local_temperatures
-    )
-    self.binary_sensors = merged["binary_sensors"]
-    self.lights = merged["lights"]
-    self.switches = _unique_entities(merged["switches"] + local_relays)
-    self.media_players = merged["media_players"]
-    self.climates = merged["climates"]
-    self.numbers = merged["numbers"]
-    self.selects = merged["selects"]
-    self.datetimes = merged["datetimes"]
-    self.covers = merged["covers"]
-    self.cameras = merged["cameras"]
-    self.weathers = merged["weathers"]
-    self.locks = merged["locks"]
-    self.alarm_panels = merged["alarm_panels"]
-    self.fans = merged["fans"]
+
+    def lists_of(source: Dict[str, Any]) -> Dict[str, List[str]]:
+      # Releases of a set of entries with this panel's own entities.
+      return {
+        "sensors": _unique_entities(source["sensors"] + internal_sensors + local_temperatures),
+        "binary_sensors": source["binary_sensors"], "lights": source["lights"],
+        "switches": _unique_entities(source["switches"] + local_relays),
+        "media_players": source["media_players"], "climates": source["climates"],
+        "numbers": source["numbers"], "selects": source["selects"], "datetimes": source["datetimes"],
+        "covers": source["covers"], "cameras": source["cameras"], "weathers": source["weathers"],
+        "locks": source["locks"], "alarm_panels": source["alarm_panels"], "fans": source["fans"],
+      }
+
+    # A panel that declares everything it uses gets its own entry's releases
+    # and its declared entities, not every panel's releases (entity_search.py).
+    declaration = self._panel_declaration
+    mine = self._collect_all_entries_entities([self.entry]) if declaration and declaration.get("own") else merged
+    self._released = lists_of(merged)
+    for name, items in entity_search.served_lists(self._released, lists_of(mine), declaration).items():
+      setattr(self, name, items)
+    self._configured_sensors = mine["sensors"]
     self.open_without_code = merged["open_without_code"]
     self.access_codes = merged["access_codes"]
     self.scene_map = dict(merged["scene_map"])
-    extras = self._panel_entities
-    for key, name in (("sensors", "sensors"), ("binary_sensors", "binary_sensors"), ("numbers", "numbers"),
-                      ("selects", "selects"), ("datetimes", "datetimes"), ("weathers", "weathers"),
-                      ("media", "media_players"), ("climates", "climates"), ("covers", "covers"),
-                      ("cameras", "cameras"), ("locks", "locks"), ("alarm_panels", "alarm_panels"),
-                      ("fans", "fans")):
-      if extras.get(key):
-        setattr(self, name, _unique_entities(getattr(self, name) + extras[key]))
-    switch_extras = extras.get("switches", [])
-    if switch_extras:
-      self.lights = _unique_entities(self.lights + [item for item in switch_extras if entity_domain(item) == "light"])
-      self.switches = _unique_entities(self.switches + [item for item in switch_extras if entity_domain(item) != "light"])
     self.tracked_entities = _unique_entities(
       self.sensors
       + self.binary_sensors
@@ -2680,9 +2676,10 @@ class Tab5Bridge:
   # ---- Entity picker of the panel's Web Admin (entity_search.py) ----
 
   def _released_for_list(self, key: str) -> List[str]:
-    """The entities of one picker list this panel may use without a password."""
-    names = {"switches": ("lights", "switches"), "media": ("media_players",)}.get(key, (key,))
-    return _unique_entities([item for name in names for item in getattr(self, name, [])])
+    """The entities of one picker list this panel may use without a password:
+    every panel's releases, also those this panel does not get yet."""
+    names = entity_search.LIST_ATTRS.get(key, (key,))
+    return _unique_entities([item for name in names for item in self._released.get(name, getattr(self, name, []))])
 
   def _search_entries(self, entity_ids: Iterable[str]) -> List[Dict[str, str]]:
     """Name, area and device of entities, the picker's search fields."""
@@ -2743,10 +2740,12 @@ class Tab5Bridge:
         return
 
   async def _async_handle_tiles_command(self, msg: Any) -> None:
-    """The panel declares every entity its tiles use; a complete declaration
-    replaces the previous one. Served only with a Web Admin password on the
-    panel (the Lock/Alarm rule), otherwise nothing is served. Each complete
-    version is acknowledged, so the panel stops repeating it."""
+    """The panel declares every entity it uses; a complete declaration
+    replaces the previous one. Entities beyond the released lists are served
+    only with a Web Admin password on the panel (the Lock/Alarm rule); an
+    "own" declaration narrows the panel to its own entry's releases and its
+    declared entities. Each complete version is acknowledged, so the panel
+    stops repeating it."""
     if not isinstance(msg, _OpenedCommand):
       return
     part = entity_search.parse_declaration(msg.payload)
@@ -2757,11 +2756,11 @@ class Tab5Bridge:
     complete = self._declaration_parts.add(part)
     if complete is None:
       return
-    lists, web_auth = complete
-    declared = lists if self._access_secured(msg, {"web_auth": web_auth}) else {}
-    if declared != self._panel_entities:
+    lists, web_auth, own = complete
+    declaration = {"lists": lists, "secured": self._access_secured(msg, {"web_auth": web_auth}), "own": own}
+    if declaration != self._panel_declaration:
       before = set(self.tracked_entities)
-      self._panel_entities = declared
+      self._panel_declaration = declaration
       await self._async_save_panel_entities()
       self._refresh_runtime_entity_lists()
       await self.async_publish_config_to_device()
@@ -2776,16 +2775,21 @@ class Tab5Bridge:
     data = await self._panel_entities_store.async_load()
     if not isinstance(data, dict) or data.get("key_id") != channel.keys.key_id:
       return
-    lists = entity_search.clean_lists(data.get("lists"))
-    if lists:
-      self._panel_entities = lists
+    declaration = data.get("declaration")
+    if not isinstance(declaration, dict):
+      # Bridge v0.9.0b13 kept the served lists of a secured declaration.
+      declaration = {"lists": data.get("lists"), "secured": True, "own": False}
+    lists = entity_search.clean_lists(declaration.get("lists"))
+    if lists is not None:
+      self._panel_declaration = {"lists": lists, "secured": declaration.get("secured") is True,
+                                 "own": declaration.get("own") is True}
 
   async def _async_save_panel_entities(self) -> None:
     channel = self._command_channel
     if channel is None:
       return
     await self._panel_entities_store.async_save(
-      {"key_id": channel.keys.key_id, "lists": self._panel_entities})
+      {"key_id": channel.keys.key_id, "declaration": self._panel_declaration})
 
   def _secure_log_due(self, reason: str, interval: float = 60.0) -> bool:
     now = monotonic()

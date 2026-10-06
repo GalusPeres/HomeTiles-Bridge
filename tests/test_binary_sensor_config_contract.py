@@ -79,7 +79,7 @@ class BinarySensorConfigContractTest(unittest.TestCase):
         )
 
         self.assertIn("split_binary_sensor_entities", collector)
-        self.assertIn('merged["binary_sensors"]', refresh)
+        self.assertIn('"binary_sensors": source["binary_sensors"]', refresh)
         self.assertIn("+ self.binary_sensors", refresh)
         self.assertIn("CONF_BINARY_SENSORS: self.binary_sensors", publisher)
         self.assertIn('"binary_sensor_meta": self._build_binary_sensor_meta()', publisher)
