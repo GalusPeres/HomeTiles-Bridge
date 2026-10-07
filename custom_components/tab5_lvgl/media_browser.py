@@ -149,19 +149,18 @@ def normalize_browse_result(result: Any) -> Optional[Dict[str, Any]]:
 def paginate_items(items: Iterable[Dict[str, Any]], max_items_per_page: int = MAX_ITEMS_PER_PAGE):
     items_list = list(items)
     if not items_list:
-        return 1, [{"page": 0, "items": []}]
+        return 1, [[]]
 
     page_size = max(1, int(max_items_per_page))
     page_count = max(1, int(math.ceil(len(items_list) / page_size)))
 
-    pages: List[Dict[str, Any]] = []
+    pages: List[List[Dict[str, Any]]] = []
     for page_index in range(page_count):
         start = page_index * page_size
         end = start + page_size
-        pages.append({"page": page_index, "items": items_list[start:end]})
+        pages.append(items_list[start:end])  # ← Direkt die List, kein Dict!
 
     return page_count, pages
-
 
 def serialize_catalog_page(payload: Dict[str, Any], max_payload_bytes: int = MAX_CATALOG_PAYLOAD_BYTES) -> str:
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -283,6 +282,10 @@ class MediaBrowser:
         max_items_per_page: int = MAX_ITEMS_PER_PAGE,
     ) -> Dict[str, Any]:
         normalized = normalize_browse_result(result)
+        _LOGGER.info(
+            "Tab5 normalized browse result: %s",
+            normalized,
+        )
         if normalized is None:
             raise ValueError("invalid browse media result")
 

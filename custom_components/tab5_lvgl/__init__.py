@@ -1020,43 +1020,6 @@ def _resolve_bridge(hass: HomeAssistant, entry_id: Optional[str]) -> Optional["T
   # Fallback to the first (and typically only) entry
   return next(iter(entries.values()))
 
-def normalize_browse_result(result) -> Dict[str, Any] | None:
-    """Normalize a BrowseMedia result from Home Assistant."""
-    if result is None:
-        return None
-
-    # Wenn es ein BrowseMedia-Objekt ist, zu dict konvertieren
-    if hasattr(result, 'as_dict'):
-        data = result.as_dict()
-    elif isinstance(result, dict):
-        data = result
-    else:
-        _LOGGER.warning("Unknown browse_media result format: %s", type(result).__name__)
-        return None
-
-    # Stelle sicher, dass "children" vorhanden ist
-    children = data.get("children", [])
-    
-    # Konvertiere "children" zu "items" für das MQTT-Format
-    return {
-        "title": data.get("title", "Root"),
-        "media_class": data.get("media_class", "directory"),
-        "media_content_type": data.get("media_content_type", "root"),
-        "media_content_id": data.get("media_content_id", ""),
-        "items": children,  # ← children → items
-    }
-
-
-def paginate_items(items: list, items_per_page: int = 50) -> tuple[int, list]:
-    """Split items into pages."""
-    if not items:
-        return 1, [[]]
-
-    pages = [
-        items[i:i + items_per_page]
-        for i in range(0, len(items), items_per_page)
-    ]
-    return len(pages), pages
 
 class Tab5Bridge:
   """Copies Home Assistant state to the Tab5 MQTT topics."""
@@ -3498,13 +3461,21 @@ class Tab5Bridge:
       )
 
       _LOGGER.info(
-        "Tab5 media browse result for %s: type=%s",
-        entity_id,
+        "Tab5 media browse raw result type: %s, has as_dict: %s",
         type(result).__name__,
+        hasattr(result, 'as_dict'),
       )
 
+      if hasattr(result, 'as_dict'):
+        _LOGGER.info("Tab5 converting BrowseMedia to dict")
+        result = result.as_dict()
       if result is None:
-        raise ValueError("browse_media_returned_no_result")
+       raise ValueError("browse_media_returned_no_result")
+      
+      _LOGGER.info(
+        "Tab5 result before normalize: %s",
+        result,
+      )
 
       normalized = normalize_browse_result(result)
       if normalized is None:
