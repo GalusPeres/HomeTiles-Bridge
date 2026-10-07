@@ -21,6 +21,9 @@ from homeassistant.components import network as ha_network
 from homeassistant.components.weather import WeatherEntityFeature
 from homeassistant.components.weather.const import DATA_COMPONENT as WEATHER_DATA_COMPONENT
 from homeassistant.components.mqtt.models import ReceiveMessage
+from homeassistant.components.media_player import (
+  DATA_COMPONENT as MEDIA_PLAYER_COMPONENT,
+)
 from homeassistant.components.recorder import get_instance
 try:
   from homeassistant.components.recorder.history import get_significant_states
@@ -206,6 +209,7 @@ MEDIA_COVER_CACHE_MAX = 24
 MEDIA_COVER_THUMBNAIL_SIZE = 240
 MEDIA_COVER_WARNING_INTERVAL_SECONDS = 15 * 60
 MEDIA_COVER_WARNING_MAX_KEYS = 64
+MAX_ITEMS_PER_PAGE = 50
 
 
 def _is_png_payload(data: bytes) -> bool:
@@ -1016,6 +1020,43 @@ def _resolve_bridge(hass: HomeAssistant, entry_id: Optional[str]) -> Optional["T
   # Fallback to the first (and typically only) entry
   return next(iter(entries.values()))
 
+def normalize_browse_result(result) -> Dict[str, Any] | None:
+    """Normalize a BrowseMedia result from Home Assistant."""
+    if result is None:
+        return None
+
+    # Wenn es ein BrowseMedia-Objekt ist, zu dict konvertieren
+    if hasattr(result, 'as_dict'):
+        data = result.as_dict()
+    elif isinstance(result, dict):
+        data = result
+    else:
+        _LOGGER.warning("Unknown browse_media result format: %s", type(result).__name__)
+        return None
+
+    # Stelle sicher, dass "children" vorhanden ist
+    children = data.get("children", [])
+    
+    # Konvertiere "children" zu "items" für das MQTT-Format
+    return {
+        "title": data.get("title", "Root"),
+        "media_class": data.get("media_class", "directory"),
+        "media_content_type": data.get("media_content_type", "root"),
+        "media_content_id": data.get("media_content_id", ""),
+        "items": children,  # ← children → items
+    }
+
+
+def paginate_items(items: list, items_per_page: int = 50) -> tuple[int, list]:
+    """Split items into pages."""
+    if not items:
+        return 1, [[]]
+
+    pages = [
+        items[i:i + items_per_page]
+        for i in range(0, len(items), items_per_page)
+    ]
+    return len(pages), pages
 
 class Tab5Bridge:
   """Copies Home Assistant state to the Tab5 MQTT topics."""
@@ -3399,112 +3440,157 @@ class Tab5Bridge:
       qos=0,
       retain=False,
     )
-  async def _async_handle_media_browse_command(self, parsed_payload: Dict[str, Any]) -> None:
+  async def _async_handle_media_browse_command(
+    self,
+    parsed_payload: Dict[str, Any],
+  ) -> None:
     """Handle a browse_media request from the device."""
     entity_id = str(parsed_payload.get("entity_id") or "").strip()
-    if not entity_id:
-        _LOGGER.warning("Tab5 media browse request missing entity_id: %s", parsed_payload)
-        return
-
-    resolved_entity = self._resolve_target_entity(entity_id, self.media_players)
-    if not resolved_entity:
-        _LOGGER.warning("Tab5 media browse request for unknown entity: %s", entity_id)
-        return
-
-    media_content_id = str(parsed_payload.get("media_content_id") or "").strip()
-    media_content_type = str(parsed_payload.get("media_content_type") or "").strip()
-
     session = str(parsed_payload.get("session") or "").strip() or secrets.token_hex(16)
-    request_id = int(parsed_payload.get("request_id") or 0)
-    revision = int(parsed_payload.get("revision") or 1)
 
     try:
-        # Use the Home Assistant API that is valid for your HA version.
-        # Typical pattern:
-        # result = await entity.async_browse_media(...)
-        #
-        # or:
-        # result = await self.hass.services.async_call(
-        #     "media_player",
-        #     "browse_media",
-        #     {"entity_id": resolved_entity, "media_content_id": media_content_id, "media_content_type": media_content_type},
-        #     blocking=True,
-        #     return_response=True,
-        # )
-        #
-        # The exact HA call must be chosen for your Home Assistant version.
-        #
-        # Example placeholder:
-        result = {
-            "title": "Root",
-            "media_class": "directory",
-            "media_content_type": "root",
-            "media_content_id": "",
-            "children": [],
-        }
+      request_id = int(parsed_payload.get("request_id") or 0)
+    except (TypeError, ValueError):
+      request_id = 0
 
-        normalized = normalize_browse_result(result)
-        if normalized is None:
-            raise ValueError("invalid browse result")
+    try:
+      revision = int(parsed_payload.get("revision") or 1)
+    except (TypeError, ValueError):
+      revision = 1
 
-        state = MediaBrowserState()
-        state.begin(
-            session=session,
-            revision=revision,
-            request_id=request_id,
-            entity_id=resolved_entity,
-            media_content_id=media_content_id,
-            media_content_type=media_content_type,
-            page_count=1,
-        )
+    media_content_id = str(
+      parsed_payload.get("media_content_id") or ""
+    ).strip()
+    media_content_type = str(
+      parsed_payload.get("media_content_type") or ""
+    ).strip()
 
-        page_count, pages = paginate_items(normalized.get("items", []), MAX_ITEMS_PER_PAGE)
-        state.page_count = page_count
-        state.accept_page(
-            session=session,
-            revision=revision,
-            request_id=request_id,
-            page=0,
-            items=pages[0]["items"],
-        )
+    if not entity_id.startswith("media_player."):
+      _LOGGER.warning(
+        "Tab5 media browse rejected invalid entity: %s",
+        entity_id,
+      )
+      return
 
+    if entity_id not in self.media_players:
+      _LOGGER.warning(
+        "Tab5 media browse rejected unconfigured entity: %s",
+        entity_id,
+      )
+      return
+
+    try:
+      media_component = self.hass.data.get(MEDIA_PLAYER_COMPONENT)
+      if media_component is None:
+        raise ValueError("media_player_component_unavailable")
+
+      media_entity = media_component.get_entity(entity_id)
+      if media_entity is None:
+        raise ValueError("media_player_entity_unavailable")
+
+      browse_method = getattr(media_entity, "async_browse_media", None)
+      if not callable(browse_method):
+        raise ValueError("browse_media_not_supported")
+
+      result = await browse_method(
+        media_content_id=media_content_id or None,
+        media_content_type=media_content_type or None,
+      )
+
+      _LOGGER.info(
+        "Tab5 media browse result for %s: type=%s",
+        entity_id,
+        type(result).__name__,
+      )
+
+      if result is None:
+        raise ValueError("browse_media_returned_no_result")
+
+      normalized = normalize_browse_result(result)
+      if normalized is None:
+        raise ValueError("invalid_browse_media_result")
+
+      items = normalized.get("items", [])
+      page_count, pages = paginate_items(
+        items,
+        MAX_ITEMS_PER_PAGE,
+      )
+
+      for page_index, page_items in enumerate(pages):
+        
         payload = {
-            "version": 1,
-            "session": session,
-            "revision": revision,
-            "request_id": request_id,
-            "page": 0,
-            "pages": page_count,
-            "entity_id": resolved_entity,
-            "parent": {
-                "media_content_id": media_content_id,
-                "media_content_type": media_content_type,
-            },
-            "items": pages[0]["items"],
+          "version": 1,
+          "session": session,
+          "revision": revision,
+          "request_id": request_id,
+          "page": page_index,
+          "pages": page_count,
+          "entity_id": entity_id,
+          "parent": {
+            "media_content_id": media_content_id,
+            "media_content_type": media_content_type,
+          },
+          "items": page_items,
         }
+
+        encoded = json.dumps(
+          payload,
+          ensure_ascii=False,
+          separators=(",", ":"),
+        )
 
         await mqtt.async_publish(
-            self.hass,
-            f"{self.base_topic}/stat/media/catalog/0",
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            qos=0,
-            retain=False,
+          self.hass,
+          f"{self.base_topic}/stat/media/catalog/{page_index}",
+          encoded,
+          qos=0,
+          retain=False,
         )
 
-    except Exception:
-        _LOGGER.exception(
-            "Tab5 media browse failed for %s (%s / %s)",
-            resolved_entity,
-            media_content_type,
-            media_content_id,
-        )
-        
+      _LOGGER.info(
+        "Tab5 media browse published for %s: pages=%d items=%d",
+        entity_id,
+        page_count,
+        len(items),
+      )
+
+    except Exception as err:
+      _LOGGER.exception(
+        "Tab5 media browse failed for %s: %s",
+        entity_id,
+        err,
+      )
+
+      error_payload = {
+        "version": 1,
+        "session": session,
+        "revision": revision,
+        "request_id": request_id,
+        "entity_id": entity_id,
+        "status": "error",
+        "error": str(err),
+      }
+
+      await mqtt.async_publish(
+        self.hass,
+        f"{self.base_topic}/stat/media",
+        json.dumps(
+          error_payload,
+          ensure_ascii=False,
+          separators=(",", ":"),
+        ),
+        qos=0,
+        retain=False,
+      )
+      
   async def _async_handle_media_command(self, msg: ReceiveMessage) -> None:
     """Execute media player commands originating from the Tab5."""
     payload = msg.payload.strip()
     if not payload:
       return
-
+    
+    _LOGGER.info("Tab5 media command received: %s", payload)
+    
     entity_id = None
     command = None
     parsed_payload: Dict[str, Any] = {}
@@ -3545,11 +3631,15 @@ class Tab5Bridge:
       _LOGGER.warning("Unhandled media command from Tab5 (unknown entity): %s", msg.payload)
       return
 
-    command = _normalise_media_command(command)
+    #command = _normalise_media_command(command)
     if not command:
       _LOGGER.warning("Unhandled media command from Tab5: %s", msg.payload)
       return
+
+    _LOGGER.info("Tab5 media command normalized to: %s", command)
+
     if command == "browse_media":
+      _LOGGER.info("Tab5 browse_media command detected, calling handler")
       await self._async_handle_media_browse_command(parsed_payload)
       return
     service_payload: Dict[str, Any] = {"entity_id": entity_id}
