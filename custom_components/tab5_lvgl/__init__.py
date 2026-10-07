@@ -242,7 +242,19 @@ from .local_camera import is_local_camera_self_loop, local_camera_command_topic
 from . import entity_icons
 from . import entity_search
 from .numeric_history import fetch_numeric_history_values
-from .request_limits import RequestGate
+from .request_limits import (
+  ENERGY_MAX_ACTIVE,
+  ENERGY_MAX_PER_WINDOW,
+  ENERGY_MAX_WAITING,
+  ENERGY_UNAVAILABLE_LOG_S,
+  REFRESH_MAX_ACTIVE,
+  REFRESH_MAX_PER_WINDOW,
+  REFRESH_MAX_WAITING,
+  RequestGate,
+  WEATHER_MAX_ACTIVE,
+  WEATHER_MAX_PER_WINDOW,
+  WEATHER_MAX_WAITING,
+)
 from .sun_times import sun_days, sun_entries
 from .local_io import (
   LOCAL_IO_RELAY,
@@ -417,6 +429,21 @@ FORECAST_CACHE_TTL = timedelta(minutes=10)
 _CONFIG_META_RUNTIME_FIELDS = frozenset(
   {"available", "icon", "last_changed", "state", "value"}
 )
+
+
+# Wait for a burst of renames (or the start of Home Assistant) to settle.
+CONFIG_META_PUSH_DELAYS = (5.0,)
+
+
+def _config_meta_key(state: Any) -> Tuple[str, ...]:
+  """The parts of an entity's state that the configuration carries as meta."""
+  attributes = getattr(state, "attributes", None) or {}
+  return (
+    str(getattr(state, "name", "") or ""),
+    str(attributes.get("unit_of_measurement") or ""),
+    str(attributes.get("device_class") or ""),
+    str(attributes.get("state_class") or ""),
+  )
 
 
 def _config_signature(config_data: Dict[str, Any]) -> str:
@@ -1314,6 +1341,18 @@ class Tab5Bridge:
     self.command_status: Dict[str, Any] = {"state": "unknown", "kid": None}
     self._secure_log_at: Dict[str, float] = {}
     self._history_gate = RequestGate(monotonic)
+    self._refresh_gate = RequestGate(
+      monotonic, max_active=REFRESH_MAX_ACTIVE, max_per_window=REFRESH_MAX_PER_WINDOW,
+      max_waiting=REFRESH_MAX_WAITING,
+    )
+    self._energy_gate = RequestGate(
+      monotonic, max_active=ENERGY_MAX_ACTIVE, max_per_window=ENERGY_MAX_PER_WINDOW,
+      max_waiting=ENERGY_MAX_WAITING,
+    )
+    self._weather_gate = RequestGate(
+      monotonic, max_active=WEATHER_MAX_ACTIVE, max_per_window=WEATHER_MAX_PER_WINDOW,
+      max_waiting=WEATHER_MAX_WAITING,
+    )
     self._unsub_request = None
     self._unsub_history = None
     self._unsub_weather = None
@@ -1324,6 +1363,7 @@ class Tab5Bridge:
     self._config_publish_lock = asyncio.Lock()
     self._last_config_signature: Optional[str] = None
     self._icon_cache: Dict[str, str] = {}
+    self._config_meta_cache: Dict[str, Tuple[str, ...]] = {}
     # The paired panel's declaration of every entity it uses
     # (entity_search.py): {"lists", "secured", "own"}, None before the first.
     # Kept with the pairing's key id, so a restart serves the tiles before the
@@ -1678,7 +1718,7 @@ class Tab5Bridge:
       self._unsub_request = await mqtt.async_subscribe(
         self.hass,
         request_topic,
-        self._async_handle_request,
+        self._async_on_refresh_request,
       )
       _LOGGER.debug("Tab5 subscribed to request topic %s", request_topic)
     if self.history_request_topic:
@@ -1692,14 +1732,14 @@ class Tab5Bridge:
       self._unsub_weather = await mqtt.async_subscribe(
         self.hass,
         self.weather_request_topic,
-        self._async_handle_weather_request,
+        self._async_on_weather_request,
       )
       _LOGGER.debug("Tab5 subscribed to weather topic %s", self.weather_request_topic)
     if self.energy_request_topic:
       self._unsub_energy = await mqtt.async_subscribe(
         self.hass,
         self.energy_request_topic,
-        self._async_handle_energy_request,
+        self._async_on_energy_request,
       )
       _LOGGER.debug("Tab5 subscribed to energy topic %s", self.energy_request_topic)
     self._schedule_config_refresh()
@@ -1846,6 +1886,10 @@ class Tab5Bridge:
           # The picker searches through this Bridge, and the panel declares
           # its tiles' entities (entity_search.py): 2 = declarations.
           "entity_search": 2,
+          # This Bridge sends name, unit and icon changes by itself
+          # (_handle_state_event), so a panel that reads this flag needs no
+          # refresh every minute, only after a reconnect or a lost message.
+          "push": 1,
       }
       energy_cats = set()
       if self.entry.data.get(CONF_ENERGY_ELECTRICITY):
@@ -1858,6 +1902,12 @@ class Tab5Bridge:
         energy_entries = await self._build_energy_meta(energy_cats)
         if energy_entries:
           config_data["energy"] = energy_entries
+      # What this configuration says about each entity; _handle_state_event()
+      # republishes it when a later state differs.
+      for entity_id in self.tracked_entities:
+        state = self.hass.states.get(entity_id)
+        if state is not None:
+          self._config_meta_cache[entity_id] = _config_meta_key(state)
       signature = _config_signature(config_data)
       if not force and signature == self._last_config_signature:
         _LOGGER.debug(
@@ -3564,6 +3614,48 @@ class Tab5Bridge:
       retain=False,
     )
 
+  async def _async_publish_energy_empty(self, period: str) -> None:
+    """Answer an energy request that has no data (no Energy dashboard)."""
+    await mqtt.async_publish(
+      self.hass,
+      self.energy_response_topic,
+      json.dumps({"period": period, "entries": []}, separators=(",", ":")),
+      qos=0,
+      retain=False,
+    )
+
+  async def _async_run_gated(self, gate: RequestGate, kind: str, handler, msg: ReceiveMessage) -> None:
+    """Bound a panel request before it reaches Home Assistant.
+
+    Any MQTT client can publish on a panel's request topics (the direct link
+    authenticates its sessions; MQTT does not).
+    """
+    # The panel never retains a request; a retained one would run again after
+    # every Home Assistant restart.
+    if getattr(msg, "retain", False):
+      return
+    if not await gate.acquire():
+      if self._secure_log_due(f"{kind}_limited", 60.0):
+        _LOGGER.warning(
+          "Tab5 %s requests for %s are arriving too fast; extra requests are ignored",
+          kind,
+          self.device_id or self.base_topic,
+        )
+      return
+    try:
+      await handler(msg)
+    finally:
+      gate.release()
+
+  async def _async_on_refresh_request(self, msg: ReceiveMessage) -> None:
+    await self._async_run_gated(self._refresh_gate, "refresh", self._async_handle_request, msg)
+
+  async def _async_on_energy_request(self, msg: ReceiveMessage) -> None:
+    await self._async_run_gated(self._energy_gate, "energy", self._async_handle_energy_request, msg)
+
+  async def _async_on_weather_request(self, msg: ReceiveMessage) -> None:
+    await self._async_run_gated(self._weather_gate, "weather", self._async_handle_weather_request, msg)
+
   async def _async_handle_energy_request(self, msg: ReceiveMessage) -> None:
     """Handle energy statistics requests from the Tab5 display."""
     if not self.energy_response_topic:
@@ -3577,11 +3669,18 @@ class Tab5Bridge:
     if period not in {"day", "week", "month"}:
       period = "day"
 
+    # Without data the panel still gets an answer: every firmware stops
+    # waiting on any response, while a missing one made it ask again every
+    # 15 seconds and logged this warning each time. Log it once an hour.
     if async_get_energy_manager is None:
-      _LOGGER.warning("Tab5 energy request ignored (energy component not available)")
+      if self._secure_log_due("energy_unavailable", ENERGY_UNAVAILABLE_LOG_S):
+        _LOGGER.warning("Tab5 energy request ignored (energy component not available)")
+      await self._async_publish_energy_empty(period)
       return
     if statistics_during_period is None:
-      _LOGGER.warning("Tab5 energy request ignored (statistics_during_period not available)")
+      if self._secure_log_due("energy_unavailable", ENERGY_UNAVAILABLE_LOG_S):
+        _LOGGER.warning("Tab5 energy request ignored (statistics_during_period not available)")
+      await self._async_publish_energy_empty(period)
       return
 
     try:
@@ -3591,7 +3690,9 @@ class Tab5Bridge:
       return
     prefs = manager.data
     if not prefs:
-      _LOGGER.warning("Tab5 energy request ignored (no energy preferences configured)")
+      if self._secure_log_due("energy_unconfigured", ENERGY_UNAVAILABLE_LOG_S):
+        _LOGGER.warning("Tab5 energy request ignored (no energy preferences configured)")
+      await self._async_publish_energy_empty(period)
       return
 
     sources = prefs.get("energy_sources") or []
@@ -3704,7 +3805,9 @@ class Tab5Bridge:
         })
 
     if not entries:
-      _LOGGER.warning("Tab5 energy request: no statistic IDs found in energy config")
+      if self._secure_log_due("energy_unconfigured", ENERGY_UNAVAILABLE_LOG_S):
+        _LOGGER.warning("Tab5 energy request: no statistic IDs found in energy config")
+      await self._async_publish_energy_empty(period)
       return
 
     all_stat_ids = {e["stat_id"] for e in entries}
@@ -4550,6 +4653,14 @@ class Tab5Bridge:
       if self._icon_cache.get(entity_id, "") != icon:
         self._icon_cache[entity_id] = icon
         self._schedule_icon_refresh()
+      # Names and units travel in the configuration. A panel told "push"
+      # stops asking for it every minute, so a rename, a new unit or an entity
+      # missing from the last configuration republishes it here; the
+      # signature check in async_publish_config_to_device() skips the rest.
+      meta = _config_meta_key(new_state)
+      if self._config_meta_cache.get(entity_id) != meta:
+        self._config_meta_cache[entity_id] = meta
+        self._schedule_config_refresh(CONFIG_META_PUSH_DELAYS)
 
   def _schedule_config_refresh(self, delays: Optional[Tuple[float, ...]] = None) -> None:
     if not self.config_topic:

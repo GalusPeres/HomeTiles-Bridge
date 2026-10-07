@@ -1,8 +1,9 @@
-"""Bounds for panel requests that make the Recorder read history.
+"""Bounds for panel requests that make Home Assistant do work.
 
-A history request costs a database query in Home Assistant's executor. Any
-MQTT client can publish on a panel's request topic, so each panel gets a
-small number of concurrent requests and a request budget per minute.
+A history or energy request costs a database query in Home Assistant's
+executor, a refresh republishes every entity. Any MQTT client can publish on
+a panel's request topics, so each panel gets a small number of concurrent
+requests and a request budget per minute.
 
 A panel asks for the history of every graph tile when it shows a view, so a
 burst of many requests is normal. Requests beyond the limits wait in line
@@ -19,6 +20,26 @@ HISTORY_MAX_ACTIVE = 2
 HISTORY_MAX_PER_WINDOW = 30
 HISTORY_WINDOW_S = 60.0
 HISTORY_MAX_WAITING = 32
+
+# A refresh republishes the configuration and every entity state. A panel
+# asks once a minute at most, plus after a reconnect or a lost message; a
+# request that arrives while one runs waits, more are dropped.
+REFRESH_MAX_ACTIVE = 1
+REFRESH_MAX_PER_WINDOW = 6
+REFRESH_MAX_WAITING = 1
+
+# Energy reads Recorder statistics; the popup asks for day, week and month.
+ENERGY_MAX_ACTIVE = 1
+ENERGY_MAX_PER_WINDOW = 12
+ENERGY_MAX_WAITING = 2
+# Without an Energy dashboard every request is answered empty; its warning is
+# logged at most this often.
+ENERGY_UNAVAILABLE_LOG_S = 3600.0
+
+# Weather requests republish the retained forecast state.
+WEATHER_MAX_ACTIVE = 1
+WEATHER_MAX_PER_WINDOW = 12
+WEATHER_MAX_WAITING = 2
 
 
 class RequestGate:
