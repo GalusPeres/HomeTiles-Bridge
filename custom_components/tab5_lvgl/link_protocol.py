@@ -257,18 +257,25 @@ def parse_hello(payload: bytes) -> Dict[str, Any]:
       raise ProtocolError("hello_nonce")
     result["kid"] = kid
     result["n"] = bytes.fromhex(nonce)
+    # The largest message the panel takes as a stream from the Bridge; an
+    # older panel announces nothing and gets no streams.
+    rx = hello.get("rx")
+    valid_rx = isinstance(rx, int) and not isinstance(rx, bool) and MAX_PAYLOAD < rx <= MAX_STREAM
+    result["rx"] = rx if valid_rx else 0
   elif mode != MODE_PAIR:
     raise ProtocolError("hello_mode")
   return result
 
 
 def build_hello(device_id: str, base: str, mode: str, kid: Optional[str] = None,
-                nonce: Optional[bytes] = None) -> bytes:
+                nonce: Optional[bytes] = None, rx: int = 0) -> bytes:
   """The panel's hello (used by the tests; the firmware builds its own)."""
   hello: Dict[str, Any] = {"v": VERSION, "id": device_id, "base": base, "mode": mode}
   if mode == MODE_SESSION:
     hello["kid"] = kid
     hello["n"] = (nonce or b"").hex()
+    if rx:
+      hello["rx"] = rx
   return json.dumps(hello, separators=(",", ":")).encode("utf-8")
 
 

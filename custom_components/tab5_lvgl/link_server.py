@@ -10,11 +10,12 @@ the exact server with real sockets.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import suppress
 import logging
 import os
 import time
-from typing import Any, Callable, Dict, Iterable, Optional, Set, Union
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from .link_broker import LinkBroker
 from .link_protocol import (
@@ -55,6 +56,7 @@ from .link_protocol import (
   publish_payload,
   session_keys,
   split_body,
+  stream_begin_payload,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -64,6 +66,8 @@ LINK_TCP_PORT_LAST = 8147
 # A panel that does not read its frames is dropped before it holds much memory.
 MAX_QUEUED_BYTES = 4 * 1024 * 1024
 LOG_INTERVAL_S = 60.0
+# Queued in place of a frame: the writer sends the waiting streams.
+_STREAMS = object()
 
 
 class SessionTarget:
@@ -97,9 +101,16 @@ class _Connection:
     self.ha_prefix = ""
     self.mode = ""
     self.subscriptions: Set[str] = set()
+    # The largest stream the panel announced (0: it takes no streams).
+    self.rx_max = 0
     self._sealer: Optional[Sealer] = None
-    self._queue: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue()
+    # Frames wait unsealed: the writer seals them in the order they leave, so
+    # stream frames and the frames queued between them keep the counter order.
+    self._queue: "asyncio.Queue[Any]" = asyncio.Queue()
     self._queued_bytes = 0
+    # Streams to the panel: [topic, payload, retain, offset], offset -1 before
+    # the begin frame. Queued frames pass between their data frames.
+    self._streams: Deque[List[Any]] = deque()
     self._writer_task: Optional[asyncio.Task] = None
     self.closed = False
     self._stream: Optional[Dict[str, Any]] = None
@@ -114,34 +125,87 @@ class _Connection:
       return self._sealer.frame(frame_type, payload)
     return plain_frame(frame_type, payload)
 
-  def send(self, frame_type: int, payload: bytes = b"") -> None:
-    if self.closed:
-      return
-    frame = self._frame(frame_type, payload)
-    self._queued_bytes += len(frame)
+  def _account(self, size: int) -> bool:
+    self._queued_bytes += size
     if self._queued_bytes > MAX_QUEUED_BYTES:
       _LOGGER.warning("HomeTiles link: panel %s does not read its messages; closing", self.device_id)
       self.close()
+      return False
+    return True
+
+  def send(self, frame_type: int, payload: bytes = b"") -> None:
+    if self.closed or not self._account(len(payload)):
       return
-    self._queue.put_nowait(frame)
+    self._queue.put_nowait((frame_type, payload))
 
   def send_publish(self, topic: str, payload: bytes, retain: bool) -> None:
     if len(payload) > MAX_PAYLOAD:
+      if len(payload) <= self.rx_max:
+        self.send_stream(topic, payload, retain)
+        return
       if self._server.log_due(f"large:{topic}"):
-        _LOGGER.warning("HomeTiles link: %s has %d bytes, more than a panel accepts; dropped",
-                        topic, len(payload))
+        _LOGGER.warning("HomeTiles link: %s has %d bytes, more than panel %s accepts; dropped",
+                        topic, len(payload), self.device_id)
       return
     self.send(TYPE_PUBLISH, publish_payload(topic, payload, retain))
+
+  def send_stream(self, topic: str, payload: bytes, retain: bool) -> None:
+    """A message above MAX_PAYLOAD, as begin, data and end frames."""
+    if self.closed:
+      return
+    # A newer picture of a topic replaces one that has not started yet.
+    for index, stream in enumerate(self._streams):
+      if stream[0] == topic and stream[3] < 0:
+        self._queued_bytes -= len(stream[1])
+        if self._account(len(payload)):
+          self._streams[index] = [topic, payload, retain, -1]
+        return
+    if not self._account(len(payload)):
+      return
+    self._streams.append([topic, payload, retain, -1])
+    self._queue.put_nowait(_STREAMS)
+
+  def _next_stream_frame(self) -> Tuple[int, bytes]:
+    stream = self._streams[0]
+    topic, payload, retain, offset = stream
+    if offset < 0:
+      stream[3] = 0
+      return TYPE_STREAM_BEGIN, stream_begin_payload(topic, len(payload), retain)
+    if offset < len(payload):
+      chunk = payload[offset:offset + MAX_STREAM_CHUNK]
+      stream[3] = offset + len(chunk)
+      self._queued_bytes -= len(chunk)
+      return TYPE_STREAM_DATA, chunk
+    self._streams.popleft()
+    return TYPE_STREAM_END, b""
+
+  async def _write(self, frame_type: int, payload: bytes) -> None:
+    self._writer.write(self._frame(frame_type, payload))
+    await self._writer.drain()
 
   async def _write_loop(self) -> None:
     try:
       while True:
-        frame = await self._queue.get()
-        if frame is None:
+        item = await self._queue.get()
+        if item is None:
           break
-        self._queued_bytes -= len(frame)
-        self._writer.write(frame)
-        await self._writer.drain()
+        if item is not _STREAMS:
+          self._queued_bytes -= len(item[1])
+          await self._write(*item)
+          continue
+        while self._streams and not self.closed:
+          # Queued frames first, then the next frame of the stream.
+          while not self._queue.empty():
+            item = self._queue.get_nowait()
+            if item is None:
+              return
+            if item is not _STREAMS:
+              self._queued_bytes -= len(item[1])
+              await self._write(*item)
+          await self._write(*self._next_stream_frame())
+          # drain() returns at once while the socket buffer has room; give
+          # the producers a turn so their messages pass between the pieces.
+          await asyncio.sleep(0)
     except (ConnectionError, OSError):
       pass
     finally:
@@ -337,6 +401,7 @@ class LinkServer:
         raise ProtocolError("ready_expected")
       connection.ha_prefix = target.ha_prefix
       connection.mode = MODE_SESSION
+      connection.rx_max = hello.get("rx", 0)
     else:
       ha_prefix = self._accept_pairing(hello["id"], hello["base"])
       if ha_prefix is None:
