@@ -37,6 +37,9 @@ CONNECTED_LEAF = "stat/connected"
 
 # deliver(topic, payload bytes, retained flag)
 Deliver = Callable[[str, bytes, bool], None]
+# Told when a panel subscribes (True) or leaves a topic (False), for example
+# the picture service that renders only what a panel shows.
+SubscriptionListener = Callable[["PanelSession", str, bool], None]
 
 
 class PanelSession(Protocol):
@@ -73,6 +76,7 @@ class LinkBroker:
     self._subscriptions: List[_Subscription] = []
     self._sessions: Dict[str, PanelSession] = {}
     self._log_due = log_due or (lambda _reason: True)
+    self._listeners: List[SubscriptionListener] = []
 
   # ---- Bridge side --------------------------------------------------------
 
@@ -109,6 +113,23 @@ class LinkBroker:
   def retained(self, topic: str) -> Optional[bytes]:
     return self._retained.get(topic)
 
+  def add_subscription_listener(self, listener: SubscriptionListener) -> Callable[[], None]:
+    """Hear of panel subscriptions; returns the call that stops it."""
+    self._listeners.append(listener)
+
+    def remove() -> None:
+      if listener in self._listeners:
+        self._listeners.remove(listener)
+
+    return remove
+
+  def _tell(self, session: PanelSession, topic: str, subscribed: bool) -> None:
+    for listener in list(self._listeners):
+      try:
+        listener(session, topic, subscribed)
+      except Exception:  # pragma: no cover - a faulty listener must not stop the broker
+        _LOGGER.exception("HomeTiles link: subscription listener failed for %s", topic)
+
   def session(self, device_id: str) -> Optional[PanelSession]:
     return self._sessions.get(device_id)
 
@@ -133,6 +154,8 @@ class LinkBroker:
     if self._sessions.get(session.device_id) is not session:
       return  # Already replaced by a newer connection.
     del self._sessions[session.device_id]
+    for topic in list(session.subscriptions):
+      self._tell(session, topic, False)
     if session.mode == MODE_SESSION:
       self._from_panel(f"{session.base}/{CONNECTED_LEAF}", b"0", True)
 
@@ -166,10 +189,13 @@ class LinkBroker:
     payload = self._retained.get(topic)
     if payload is not None:
       session.send_publish(topic, payload, True)
+    self._tell(session, topic, True)
     return True
 
   def panel_unsubscribe(self, session: PanelSession, topic: str) -> None:
-    session.subscriptions.discard(topic)
+    if topic in session.subscriptions:
+      session.subscriptions.discard(topic)
+      self._tell(session, topic, False)
 
   # ---- Internals ----------------------------------------------------------
 

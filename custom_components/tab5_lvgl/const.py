@@ -42,6 +42,8 @@ DATA_MQTT_ENTRIES = "mqtt_entries"
 # MQTT and without the link (new panels). A retained MQTT announcement of
 # one of them is left over and gets no card (config_flow.py).
 DATA_LINK_ONLY = "link_only_panels"
+# hass.data[DOMAIN][DATA_IMAGES]: the picture service of the link (images.py).
+DATA_IMAGES = "images"
 
 CONF_ENERGY_ELECTRICITY = "energy_electricity"
 CONF_ENERGY_GAS = "energy_gas"

@@ -99,6 +99,8 @@ class MediaArtworkWiringTest(unittest.IsolatedAsyncioTestCase):
 
     scope = {
       "ArtworkClearGate": ARTWORK.ArtworkClearGate,
+      "image_key_field": ARTWORK.image_key_field,
+      "DATA_IMAGES": "images",
       "async_call_later": call_later,
       "callback": lambda function: function,
       "monotonic": lambda: self.clock,

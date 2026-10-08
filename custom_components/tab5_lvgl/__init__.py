@@ -73,6 +73,7 @@ from homeassistant.util import dt as dt_util, slugify
 # Every MQTT call also reaches panels on the direct link (link_mqtt.py).
 from . import link_mqtt as mqtt
 from .link_runtime import LinkRuntime
+from .images import ImageService, render_jpeg
 from .binary_history import (
   BINARY_HISTORY_KIND,
   BINARY_HISTORY_RECORDER_MAX_CHANGES,
@@ -140,6 +141,7 @@ from .const import (
   CONF_SWITCHES,
   CONF_TRANSPORT,
   CONF_WEATHERS,
+  DATA_IMAGES,
   DATA_LINK,
   DATA_MQTT_ENTRIES,
   DATA_LINK_ONLY,
@@ -200,7 +202,7 @@ from .access_helpers import (
   plan_access_call,
 )
 from .fan_helpers import FAN_DOMAIN, build_fan_detail, build_fan_service_call, parse_fan_command
-from .media_artwork import ArtworkClearGate
+from .media_artwork import ArtworkClearGate, artwork_url, image_key_field
 from .camera_stream import (
   CAMERA_BRIDGE_PROTOCOL_VERSION,
   CAMERA_STREAM_FPS,
@@ -486,8 +488,11 @@ async def async_ensure_link_runtime(hass: HomeAssistant) -> LinkRuntime:
   runtime = LinkRuntime(lambda: hass.config_entries.async_entries(DOMAIN))
   domain_data[DATA_LINK] = runtime
   await runtime.async_start()
+  images = _create_image_service(hass, runtime)
+  domain_data[DATA_IMAGES] = images
 
   async def _async_stop_link(_event: Event) -> None:
+    images.stop()
     await runtime.async_stop()
 
   domain_data["_link_stop_unsub"] = hass.bus.async_listen_once(
@@ -495,6 +500,46 @@ async def async_ensure_link_runtime(hass: HomeAssistant) -> LinkRuntime:
     _async_stop_link,
   )
   return runtime
+
+
+def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageService:
+  """Pictures for linked panels (images.py): the artwork of the players
+  each panel is served, cut to the size the panel subscribed."""
+
+  def artwork(entity_id: str) -> str:
+    state = hass.states.get(entity_id)
+    if state is None:
+      return ""
+    return artwork_url(_extract_media_player_payload(state, hass))
+
+  async def fetch(url: str) -> Optional[bytes]:
+    try:
+      session = async_get_clientsession(hass)
+      async with session.get(url, timeout=5) as response:
+        if response.status != 200:
+          return None
+        chunks: List[bytes] = []
+        received = 0
+        async for chunk in response.content.iter_chunked(16384):
+          chunks.append(chunk)
+          received += len(chunk)
+          if received > MEDIA_COVER_FETCH_MAX_BYTES:
+            return None
+        return b"".join(chunks)
+    except Exception as err:  # pragma: no cover - network dependent
+      _LOGGER.debug("HomeTiles pictures: fetch failed (%s)", err)
+      return None
+
+  async def render(data: bytes, width: int, height: int, budget: int) -> Optional[bytes]:
+    return await hass.async_add_executor_job(render_jpeg, data, width, height, budget)
+
+  def allowed(session: Any, entity_id: str) -> bool:
+    for bridge in hass.data.get(DOMAIN, {}).get("entries", {}).values():
+      if getattr(bridge, "device_id", None) == getattr(session, "device_id", None):
+        return entity_id in getattr(bridge, "media_players", [])
+    return False
+
+  return ImageService(runtime.broker, artwork=artwork, fetch=fetch, render=render, allowed=allowed)
 
 
 async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
@@ -2384,6 +2429,13 @@ class Tab5Bridge:
     if entity_id.startswith("media_player."):
       payload = _extract_media_player_payload(state, self.hass)
       self._gate_media_artwork(entity_id, payload)
+      # Linked panels show the picture with this key (images.py).
+      key = image_key_field(payload)
+      if key is not None:
+        payload["image_key"] = key
+      images = self.hass.data.get(DOMAIN, {}).get(DATA_IMAGES)
+      if images is not None:
+        images.artwork_changed(entity_id)
       if include_media_cover:
         await self._async_attach_media_cover_data(entity_id, payload)
       payload_text = json.dumps(payload, default=str)
