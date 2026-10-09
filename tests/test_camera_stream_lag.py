@@ -485,6 +485,16 @@ class ChunkWindowTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "camera_invalid_stream_request"):
                 validate(chunk)
 
+    def test_the_jpeg_quality_is_checked(self):
+        validate = self.module.CameraStreamManager._validate_quality
+        self.assertIsNone(validate(None))
+        self.assertEqual(validate(2), 2)
+        self.assertEqual(validate("5"), 5)
+        self.assertEqual(validate(31), 31)
+        for quality in (0, 1, 32, "x", True):
+            with self.assertRaisesRegex(ValueError, "camera_invalid_stream_request"):
+                validate(quality)
+
     def test_the_window_is_checked(self):
         validate = self.module.CameraStreamManager._validate_window
         self.assertEqual(validate(None), 1)

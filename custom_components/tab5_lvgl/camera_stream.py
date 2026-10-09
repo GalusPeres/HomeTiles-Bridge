@@ -78,6 +78,12 @@ CAMERA_STILL_RETRY_SECONDS: Final = 0.5
 # 24 FPS; still-image cameras retain the previous higher JPEG quality.
 CAMERA_STREAM_JPEG_QUALITY: Final = 11
 CAMERA_STILL_JPEG_QUALITY: Final = 7
+# A panel may name its own JPEG quality in this FFmpeg range (2 best, 31
+# smallest): the ESP32-S3 decodes few small frames and is far from its network
+# limit, where 11 looked blocky (7 KB frames, b328). Without it the two
+# values above apply.
+CAMERA_JPEG_QUALITY_MIN: Final = 2
+CAMERA_JPEG_QUALITY_MAX: Final = 31
 CAMERA_SESSION_TTL_SECONDS: Final = 30.0
 CAMERA_IMAGE_FAILURE_LIMIT: Final = 10
 # After a popup stream the camera's panel ended: the "stopped" notice follows
@@ -225,6 +231,8 @@ class CameraStreamSession:
   fit: str = "cover"
   window: int = 1
   chunk_bytes: int = CAMERA_STREAM_CHUNK_BYTES
+  # The panel's JPEG quality (FFmpeg -q:v), None for the Bridge's own.
+  jpeg_quality: int | None = None
 
 
 def upright_size(session: Any) -> tuple[int, int]:
@@ -763,11 +771,13 @@ class CameraStreamManager:
     fit: str | None = None,
     window: Any = None,
     chunk: Any = None,
+    quality: Any = None,
   ) -> CameraStreamSession:
     """Resolve a direct stream or a still-image camera into a video session."""
     view, rotate, fit = self._validate_view(view, rotate, fit)
     window = self._validate_window(window)
     chunk_bytes = self._validate_chunk(chunk)
+    jpeg_quality = self._validate_quality(quality)
     width, height, fps = self._validate_stream_request(width, height, fps, view)
     source: str | None = None
     try:
@@ -827,6 +837,7 @@ class CameraStreamManager:
       fit=fit,
       window=window,
       chunk_bytes=chunk_bytes,
+      jpeg_quality=jpeg_quality,
     )
     async with self._lock:
       self._drop_expired_sessions_locked()
@@ -877,6 +888,21 @@ class CameraStreamManager:
     if chunk not in CAMERA_STREAM_CHUNK_SIZES:
       raise ValueError("camera_invalid_stream_request")
     return chunk
+
+  @staticmethod
+  def _validate_quality(quality: Any) -> int | None:
+    """The JPEG quality the panel asked for, None for the Bridge's own."""
+    if quality is None:
+      return None
+    if isinstance(quality, bool):
+      raise ValueError("camera_invalid_stream_request")
+    try:
+      quality = int(quality)
+    except (TypeError, ValueError) as err:
+      raise ValueError("camera_invalid_stream_request") from err
+    if quality < CAMERA_JPEG_QUALITY_MIN or quality > CAMERA_JPEG_QUALITY_MAX:
+      raise ValueError("camera_invalid_stream_request")
+    return quality
 
   @staticmethod
   def _validate_stream_request(
@@ -1664,7 +1690,8 @@ class CameraStreamConnection:
     image_mode = session.source is None
     live = session.live if image_mode else None
     # A live panel upload is video, so it uses the direct-stream JPEG budget.
-    jpeg_quality = (
+    # A panel that names its own quality gets it either way.
+    jpeg_quality = getattr(session, "jpeg_quality", None) or (
       CAMERA_STILL_JPEG_QUALITY
       if image_mode and live is None
       else CAMERA_STREAM_JPEG_QUALITY

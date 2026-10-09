@@ -72,9 +72,9 @@ class SharedStreamTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.005)
 
     async def open_panel(self, device, width=752, height=424, fps=30, view=None,
-                         rotate=0, fit=None):
+                         rotate=0, fit=None, quality=None):
         session = await self.manager.async_create_session(
-            device, ENTITY, width, height, fps, view, rotate, fit)
+            device, ENTITY, width, height, fps, view, rotate, fit, quality=quality)
         await self.manager.async_take_session(session.token)
         return asyncio.create_task(self.connection._async_stream(session, None, device))
 
@@ -137,6 +137,23 @@ class SharedStreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pad=1280:800:", filters)
         self.assertIn("transpose=2", filters)
         self.assertNotIn("transpose", self.commands[0][list(self.commands[0]).index("-vf") + 1])
+        for device, task in (("a", a), ("b", b)):
+            await self.manager.async_stop_device(device)
+            await asyncio.wait_for(task, 3)
+
+    async def test_a_panel_with_its_own_jpeg_quality_gets_its_own_pipeline(self):
+        # b328: the ESP32-S3 asks for better JPEG frames than the P4's 11;
+        # a panel that does not ask keeps the Bridge's quality.
+        a = await self.open_panel("a")
+        await self.wait_for(lambda: self.processes)
+        b = await self.open_panel("b", quality=5)
+        await self.wait_for(lambda: len(self.processes) == 2)
+
+        def quality(command):
+            return command[list(command).index("-q:v") + 1]
+
+        self.assertEqual(quality(self.commands[0]), "11")
+        self.assertEqual(quality(self.commands[1]), "5")
         for device, task in (("a", a), ("b", b)):
             await self.manager.async_stop_device(device)
             await asyncio.wait_for(task, 3)
