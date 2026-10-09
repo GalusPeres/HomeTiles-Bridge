@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 import logging
@@ -87,6 +88,9 @@ CAMERA_STREAM_TRANSPORT: Final = "tcp-ack-v1"
 CAMERA_STREAM_FRAMING: Final = "ack-jpeg-v1"
 CAMERA_BRIDGE_PROTOCOL_VERSION: Final = 1
 CAMERA_STREAM_CHUNK_BYTES: Final = 8 * 1024
+# Chunk sizes a panel may ask for (b320: 32 KB with two in flight; one 8 KB
+# chunk at a time held a Guition V2 at 12 Mbit/s of the 28 it receives).
+CAMERA_STREAM_CHUNK_SIZES: Final = (8 * 1024, 16 * 1024, 32 * 1024)
 CAMERA_STREAM_HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
 CAMERA_STREAM_ACK_TIMEOUT_SECONDS: Final = 5.0
 CAMERA_STREAM_DIAGNOSTIC_INTERVAL_SECONDS: Final = 5.0
@@ -220,6 +224,7 @@ class CameraStreamSession:
   rotate: int = 0
   fit: str = "cover"
   window: int = 1
+  chunk_bytes: int = CAMERA_STREAM_CHUNK_BYTES
 
 
 def upright_size(session: Any) -> tuple[int, int]:
@@ -757,10 +762,12 @@ class CameraStreamManager:
     rotate: Any = 0,
     fit: str | None = None,
     window: Any = None,
+    chunk: Any = None,
   ) -> CameraStreamSession:
     """Resolve a direct stream or a still-image camera into a video session."""
     view, rotate, fit = self._validate_view(view, rotate, fit)
     window = self._validate_window(window)
+    chunk_bytes = self._validate_chunk(chunk)
     width, height, fps = self._validate_stream_request(width, height, fps, view)
     source: str | None = None
     try:
@@ -819,6 +826,7 @@ class CameraStreamManager:
       rotate=rotate,
       fit=fit,
       window=window,
+      chunk_bytes=chunk_bytes,
     )
     async with self._lock:
       self._drop_expired_sessions_locked()
@@ -856,6 +864,19 @@ class CameraStreamManager:
     if window < 1 or window > CAMERA_STREAM_MAX_WINDOW:
       raise ValueError("camera_invalid_stream_request")
     return window
+
+  @staticmethod
+  def _validate_chunk(chunk: Any) -> int:
+    """The chunk size the panel asked for: 8 KB unless it asks for more."""
+    if chunk is None:
+      return CAMERA_STREAM_CHUNK_BYTES
+    try:
+      chunk = int(chunk)
+    except (TypeError, ValueError) as err:
+      raise ValueError("camera_invalid_stream_request") from err
+    if chunk not in CAMERA_STREAM_CHUNK_SIZES:
+      raise ValueError("camera_invalid_stream_request")
+    return chunk
 
   @staticmethod
   def _validate_stream_request(
@@ -1018,16 +1039,19 @@ class CameraStreamConnection:
             1,
           )
         with suppress(OSError):
+          # Room for every chunk in flight: an 8 KB buffer under four 8 KB
+          # chunks made each write wait for the previous one (b318).
           transport_socket.setsockopt(
             socket.SOL_SOCKET,
             socket.SO_SNDBUF,
-            CAMERA_STREAM_CHUNK_BYTES,
+            getattr(session, "chunk_bytes", CAMERA_STREAM_CHUNK_BYTES)
+            * max(1, getattr(session, "window", 1)),
           )
 
       writer.write(CAMERA_STREAM_HELLO_STRUCT.pack(
         CAMERA_STREAM_HELLO_MAGIC,
         0,
-        CAMERA_STREAM_CHUNK_BYTES,
+        getattr(session, "chunk_bytes", CAMERA_STREAM_CHUNK_BYTES),
       ))
       await writer.drain()
       await self._async_stream(session, reader, writer)
@@ -1085,8 +1109,15 @@ class CameraStreamConnection:
     sequence: int,
     jpeg: bytes,
     window: int = 1,
+    chunk_bytes: int = CAMERA_STREAM_CHUNK_BYTES,
+    pending: deque[tuple[int, int]] | None = None,
   ) -> CameraFrameSendMetrics:
-    """Send one JPEG with at most `window` unacknowledged chunks."""
+    """Send one JPEG with at most `window` unacknowledged chunks.
+
+    With the connection's `pending` queue the next frame starts while this
+    frame's last chunks are still unacknowledged, instead of one idle round
+    trip per frame; without it the frame ends fully acknowledged.
+    """
     transport_started = time.monotonic()
     drain_seconds = 0.0
     ack_wait_seconds = 0.0
@@ -1102,22 +1133,21 @@ class CameraStreamConnection:
     await writer.drain()
     drain_seconds += time.monotonic() - drain_started
 
-    acknowledged = 0
+    frame_only = pending is None
+    # (sequence, chunk end) sent and not acknowledged yet, oldest first.
+    queue: deque[tuple[int, int]] = deque() if pending is None else pending
     sent = 0
-    # Chunk ends sent and not acknowledged yet, oldest first.
-    pending: list[int] = []
-    while acknowledged < len(jpeg):
-      while sent < len(jpeg) and len(pending) < window:
-        chunk_end = min(
-          len(jpeg),
-          sent + CAMERA_STREAM_CHUNK_BYTES,
-        )
+    while sent < len(jpeg) or (frame_only and queue):
+      if sent < len(jpeg) and len(queue) < window:
+        chunk_end = min(len(jpeg), sent + chunk_bytes)
         writer.write(jpeg[sent:chunk_end])
         drain_started = time.monotonic()
         await writer.drain()
         drain_seconds += time.monotonic() - drain_started
-        pending.append(chunk_end)
+        queue.append((sequence, chunk_end))
         sent = chunk_end
+        chunks += 1
+        continue
       ack_started = time.monotonic()
       raw_ack = await asyncio.wait_for(
         reader.readexactly(CAMERA_STREAM_ACK_STRUCT.size),
@@ -1132,14 +1162,14 @@ class CameraStreamConnection:
       magic, ack_sequence, ack_bytes = CAMERA_STREAM_ACK_STRUCT.unpack(
         raw_ack
       )
+      expected_sequence, expected_bytes = queue[0]
       if (
         magic != CAMERA_STREAM_ACK_MAGIC
-        or ack_sequence != sequence
-        or ack_bytes != pending[0]
+        or ack_sequence != expected_sequence
+        or ack_bytes != expected_bytes
       ):
         raise ValueError("camera_invalid_ack")
-      acknowledged = pending.pop(0)
-      chunks += 1
+      queue.popleft()
     return CameraFrameSendMetrics(
       chunks=chunks,
       drain_seconds=drain_seconds,
@@ -1644,6 +1674,8 @@ class CameraStreamConnection:
     sent_frame_once = False
     sequence = 0
     diagnostics = CameraStreamDiagnostics(session.entity_id)
+    # Chunks of this connection in flight across frames (_async_send_frame).
+    pending_chunks: deque[tuple[int, int]] = deque()
 
     async def send_jpeg(jpeg: bytes) -> None:
       nonlocal sequence, sent, sent_frame_once
@@ -1654,6 +1686,8 @@ class CameraStreamConnection:
         sequence,
         jpeg,
         window=getattr(session, "window", 1),
+        chunk_bytes=getattr(session, "chunk_bytes", CAMERA_STREAM_CHUNK_BYTES),
+        pending=pending_chunks,
       )
       diagnostics.note_sent(jpeg, send_metrics)
       diagnostics.maybe_log()
@@ -1676,11 +1710,12 @@ class CameraStreamConnection:
     try:
       _LOGGER.info(
         "HomeTiles camera acknowledged TCP client connected "
-        "(%s, mode=%s, fps=%d, chunk=%d, jpeg_q=%d)",
+        "(%s, mode=%s, fps=%d, chunk=%d, window=%d, jpeg_q=%d)",
         session.entity_id,
         "live" if live is not None else "image" if image_mode else "stream",
         session.fps,
-        CAMERA_STREAM_CHUNK_BYTES,
+        getattr(session, "chunk_bytes", CAMERA_STREAM_CHUNK_BYTES),
+        getattr(session, "window", 1),
         jpeg_quality,
       )
       await self._async_send_control(

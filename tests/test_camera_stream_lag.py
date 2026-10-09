@@ -222,7 +222,7 @@ class LagRestartTest(unittest.IsolatedAsyncioTestCase):
             self.processes.append(process)
             return process
 
-        async def send_frame(reader, writer, sequence, frame, window=1):
+        async def send_frame(reader, writer, sequence, frame, **_options):
             self.sent.append(frame)
             return self.module.CameraFrameSendMetrics(1, 0.0, 0.0, 0.0, 0.0)
 
@@ -438,6 +438,52 @@ class ChunkWindowTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_wrong_acknowledgement_still_ends_the_stream(self):
         with self.assertRaisesRegex(ValueError, "camera_invalid_ack"):
             await self.send(50_000, 2, ack_shift=1)
+
+    async def test_frames_follow_without_waiting_for_the_last_acks(self):
+        # b320: the next frame starts while the last chunks of the previous
+        # one are in flight; never more than `window` chunks unacknowledged.
+        from collections import deque
+        module = self.module
+        header = module.CAMERA_STREAM_FRAME_STRUCT.size
+        pending = deque()
+        payload = []
+        most = 0
+
+        class Writer:
+            def write(self, data):
+                nonlocal most
+                if len(data) != header:
+                    payload.append(bytes(data))
+                    most = max(most, len(pending) + 1)
+
+            async def drain(self):
+                pass
+
+        class Reader:
+            async def readexactly(self, n):
+                sequence, end = pending[0]
+                return module.CAMERA_STREAM_ACK_STRUCT.pack(
+                    module.CAMERA_STREAM_ACK_MAGIC, sequence, end)
+
+        first = bytes(range(256)) * 200      # 51200 bytes, two 32 KB chunks
+        second = bytes(range(255, -1, -1)) * 100
+        send = module.CameraStreamConnection._async_send_frame
+        await send(Reader(), Writer(), 1, first, window=2, chunk_bytes=32768, pending=pending)
+        self.assertEqual(len(pending), 2, "the first frame's chunks stay in flight")
+        await send(Reader(), Writer(), 2, second, window=2, chunk_bytes=32768, pending=pending)
+        self.assertEqual(b"".join(payload), first + second)
+        self.assertEqual([len(p) for p in payload], [32768, 18432, 25600])
+        self.assertLessEqual(most, 2)
+        self.assertEqual(list(pending), [(1, 51200), (2, 25600)][-len(pending):])
+
+    def test_the_chunk_size_is_checked(self):
+        validate = self.module.CameraStreamManager._validate_chunk
+        self.assertEqual(validate(None), 8192)
+        for chunk in (8192, 16384, 32768):
+            self.assertEqual(validate(chunk), chunk)
+        for chunk in (4096, 65536, 10000, "x"):
+            with self.assertRaisesRegex(ValueError, "camera_invalid_stream_request"):
+                validate(chunk)
 
     def test_the_window_is_checked(self):
         validate = self.module.CameraStreamManager._validate_window

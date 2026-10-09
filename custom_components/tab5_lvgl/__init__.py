@@ -4594,6 +4594,7 @@ class Tab5Bridge:
         parsed.get("rotate", 0),
         parsed.get("fit"),
         parsed.get("window"),
+        parsed.get("chunk"),
       )
 
       async def _async_notify_panel_end(stopped_entity: str = entity_id) -> None:
@@ -4644,6 +4645,7 @@ class Tab5Bridge:
         "fps": session.fps,
         "view": session.view,
         "window": session.window,
+        "chunk": session.chunk_bytes,
       }
       if session.view == "full":
         response_payload["rotate"] = session.rotate
