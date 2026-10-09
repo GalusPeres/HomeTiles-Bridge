@@ -56,6 +56,46 @@ class ViewNavigationTest(unittest.TestCase):
         self.view.state(state(sequence=2), 12)
         self.assertEqual(self.view.current, "home")
 
+    def test_camera_full_screen_option_for_doorbell_automations(self):
+        # b27 (#65): a camera tile also opens straight in full screen; the
+        # panel lists it under "full_targets" (older Bridges ignore the key).
+        full = {"id": "full:12", "label": "Home / Room / Door (Full screen) [t:12]"}
+        self.assertTrue(self.view.catalog(catalog(full_targets=[full])))
+        self.assertEqual(self.view.targets["full:12"], full["label"])
+        command = self.view.command(full["label"], 11)
+        self.assertEqual(command["target"], "full:12")
+        # The panel reports its full screen next to the tile's target.
+        self.assertTrue(self.view.state(state(current="tile:12", mode="popup", full=True,
+                                              sequence=1), 11))
+        self.assertEqual(self.view.current, "full:12")
+        self.assertEqual(self.view.current_label(), full["label"])
+        self.assertTrue(self.view.state(state(current="tile:12", mode="popup", sequence=1), 11))
+        self.assertEqual(self.view.current_label(), "Home / Room / Door [t:12]")
+        # A full screen without its option listed shows the tile's option.
+        self.view.catalog(catalog())
+        self.view.state(state(current="tile:12", mode="popup", full=True, sequence=1), 11)
+        self.assertEqual(self.view.current_label(), "Home / Room / Door [t:12]")
+        self.assertFalse(self.view.state(state(full="yes"), 11))
+
+    def test_full_targets_are_checked(self):
+        bad = [
+            [{"id": "full:13", "label": "x"}],                         # no such tile here
+            [{"id": "tile:12", "label": "x"}],                         # not a full target
+            [{"id": "full:12", "label": "Home / Room / Door [t:12]"}], # duplicate label
+            [{"id": "full:12", "label": ""}],
+            "full:12",
+            [{"id": f"full:{i}", "label": str(i)} for i in range(1, 66)],
+        ]
+        for full_targets in bad:
+            view = VIEW.ViewNavigation()
+            view.state(state(), 10)
+            self.assertFalse(view.catalog(catalog(full_targets=full_targets)), full_targets)
+        # Older firmware sends no "full_targets".
+        view = VIEW.ViewNavigation()
+        view.state(state(), 10)
+        self.assertTrue(view.catalog(catalog()))
+        self.assertNotIn("full:12", view.targets)
+
     def test_manual_navigation_close_pin_sleep_and_screensaver_do_not_send(self):
         for current, mode in [("folder:1", "folder"), ("tile:12", "popup"),
                               ("folder:1", "folder"), (None, "pin"),

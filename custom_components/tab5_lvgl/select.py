@@ -144,7 +144,7 @@ class HomeTilesViewSelect(SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        return self._view.targets.get(self._view.current)
+        return self._view.current_label()
 
     @property
     def extra_state_attributes(self):

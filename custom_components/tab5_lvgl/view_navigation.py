@@ -7,7 +7,12 @@ from typing import Any
 
 MAX_PAGES = 128
 MAX_TARGETS_PER_PAGE = 65
+# A camera tile's popup straight in full screen (#65, doorbell automations).
+# The panel lists these under "full_targets" (older Bridges ignore that key)
+# and reports the full screen as "full": true next to the tile's target.
+MAX_FULL_TARGETS_PER_PAGE = 64
 _TARGET = re.compile(r"(?:home|(?:folder|tile):[1-9][0-9]{0,4})\Z")
+_FULL_TARGET = re.compile(r"full:([1-9][0-9]{0,4})\Z")
 _SESSION = re.compile(r"[0-9a-f]{32}\Z")
 
 
@@ -44,6 +49,11 @@ class ViewNavigation:
             return False
         if payload.get("mode") not in {"folder", "popup", "pin", "settings", "sleep", "screensaver"}:
             return False
+        full = payload.get("full", False)
+        if type(full) is not bool:
+            return False
+        if full and current is not None and current.startswith("tile:"):
+            current = "full:" + current[5:]
         if (session, revision) != (self.session, self.revision):
             self.pages.clear()
             self.targets.clear()
@@ -81,6 +91,20 @@ class ViewNavigation:
             if not isinstance(label, str) or not 1 <= len(label) <= 255 or target in options:
                 return False
             options[target] = label
+        raw_full = payload.get("full_targets", [])
+        if not isinstance(raw_full, list) or len(raw_full) > MAX_FULL_TARGETS_PER_PAGE:
+            return False
+        for item in raw_full:
+            if not isinstance(item, dict):
+                return False
+            target, label = item.get("id"), item.get("label")
+            match = _FULL_TARGET.fullmatch(target) if isinstance(target, str) else None
+            # Only for a tile of the same page.
+            if match is None or f"tile:{match.group(1)}" not in options:
+                return False
+            if not isinstance(label, str) or not 1 <= len(label) <= 255 or target in options:
+                return False
+            options[target] = label
         pages = dict(self.pages)
         pages[page] = options
         combined: dict[str, str] = {}
@@ -93,6 +117,13 @@ class ViewNavigation:
         if len(pages) == count and "home" in combined:
             self.targets = combined
         return True
+
+    def current_label(self) -> str | None:
+        """The shown view's option; a full screen not listed shows its tile."""
+        label = self.targets.get(self.current)
+        if label is None and self.current is not None and self.current.startswith("full:"):
+            label = self.targets.get("tile:" + self.current[5:])
+        return label
 
     def available(self, now: float) -> bool:
         return (self.online and self.ready and bool(self.targets)
