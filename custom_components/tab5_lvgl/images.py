@@ -2,7 +2,11 @@
 
 A panel subscribes to the picture it shows in the size it shows it,
 ``<ha_prefix>/<domain>/<object_id>/image/<w>x<h>``: a media player's cover,
-an image entity, or a camera's still image (the screensaver picture). While
+an image entity, or a camera's still image (the screensaver picture). Two
+optional segments follow the size: ``/fit`` (the whole picture, black bars)
+or ``/original`` (its own size when smaller, else like fit) instead of
+filling w x h; and ``/<n>s``, a camera's still every n seconds (3..60)
+instead of every 10. While
 at least one linked panel holds such a subscription and the Bridge serves
 that entity to it, this service loads the picture, cuts it to exactly w x h
 (centred, filling) and publishes it retained on that topic:
@@ -29,7 +33,7 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Awaitable, Callable, Dict, Iterable, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, NamedTuple, Optional, Set
 
 from .link_protocol import MAX_PAYLOAD
 
@@ -45,24 +49,43 @@ SOURCE_CACHE_MAX = 6
 SOURCE_CACHE_MAX_BYTES = 8 * 1024 * 1024
 NOT_SERVED = "waits: the entity is not served to this panel (released or declared)"
 JPEG_QUALITIES = (88, 82, 76, 70, 62, 54, 46)
-# A camera's still image is loaded at most this often while a panel shows it.
+# A camera's still image is loaded this often while a panel shows it, unless
+# its topic asks for another interval within the bounds.
 CAMERA_REFRESH_S = 10.0
+CAMERA_REFRESH_MIN_S = 3
+CAMERA_REFRESH_MAX_S = 60
+FILL, FIT, ORIGINAL = "fill", "fit", "original"
+# Graphics (a QR code, a vacuum map) have few colours and are enlarged with
+# hard edges; photos are resampled smoothly.
+GRAPHIC_MAX_COLORS = 256
 
 _IMAGE_TOPIC = re.compile(
   r"(?P<prefix>.+)/(?P<domain>media_player|image|camera)/(?P<object_id>[a-z0-9_]+)/image/"
-  r"(?P<w>[1-9][0-9]{1,3})x(?P<h>[1-9][0-9]{1,3})\Z"
+  r"(?P<w>[1-9][0-9]{1,3})x(?P<h>[1-9][0-9]{1,3})"
+  r"(?:/(?P<fit>fit|original))?(?:/(?P<every>[1-9][0-9]?)s)?\Z"
 )
 
 
-def parse_image_topic(topic: str) -> Optional[Tuple[str, int, int]]:
-  """(entity id, width, height) of a picture topic, or None."""
+class ImageTopic(NamedTuple):
+  entity_id: str
+  width: int
+  height: int
+  fit: str = FILL
+  every: Optional[int] = None
+
+
+def parse_image_topic(topic: str) -> Optional[ImageTopic]:
+  """The entity, size and options of a picture topic, or None."""
   match = _IMAGE_TOPIC.match(topic)
   if match is None:
     return None
   width, height = int(match["w"]), int(match["h"])
   if not (MIN_EDGE <= width <= MAX_EDGE and MIN_EDGE <= height <= MAX_EDGE):
     return None
-  return f"{match['domain']}.{match['object_id']}", width, height
+  every = int(match["every"]) if match["every"] else None
+  if every is not None and not CAMERA_REFRESH_MIN_S <= every <= CAMERA_REFRESH_MAX_S:
+    return None
+  return ImageTopic(f"{match['domain']}.{match['object_id']}", width, height, match["fit"] or FILL, every)
 
 
 def build_payload(key: str, width: int, height: int, jpeg: bytes) -> bytes:
@@ -74,9 +97,34 @@ def content_key(data: bytes) -> str:
   return hashlib.sha256(data).hexdigest()[:16]
 
 
-def render_jpeg(data: bytes, width: int, height: int, max_bytes: int) -> Optional[bytes]:
-  """The source picture cut to fill width x height, as a baseline JPEG
-  within max_bytes (blocking: run it in an executor)."""
+def _place(picture: Any, width: int, height: int, fit: str) -> Any:
+  """The picture on exactly width x height: filled and cut (fill), as large
+  as fits with black bars (fit), or 1:1 in the middle when it is smaller
+  (original, else like fit). Graphics are enlarged with hard edges."""
+  from PIL import Image, ImageOps
+
+  if fit == FILL:
+    scale = max(width / picture.width, height / picture.height)
+  else:
+    scale = min(width / picture.width, height / picture.height)
+    if fit == ORIGINAL:
+      scale = min(scale, 1.0)
+  resample = Image.LANCZOS
+  if scale > 1.0 and picture.getcolors(GRAPHIC_MAX_COLORS) is not None:
+    resample = Image.NEAREST
+  if fit == FILL:
+    return ImageOps.fit(picture, (width, height), method=resample, centering=(0.5, 0.5))
+  size = (max(1, round(picture.width * scale)), max(1, round(picture.height * scale)))
+  if size != picture.size:
+    picture = picture.resize(size, resample)
+  canvas = Image.new("RGB", (width, height), (0, 0, 0))
+  canvas.paste(picture, ((width - size[0]) // 2, (height - size[1]) // 2))
+  return canvas
+
+
+def render_jpeg(data: bytes, width: int, height: int, max_bytes: int, fit: str = FILL) -> Optional[bytes]:
+  """The source picture placed on width x height (_place), as a baseline
+  JPEG within max_bytes (blocking: run it in an executor)."""
   try:
     from PIL import Image, ImageFile, ImageOps
   except Exception as err:  # pragma: no cover - Pillow ships with Home Assistant
@@ -94,7 +142,7 @@ def render_jpeg(data: bytes, width: int, height: int, max_bytes: int) -> Optiona
         picture = background
       else:
         picture = picture.convert("RGB")
-      picture = ImageOps.fit(picture, (width, height), method=Image.LANCZOS, centering=(0.5, 0.5))
+      picture = _place(picture, width, height, fit)
       for quality in JPEG_QUALITIES:
         output = BytesIO()
         picture.save(output, format="JPEG", quality=quality, optimize=False, progressive=False,
@@ -129,7 +177,7 @@ class ImageService:
     broker: Any,
     *,
     source: Callable[[str], Optional[Source]],
-    render: Callable[[bytes, int, int, int], Awaitable[Optional[bytes]]],
+    render: Callable[[bytes, int, int, int, str], Awaitable[Optional[bytes]]],
     allowed: Callable[[Any, str], bool],
     track: Callable[[Iterable[str], Callable[[str], None]], Callable[[], None]],
   ) -> None:
@@ -303,13 +351,14 @@ class ImageService:
     parsed = parse_image_topic(topic)
     if parsed is None:
       return
-    entity_id, width, height = parsed
+    entity_id, width, height = parsed.entity_id, parsed.width, parsed.height
     source = self._source(entity_id)
     if source is None:
       self._note(topic, "has no picture now", level=logging.DEBUG)
       return
     if source.refresh > 0 and topic not in self._refreshers:
-      self._refreshers[topic] = asyncio.get_running_loop().create_task(self._refresh(topic, source.refresh))
+      every = float(parsed.every) if parsed.every else source.refresh
+      self._refreshers[topic] = asyncio.get_running_loop().create_task(self._refresh(topic, every))
     if source.key is not None and self._published.get(topic) == source.key:
       return
     data = await self._load(source)
@@ -320,7 +369,7 @@ class ImageService:
     if self._published.get(topic) == key:
       return
     budget = self._budget(topic) - len(build_payload(key, width, height, b""))
-    jpeg = await self._render(data, width, height, budget)
+    jpeg = await self._render(data, width, height, budget, parsed.fit)
     if not jpeg:
       self._note(topic, "could not render the picture", f"{len(data)} source bytes, {budget} bytes room")
       return

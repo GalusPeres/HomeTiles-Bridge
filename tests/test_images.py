@@ -44,17 +44,28 @@ class Session:
 
 class TopicsAndKeysTest(unittest.TestCase):
     def test_picture_topics(self):
-        self.assertEqual(IMAGES.parse_image_topic(TOPIC), ("media_player.tv", 480, 480))
+        self.assertEqual(IMAGES.parse_image_topic(TOPIC), ("media_player.tv", 480, 480, "fill", None))
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/media_player/tv/image/1280x800"),
-                         ("media_player.tv", 1280, 800))
+                         ("media_player.tv", 1280, 800, "fill", None))
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/image/frame/image/1280x800"),
-                         ("image.frame", 1280, 800))
+                         ("image.frame", 1280, 800, "fill", None))
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/camera/door/image/800x480"),
-                         ("camera.door", 800, 480))
+                         ("camera.door", 800, 480, "fill", None))
+        # Options after the size: how the picture is placed, a camera's interval.
+        self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/image/frame/image/1280x800/fit"),
+                         ("image.frame", 1280, 800, "fit", None))
+        self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/camera/door/image/800x1280/original/5s"),
+                         ("camera.door", 800, 1280, "original", 5))
+        self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/camera/door/image/800x480/3s"),
+                         ("camera.door", 800, 480, "fill", 3))
+        self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/camera/door/image/800x480/60s").every, 60)
         for bad in (f"{PREFIX}/media_player/tv/image/8x8", f"{PREFIX}/media_player/tv/image/2000x480",
                     f"{PREFIX}/light/desk/image/480x480", f"{PREFIX}/media_player/TV/image/480x480",
                     f"{PREFIX}/media_player/tv/image/480", f"{PREFIX}/media_player/tv/state",
-                    f"{PREFIX}/media_player/tv/image/0480x480"):
+                    f"{PREFIX}/media_player/tv/image/0480x480", f"{PREFIX}/camera/door/image/800x480/2s",
+                    f"{PREFIX}/camera/door/image/800x480/61s", f"{PREFIX}/camera/door/image/800x480/fill",
+                    f"{PREFIX}/camera/door/image/800x480/5s/fit", f"{PREFIX}/camera/door/image/800x480/05s",
+                    f"{PREFIX}/camera/door/image/800x480/fit/"):
             self.assertIsNone(IMAGES.parse_image_topic(bad), bad)
 
     def test_key_ignores_the_proxy_token_and_prefers_the_player_picture(self):
@@ -92,6 +103,49 @@ class RenderTest(unittest.TestCase):
             self.assertFalse(picture.info.get("progressive"))
         self.assertIsNone(IMAGES.render_jpeg(b"not a picture", 480, 480, 65535))
 
+    @staticmethod
+    def decode(jpeg):
+        with Image.open(BytesIO(jpeg)) as picture:
+            return picture.convert("RGB")
+
+    def test_fit_shows_the_whole_picture_with_black_bars(self):
+        # A wide photo on a square screen: bars above and below, nothing cut.
+        picture = self.decode(IMAGES.render_jpeg(jpeg_source(640, 320, (200, 40, 40)), 480, 480, 65535, "fit"))
+        self.assertEqual(picture.size, (480, 480))
+        self.assertLess(max(picture.getpixel((240, 40))), 30, "bar above")
+        self.assertLess(max(picture.getpixel((240, 440))), 30, "bar below")
+        self.assertGreater(picture.getpixel((240, 240))[0], 150, "the picture in the middle")
+        self.assertGreater(picture.getpixel((4, 240))[0], 150, "edge to edge across")
+        # Fill covers the whole screen instead.
+        filled = self.decode(IMAGES.render_jpeg(jpeg_source(640, 320, (200, 40, 40)), 480, 480, 65535))
+        self.assertGreater(filled.getpixel((240, 40))[0], 150)
+
+    def test_original_keeps_a_small_picture_at_its_size(self):
+        picture = self.decode(IMAGES.render_jpeg(jpeg_source(100, 60, (200, 40, 40)), 480, 480, 65535, "original"))
+        self.assertGreater(picture.getpixel((240, 240))[0], 150)
+        self.assertLess(max(picture.getpixel((240 - 56, 240))), 30, "no larger than 100 px wide")
+        self.assertGreater(picture.getpixel((240 - 44, 240))[0], 150)
+        # A larger picture shrinks to fit, like fit.
+        large = self.decode(IMAGES.render_jpeg(jpeg_source(960, 480, (200, 40, 40)), 480, 480, 65535, "original"))
+        self.assertGreater(large.getpixel((4, 240))[0], 150)
+        self.assertLess(max(large.getpixel((240, 40))), 30)
+
+    def test_graphics_are_enlarged_with_hard_edges(self):
+        # A 2x2 checkerboard of black and white modules, like a QR code.
+        source = Image.new("RGB", (40, 40), (255, 255, 255))
+        for x in range(20):
+            for y in range(20):
+                source.putpixel((x, y), (0, 0, 0))
+                source.putpixel((x + 20, y + 20), (0, 0, 0))
+        output = BytesIO()
+        source.save(output, format="PNG")
+        picture = self.decode(IMAGES.render_jpeg(output.getvalue(), 400, 400, 65535, "fit"))
+        # Nearest neighbour: the module border stays sharp (JPEG keeps a few
+        # grey steps), smooth resampling would blur it over many pixels.
+        row = [sum(picture.getpixel((x, 100))) // 3 for x in range(190, 210)]
+        greys = [value for value in row if 40 < value < 215]
+        self.assertLessEqual(len(greys), 4, row)
+
 
 @unittest.skipIf(Image is None, "Pillow is not installed")
 class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -105,6 +159,7 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
                         "PANEL2": {"media_player.tv"}}
         self.tracked = []
         self.budgets = []
+        self.fits = []
 
         def source(entity_id):
             if entity_id == "media_player.tv":
@@ -128,9 +183,10 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 return IMAGES.Source(None, load_still, 0.05)
             return None
 
-        async def render(data, width, height, budget):
+        async def render(data, width, height, budget, fit):
             self.budgets.append(budget)
-            return IMAGES.render_jpeg(data, width, height, budget)
+            self.fits.append(fit)
+            return IMAGES.render_jpeg(data, width, height, budget, fit)
 
         def track(entities, changed):
             entry = [sorted(entities), changed, True]
@@ -227,6 +283,23 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
         await self.settle()
         self.assertEqual(self.loads.count("camera"), loads, "no reloads once nobody shows it")
         self.assertEqual(self.active_tracks(), [])
+
+    async def test_a_topic_sets_the_cameras_interval_and_the_placement(self):
+        intervals = []
+
+        async def record(topic, every):
+            intervals.append((topic, every))
+        self.service._refresh = record
+        panel = self.attach(Session())
+        topic = f"{PREFIX}/camera/door/image/480x480/fit/3s"
+        self.broker.panel_subscribe(panel, topic)
+        plain = f"{PREFIX}/camera/door/image/480x480"
+        self.broker.panel_subscribe(panel, plain)
+        await self.settle()
+        self.assertEqual(sorted(intervals), [(plain, 0.05), (topic, 3.0)],
+                         "the topic's interval, else the source's")
+        self.assertEqual(sorted(self.fits), ["fill", "fit"])
+        self.assertEqual(len(panel.received), 2, "each placement is its own picture")
 
     async def test_a_second_panel_gets_the_retained_picture_without_a_render(self):
         first = self.attach(Session("PANEL1"))
