@@ -209,6 +209,15 @@ MEDIA_COVER_CACHE_MAX = 24
 MEDIA_COVER_THUMBNAIL_SIZE = 240
 MEDIA_COVER_WARNING_INTERVAL_SECONDS = 15 * 60
 MEDIA_COVER_WARNING_MAX_KEYS = 64
+# Media browse thumbnails: small square JPEGs for the panel's catalog list.
+# Sides are multiples of 16 so the ESP32-P4 hardware JPEG decoder accepts them.
+MEDIA_THUMB_SIZE_DEFAULT = 64
+MEDIA_THUMB_SIZE_MIN = 16
+MEDIA_THUMB_SIZE_MAX = 128
+MEDIA_THUMB_CACHE_MAX = 128
+# Only thumbnail URLs the Bridge itself published in a catalog are fetched,
+# so the panel cannot make the Bridge request arbitrary URLs.
+MEDIA_THUMB_ALLOWED_MAX = 1024
 MAX_ITEMS_PER_PAGE = 50
 
 
@@ -261,6 +270,73 @@ def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
   except Exception as err:
     _LOGGER.debug(
       "Tab5 media cover: resize failed (%s: %s, %s bytes input)",
+      type(err).__name__,
+      err,
+      len(data),
+    )
+    return None
+
+
+def _coerce_thumb_size(value: Any) -> int:
+  try:
+    size = int(value)
+  except (TypeError, ValueError):
+    return MEDIA_THUMB_SIZE_DEFAULT
+  size = max(MEDIA_THUMB_SIZE_MIN, min(MEDIA_THUMB_SIZE_MAX, size))
+  return size - (size % 16)
+
+
+def _parse_rgb_hex(value: Any, default: Tuple[int, int, int] = (0x2A, 0x2A, 0x2A)) -> Tuple[int, int, int]:
+  text = str(value or "").strip().lstrip("#")
+  if len(text) != 6:
+    return default
+  try:
+    return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
+  except ValueError:
+    return default
+
+
+def _resize_browse_thumbnail(
+  data: bytes,
+  size: int,
+  background: Tuple[int, int, int],
+) -> Optional[bytes]:
+  """Fit artwork into a size x size JPEG; transparent logos get the card color."""
+  try:
+    from PIL import Image, ImageFile, ImageOps
+  except Exception as err:
+    _LOGGER.debug("Tab5 media thumbnail: Pillow not available (%s)", err)
+    return None
+
+  ImageFile.LOAD_TRUNCATED_IMAGES = True
+  resample = getattr(Image, "Resampling", Image).LANCZOS
+  try:
+    with Image.open(BytesIO(data)) as image:
+      # Decode large JPEGs at reduced scale; no-op for other formats.
+      image.draft("RGB", (size * 2, size * 2))
+      image = ImageOps.exif_transpose(image)
+      if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+        rgba = image.convert("RGBA")
+        flat = Image.new("RGB", rgba.size, background)
+        flat.paste(rgba, mask=rgba.split()[-1])
+        image = flat
+      else:
+        image = image.convert("RGB")
+      # Keep the whole image (logos must not be cropped), pad to a square.
+      image = ImageOps.pad(image, (size, size), method=resample, color=background)
+      output = BytesIO()
+      image.save(
+        output,
+        format="JPEG",
+        quality=80,
+        optimize=False,
+        progressive=False,
+        subsampling=2,
+      )
+      return output.getvalue()
+  except Exception as err:
+    _LOGGER.debug(
+      "Tab5 media thumbnail: resize failed (%s: %s, %s bytes input)",
       type(err).__name__,
       err,
       len(data),
@@ -321,6 +397,8 @@ MEDIA_COMMAND_ALIASES = {
   "play_media": "play_media",
   "browse": "browse_media",
   "browse_media": "browse_media",
+  "thumbnail": "browse_thumbnail",
+  "browse_thumbnail": "browse_thumbnail",
 }
 
 
@@ -1067,6 +1145,10 @@ class Tab5Bridge:
     self._media_cover_warning_last: Dict[Tuple[str, str], float] = {}
     self._media_publish_generation: Dict[str, int] = {}
     self._media_browser = MediaBrowser()
+    # Browse thumbnails: cache of finished payloads and the URLs published in
+    # catalogs (insertion ordered, oldest first).
+    self._media_thumb_cache: Dict[str, str] = {}
+    self._media_thumb_allowed: Dict[str, None] = {}
     self.scene_map: Dict[str, str] = {
       (alias or "").lower(): entity
       for alias, entity in (data.get(CONF_SCENE_MAP, {}) or {}).items()
@@ -3455,9 +3537,16 @@ class Tab5Bridge:
       if not callable(browse_method):
         raise ValueError("browse_media_not_supported")
 
+      is_root = not media_content_id and not media_content_type
+      _LOGGER.info(
+        "Tab5 media browse call: id=%r type=%r root=%s",
+        media_content_id,
+        media_content_type,
+        is_root,
+      )
       result = await browse_method(
-        media_content_id=media_content_id or None,
-        media_content_type=media_content_type or None,
+        media_content_id=None if is_root else media_content_id,
+        media_content_type=None if is_root else media_content_type,
       )
 
       _LOGGER.info(
@@ -3482,6 +3571,7 @@ class Tab5Bridge:
         raise ValueError("invalid_browse_media_result")
 
       items = normalized.get("items", [])
+      self._remember_browse_thumbnails(items)
       page_count, pages = paginate_items(
         items,
         MAX_ITEMS_PER_PAGE,
@@ -3554,6 +3644,158 @@ class Tab5Bridge:
         retain=False,
       )
       
+  def _remember_browse_thumbnails(self, items: List[Dict[str, Any]]) -> None:
+    for item in items:
+      thumb = item.get("thumbnail") if isinstance(item, dict) else None
+      if isinstance(thumb, str) and thumb:
+        self._media_thumb_allowed.pop(thumb, None)
+        self._media_thumb_allowed[thumb] = None
+    while len(self._media_thumb_allowed) > MEDIA_THUMB_ALLOWED_MAX:
+      self._media_thumb_allowed.pop(next(iter(self._media_thumb_allowed)))
+
+  def _resolve_browse_thumbnail_url(self, url: str) -> Optional[str]:
+    """Absolute URL for a catalog thumbnail; signs HA paths that need auth."""
+    if url.startswith(("http://", "https://")):
+      return url
+    if not url.startswith("/") or url.startswith("//"):
+      return None
+    path = url
+    # media_player proxy URLs carry their own token. Everything else on HA
+    # needs authentication; current HA versions protect brand images too.
+    if "token=" not in path and "authSig=" not in path:
+      brand_token = None
+      if path.startswith("/api/brands/"):
+        # The brands view accepts its own rotating access token.
+        tokens = self.hass.data.get("brands")
+        try:
+          brand_token = tokens[-1] if tokens else None
+        except Exception:  # pragma: no cover - unexpected container
+          brand_token = None
+      if brand_token:
+        path += ("&" if "?" in path else "?") + "token=" + str(brand_token)
+      else:
+        try:
+          from homeassistant.components.http.auth import async_sign_path
+
+          path = async_sign_path(
+            self.hass, path, timedelta(minutes=5), use_content_user=True
+          )
+        except Exception as err:  # pragma: no cover - depends on HA version
+          _LOGGER.info("Tab5 media thumbnail: could not sign %s (%s)", url, err)
+    if get_url is None:
+      return None
+    try:
+      base = get_url(self.hass, prefer_external=False, allow_internal=True, allow_external=True)
+    except Exception:  # pragma: no cover - NoURLAvailableError
+      return None
+    if not isinstance(base, str) or not base:
+      return None
+    return base.rstrip("/") + path
+
+  async def _async_fetch_browse_thumbnail(self, url: str) -> Tuple[Optional[bytes], str]:
+    """Returns (data, reason); reason is empty on success."""
+    resolved = self._resolve_browse_thumbnail_url(url)
+    if not resolved:
+      return None, "no_base_url"
+    # Never log the resolved URL: it can carry a token or signature.
+    try:
+      session = async_get_clientsession(self.hass)
+      async with session.get(resolved, timeout=5) as response:
+        if response.status != 200:
+          return None, f"http_{response.status}"
+        chunks: List[bytes] = []
+        received = 0
+        async for chunk in response.content.iter_chunked(16384):
+          if not chunk:
+            break
+          chunks.append(chunk)
+          received += len(chunk)
+          if received > MEDIA_COVER_FETCH_MAX_BYTES:
+            return None, "too_large"
+        data = b"".join(chunks)
+    except Exception as err:  # pragma: no cover - network dependent
+      return None, type(err).__name__
+    if not data:
+      return None, "empty"
+    return data, ""
+
+  async def _async_handle_media_thumbnail_command(
+    self,
+    parsed_payload: Dict[str, Any],
+  ) -> None:
+    """Fetch one catalog thumbnail and publish it as a small JPEG."""
+    entity_id = str(parsed_payload.get("entity_id") or "").strip()
+    session = str(parsed_payload.get("session") or "").strip()
+    try:
+      thumb_id = int(parsed_payload.get("thumb_id") or 0)
+    except (TypeError, ValueError):
+      thumb_id = 0
+    url = str(parsed_payload.get("url") or "").strip()
+    size = _coerce_thumb_size(parsed_payload.get("size"))
+    background = _parse_rgb_hex(parsed_payload.get("bg"))
+
+    response: Dict[str, Any] = {
+      "version": 1,
+      "session": session,
+      "entity_id": entity_id,
+      "thumb_id": thumb_id,
+    }
+
+    error = None
+    detail = ""
+    encoded = None
+    if entity_id not in self.media_players:
+      error = "entity_not_configured"
+    elif not url:
+      error = "thumbnail_missing_url"
+    elif url not in self._media_thumb_allowed:
+      error = "thumbnail_not_allowed"
+    else:
+      cache_key = f"{size}:{background[0]:02x}{background[1]:02x}{background[2]:02x}:{url}"
+      encoded = self._media_thumb_cache.get(cache_key)
+      if encoded is None:
+        data, detail = await self._async_fetch_browse_thumbnail(url)
+        if data is None:
+          error = "thumbnail_fetch_failed"
+        else:
+          jpeg = await self.hass.async_add_executor_job(
+            _resize_browse_thumbnail, data, size, background
+          )
+          if not jpeg:
+            error = "thumbnail_convert_failed"
+          else:
+            encoded = base64.b64encode(jpeg).decode("ascii")
+            self._media_thumb_cache[cache_key] = encoded
+            while len(self._media_thumb_cache) > MEDIA_THUMB_CACHE_MAX:
+              self._media_thumb_cache.pop(next(iter(self._media_thumb_cache)))
+
+    if error:
+      _LOGGER.info(
+        "Tab5 media thumbnail %s for %s: %s%s",
+        thumb_id,
+        url or "-",
+        error,
+        f" ({detail})" if detail else "",
+      )
+      response["status"] = "error"
+      response["error"] = error
+      if detail:
+        response["detail"] = detail
+    else:
+      response["status"] = "ok"
+      response["mime"] = "image/jpeg"
+      response["size"] = size
+      response["data"] = encoded
+      _LOGGER.debug("Tab5 media thumbnail %s ready: %s chars", thumb_id, len(encoded or ""))
+
+    await mqtt.async_publish(
+      self.hass,
+      f"{self.base_topic}/stat/media/thumb",
+      json.dumps(response, ensure_ascii=False, separators=(",", ":")),
+      qos=0,
+      retain=False,
+    )
+
   async def _async_handle_media_command(self, msg: ReceiveMessage) -> None:
     """Execute media player commands originating from the Tab5."""
     payload = msg.payload.strip()
@@ -3612,6 +3854,9 @@ class Tab5Bridge:
     if command == "browse_media":
       _LOGGER.info("Tab5 browse_media command detected, calling handler")
       await self._async_handle_media_browse_command(parsed_payload)
+      return
+    if command == "browse_thumbnail":
+      await self._async_handle_media_thumbnail_command(parsed_payload)
       return
     service_payload: Dict[str, Any] = {"entity_id": entity_id}
 
