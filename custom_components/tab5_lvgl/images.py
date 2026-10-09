@@ -14,6 +14,10 @@ A cover's ``key`` (media_artwork.image_key) is also the media state's
 Pictures above the normal message size reach the panel as a stream
 (link_server.py), so the budget of a topic is the smallest room its panels
 announced.
+
+A subscription to an entity the panel is not served yet is kept: a panel
+subscribes a newly chosen picture at once and declares the entity a moment
+later, and recheck() then grants it.
 """
 
 from __future__ import annotations
@@ -37,6 +41,9 @@ MAX_EDGE = 1280
 # Never more than this per picture, whatever a panel announced.
 MAX_PICTURE_BYTES = 512 * 1024
 SOURCE_CACHE_MAX = 6
+# Large sources (a full-screen image) are kept only within this total.
+SOURCE_CACHE_MAX_BYTES = 8 * 1024 * 1024
+NOT_SERVED = "waits: the entity is not served to this panel (released or declared)"
 JPEG_QUALITIES = (88, 82, 76, 70, 62, 54, 46)
 # A camera's still image is loaded at most this often while a panel shows it.
 CAMERA_REFRESH_S = 10.0
@@ -134,6 +141,10 @@ class ImageService:
     self._untrack: Optional[Callable[[], None]] = None
     self._tracked: frozenset = frozenset()
     self._wants: Dict[str, Set[Any]] = {}
+    # Subscriptions to entities the panel is not served (yet); recheck().
+    self._refused: Dict[str, Set[Any]] = {}
+    # The last logged outcome per topic, so each change logs one line.
+    self._outcomes: Dict[str, str] = {}
     self._published: Dict[str, str] = {}
     self._tasks: Dict[str, asyncio.Task] = {}
     self._refreshers: Dict[str, asyncio.Task] = {}
@@ -161,23 +172,70 @@ class ImageService:
       if parsed and parsed[0] == entity_id:
         self._schedule(topic)
 
+  def recheck(self) -> None:
+    """The entities served to the panels changed (a declaration, the
+    options): a kept subscription now served gets its picture, and one no
+    longer served stops."""
+    granted: Set[str] = set()
+    revoked = False
+    for topic, sessions in list(self._refused.items()):
+      parsed = parse_image_topic(topic)
+      for session in list(sessions):
+        if parsed and self._allowed(session, parsed[0]):
+          self._remove(self._refused, topic, session)
+          self._wants.setdefault(topic, set()).add(session)
+          granted.add(topic)
+    for topic, sessions in list(self._wants.items()):
+      parsed = parse_image_topic(topic)
+      for session in list(sessions):
+        if not parsed or not self._allowed(session, parsed[0]):
+          self._refused.setdefault(topic, set()).add(session)
+          self._remove(self._wants, topic, session)
+          self._note(topic, NOT_SERVED)
+          revoked = True
+    if granted or revoked:
+      self._retrack()
+    for topic in sorted(granted):
+      self._schedule(topic)
+
+  def _remove(self, table: Dict[str, Set[Any]], topic: str, session: Any) -> None:
+    sessions = table.get(topic)
+    if sessions is None:
+      return
+    sessions.discard(session)
+    if sessions:
+      return
+    del table[topic]
+    if table is self._wants:
+      refresher = self._refreshers.pop(topic, None)
+      if refresher is not None:
+        refresher.cancel()
+    if topic not in self._wants and topic not in self._refused:
+      self._outcomes.pop(topic, None)
+
+  def _note(self, topic: str, outcome: str, detail: str = "", level: int = logging.INFO) -> None:
+    """One log line when a topic's outcome changes: the picture sent, or
+    why none could be sent."""
+    if self._outcomes.get(topic) == outcome:
+      return
+    self._outcomes[topic] = outcome
+    _LOGGER.log(level, "HomeTiles pictures: %s %s%s", topic, outcome, f" ({detail})" if detail else "")
+
   def _on_subscription(self, session: Any, topic: str, subscribed: bool) -> None:
     parsed = parse_image_topic(topic)
     if parsed is None:
       return
     if not subscribed:
-      sessions = self._wants.get(topic)
-      if sessions is not None:
-        sessions.discard(session)
-        if not sessions:
-          del self._wants[topic]
-          refresher = self._refreshers.pop(topic, None)
-          if refresher is not None:
-            refresher.cancel()
-          self._retrack()
+      self._remove(self._refused, topic, session)
+      if topic in self._wants:
+        self._remove(self._wants, topic, session)
+        self._retrack()
       return
     if not self._allowed(session, parsed[0]):
+      self._refused.setdefault(topic, set()).add(session)
+      self._note(topic, NOT_SERVED)
       return
+    self._remove(self._refused, topic, session)
     self._wants.setdefault(topic, set()).add(session)
     self._retrack()
     self._schedule(topic)
@@ -234,9 +292,10 @@ class ImageService:
       self._sources.move_to_end(source.key)
       return data
     data = await source.load()
-    if data:
+    if data and len(data) <= SOURCE_CACHE_MAX_BYTES:
       self._sources[source.key] = data
-      while len(self._sources) > SOURCE_CACHE_MAX:
+      while (len(self._sources) > SOURCE_CACHE_MAX
+             or sum(len(item) for item in self._sources.values()) > SOURCE_CACHE_MAX_BYTES):
         self._sources.popitem(last=False)
     return data
 
@@ -247,6 +306,7 @@ class ImageService:
     entity_id, width, height = parsed
     source = self._source(entity_id)
     if source is None:
+      self._note(topic, "has no picture now", level=logging.DEBUG)
       return
     if source.refresh > 0 and topic not in self._refreshers:
       self._refreshers[topic] = asyncio.get_running_loop().create_task(self._refresh(topic, source.refresh))
@@ -254,6 +314,7 @@ class ImageService:
       return
     data = await self._load(source)
     if not data:
+      self._note(topic, "could not load the picture")
       return
     key = source.key or content_key(data)
     if self._published.get(topic) == key:
@@ -261,7 +322,7 @@ class ImageService:
     budget = self._budget(topic) - len(build_payload(key, width, height, b""))
     jpeg = await self._render(data, width, height, budget)
     if not jpeg:
-      _LOGGER.debug("HomeTiles pictures: nothing to send for %s", topic)
+      self._note(topic, "could not render the picture", f"{len(data)} source bytes, {budget} bytes room")
       return
     if topic not in self._wants:
       return
@@ -271,3 +332,4 @@ class ImageService:
         return  # A newer picture waits for its own turn.
     self._broker.publish(topic, build_payload(key, width, height, jpeg), retain=True)
     self._published[topic] = key
+    self._note(topic, "sent", f"{len(jpeg)} bytes from {len(data)} source bytes")

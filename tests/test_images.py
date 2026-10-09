@@ -267,6 +267,74 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.url, self.loads)
 
 
+    async def test_a_subscription_before_the_declaration_gets_the_picture_after_it(self):
+        # The panel subscribes a newly chosen picture at once and declares the
+        # entity 1.5 s later (the screensaver's image.diashow_collection).
+        topic = f"{PREFIX}/image/frame/image/1280x800"
+        self.allowed["PANEL1"].discard("image.frame")
+        panel = self.attach(Session())
+        with self.assertLogs(IMAGES._LOGGER, level="INFO") as logs:
+            self.broker.panel_subscribe(panel, topic)
+            await self.settle()
+            self.assertEqual(panel.received, [])
+            self.service.recheck()
+            await self.settle()
+            self.assertEqual(panel.received, [], "still not served: nothing")
+            self.allowed["PANEL1"].add("image.frame")
+            self.service.recheck()
+            await self.settle()
+        self.assertEqual(len(panel.received), 1)
+        self.assertEqual(self.service.wanted(), {topic: {panel}})
+        self.assertEqual(self.active_tracks(), [["image.frame"]])
+        self.assertEqual(len(logs.output), 2, "one line per outcome")
+        self.assertIn(f"{topic} waits: the entity is not served", logs.output[0])
+        self.assertIn(f"{topic} sent (", logs.output[1])
+
+    async def test_a_picture_no_longer_served_stops(self):
+        topic = f"{PREFIX}/camera/door/image/480x480"
+        panel = self.attach(Session())
+        self.broker.panel_subscribe(panel, topic)
+        await self.settle()
+        self.assertEqual(len(panel.received), 1)
+        self.allowed["PANEL1"].discard("camera.door")
+        self.service.recheck()
+        self.assertEqual(self.service.wanted(), {})
+        loads = self.loads.count("camera")
+        await asyncio.sleep(0.12)
+        await self.settle()
+        self.assertEqual(self.loads.count("camera"), loads, "no reloads once the camera is no longer served")
+        self.assertEqual(self.active_tracks(), [])
+        # Served again: the kept subscription gets the camera back.
+        self.allowed["PANEL1"].add("camera.door")
+        self.service.recheck()
+        await self.settle()
+        self.assertEqual(self.service.wanted(), {topic: {panel}})
+        self.assertGreater(self.loads.count("camera"), loads)
+        # Unsubscribed while refused: nothing is kept.
+        self.allowed["PANEL1"].discard("camera.door")
+        self.service.recheck()
+        self.broker.panel_unsubscribe(panel, topic)
+        self.allowed["PANEL1"].add("camera.door")
+        self.service.recheck()
+        self.assertEqual(self.service.wanted(), {})
+
+    async def test_large_sources_stay_out_of_the_source_cache(self):
+        big = b"x" * (IMAGES.SOURCE_CACHE_MAX_BYTES + 1)
+
+        async def load_big():
+            return big
+        self.assertIs(await self.service._load(IMAGES.Source("b" * 16, load_big)), big)
+        self.assertNotIn("b" * 16, self.service._sources)
+
+        half = b"y" * (IMAGES.SOURCE_CACHE_MAX_BYTES // 2 + 1)
+
+        async def load_half():
+            return half
+        await self.service._load(IMAGES.Source("1" * 16, load_half))
+        await self.service._load(IMAGES.Source("2" * 16, load_half))
+        self.assertEqual(list(self.service._sources), ["2" * 16], "the total stays within the bound")
+
+
 class WiringTest(unittest.TestCase):
     def test_the_integration_wires_the_service(self):
         from test_view_navigation import ROOT
@@ -278,6 +346,16 @@ class WiringTest(unittest.TestCase):
         self.assertIn('"camera": ("images", "cameras"),', source)
         self.assertIn("return ImageSource(None, lambda: camera_still(entity_id), CAMERA_REFRESH_S)", source)
         self.assertIn("return async_track_state_change_event(hass, list(entities), _changed)", source)
+        # An image entity's picture comes from the entity, up to a full-size
+        # photo; only covers keep the small download limit.
+        self.assertRegex(source, r'component = hass\.data\.get\("image"\)\s*entity = component\.get_entity\(entity_id\) if hasattr\(component, "get_entity"\) else None')
+        self.assertRegex(source, r"async with asyncio\.timeout\(IMAGE_PICTURE_TIMEOUT_S\):\s*data = await entity\.async_image\(\)")
+        self.assertIn("data = await fetch(url, IMAGE_PICTURE_MAX_BYTES)", source)
+        self.assertIn("lambda: image_picture(entity_id, url))", source)
+        self.assertIn("async def fetch(url: str, limit: int = MEDIA_COVER_FETCH_MAX_BYTES)", source)
+        # Every change of the served lists rechecks the kept subscriptions,
+        # once the entry is set up.
+        self.assertRegex(source, r'if images is not None and domain_data\.get\("entries", \{\}\)\.get\(self\.entry\.entry_id\) is self:\s*images\.recheck\(\)')
 
     def test_images_are_a_released_and_searchable_list(self):
         search = load_link_module("entity_search")

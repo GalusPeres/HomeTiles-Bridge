@@ -296,6 +296,9 @@ HISTORY_REQUEST_MAX_BYTES = 2048
 # popup. Older firmware accepts the same payload fields and JPEG format and
 # applies its existing smaller decode limit, so this stays backwards compatible.
 MEDIA_COVER_FETCH_MAX_BYTES = 1_500_000
+# An image entity's picture may be a full-size photo or screenshot.
+IMAGE_PICTURE_MAX_BYTES = 12_000_000
+IMAGE_PICTURE_TIMEOUT_S = 10
 MEDIA_COVER_CACHE_MAX = 24
 MEDIA_COVER_THUMBNAIL_SIZE = 240
 MEDIA_COVER_WARNING_INTERVAL_SECONDS = 15 * 60
@@ -520,6 +523,27 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
         return base.rstrip("/") + url
     return url if url.startswith(("http://", "https://")) else ""
 
+  async def image_picture(entity_id: str, url: str) -> Optional[bytes]:
+    """An image entity's picture as Home Assistant's image proxy reads it,
+    from the entity itself; its address only when the entity is not at hand."""
+    component = hass.data.get("image")
+    entity = component.get_entity(entity_id) if hasattr(component, "get_entity") else None
+    data: Optional[bytes] = None
+    if entity is not None:
+      try:
+        async with asyncio.timeout(IMAGE_PICTURE_TIMEOUT_S):
+          data = await entity.async_image()
+      except Exception as err:  # pragma: no cover - integration dependent
+        _LOGGER.debug("HomeTiles pictures: no picture from %s (%s)", entity_id, err)
+        data = None
+    elif url:
+      data = await fetch(url, IMAGE_PICTURE_MAX_BYTES)
+    if data and len(data) > IMAGE_PICTURE_MAX_BYTES:
+      _LOGGER.info("HomeTiles pictures: the picture of %s has %d bytes, more than %d", entity_id, len(data),
+                   IMAGE_PICTURE_MAX_BYTES)
+      return None
+    return data or None
+
   async def camera_still(entity_id: str) -> Optional[bytes]:
     try:
       image = await async_get_camera_image(hass, entity_id)
@@ -537,11 +561,14 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
       url = artwork_url(_extract_media_player_payload(state, hass))
       return ImageSource(image_key(url), lambda: fetch(url)) if url else None
     if domain == "image":
-      # An image entity's state is the time of its last picture.
-      url = absolute(str(state.attributes.get("entity_picture") or ""))
-      if not url or state.state == "unknown":
+      # An image entity's state is the time of its last picture; "unknown"
+      # when the integration does not tell, then the picture shows once.
+      picture = str(state.attributes.get("entity_picture") or "")
+      if not picture:
         return None
-      return ImageSource(content_key(f"{image_key(url)} {state.state}".encode("utf-8")), lambda: fetch(url))
+      url = absolute(picture)
+      return ImageSource(content_key(f"{image_key(picture)} {state.state}".encode("utf-8")),
+                         lambda: image_picture(entity_id, url))
     if domain == "camera":
       return ImageSource(None, lambda: camera_still(entity_id), CAMERA_REFRESH_S)
     return None
@@ -553,7 +580,7 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
 
     return async_track_state_change_event(hass, list(entities), _changed)
 
-  async def fetch(url: str) -> Optional[bytes]:
+  async def fetch(url: str, limit: int = MEDIA_COVER_FETCH_MAX_BYTES) -> Optional[bytes]:
     try:
       session = async_get_clientsession(hass)
       async with session.get(url, timeout=5) as response:
@@ -564,7 +591,8 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
         async for chunk in response.content.iter_chunked(16384):
           chunks.append(chunk)
           received += len(chunk)
-          if received > MEDIA_COVER_FETCH_MAX_BYTES:
+          if received > limit:
+            _LOGGER.info("HomeTiles pictures: a picture above %d bytes was not loaded", limit)
             return None
         return b"".join(chunks)
     except Exception as err:  # pragma: no cover - network dependent
@@ -1663,6 +1691,13 @@ class Tab5Bridge:
 
     if self._runtime_setup_complete:
       self._sync_weather_subscriptions()
+    # A picture subscribed before the panel's declaration (a new choice)
+    # is sent now; one no longer served stops (images.py). Only once this
+    # entry is set up: before, its panel would seem served nothing.
+    domain_data = self.hass.data.get(DOMAIN, {})
+    images = domain_data.get(DATA_IMAGES)
+    if images is not None and domain_data.get("entries", {}).get(self.entry.entry_id) is self:
+      images.recheck()
 
   async def async_setup(self) -> None:
     """Subscribe to MQTT topics and start observers."""
