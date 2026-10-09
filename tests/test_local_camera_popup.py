@@ -161,7 +161,7 @@ class PopupLiveViewerTest(unittest.IsolatedAsyncioTestCase):
         self.processes.append(process)
         return process
 
-    async def send_frame(self, reader, writer, sequence, frame):
+    async def send_frame(self, reader, writer, sequence, frame, window=1):
         if self.send_error is not None:
             raise self.send_error
         self.sent.append(frame)

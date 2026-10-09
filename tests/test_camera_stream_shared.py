@@ -37,7 +37,7 @@ class SharedStreamTest(unittest.IsolatedAsyncioTestCase):
             self.processes.append(process)
             return process
 
-        async def send_frame(reader, writer, sequence, frame):
+        async def send_frame(reader, writer, sequence, frame, window=1):
             gate = self.gates.get(writer)
             if gate is not None:
                 await gate.wait()

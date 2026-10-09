@@ -222,7 +222,7 @@ class LagRestartTest(unittest.IsolatedAsyncioTestCase):
             self.processes.append(process)
             return process
 
-        async def send_frame(reader, writer, sequence, frame):
+        async def send_frame(reader, writer, sequence, frame, window=1):
             self.sent.append(frame)
             return self.module.CameraFrameSendMetrics(1, 0.0, 0.0, 0.0, 0.0)
 
@@ -363,6 +363,84 @@ class FullScreenFrameTest(unittest.TestCase):
             "out_range=full:flags=area,crop=752:424,setsar=1"))
         self.assertNotIn("transpose", filters)
         self.assertNotIn("pad=", filters)
+
+
+
+class ChunkWindowTest(unittest.IsolatedAsyncioTestCase):
+    """#65: a full-screen panel asks for two chunks in flight; one stays the
+    rule for every other stream (the P4's network memory)."""
+
+    def setUp(self):
+        self.module = load_camera_stream_module()
+
+    async def send(self, size, window, ack_shift=0):
+        module = self.module
+        chunk = module.CAMERA_STREAM_CHUNK_BYTES
+        jpeg = bytes(range(256)) * (size // 256) + bytes(size % 256)
+        written = []
+        in_flight = []
+        most = 0
+        acks = asyncio.Queue()
+
+        class Writer:
+            def write(self, data):
+                nonlocal most
+                written.append(bytes(data))
+                if len(written) > 1:  # chunks after the frame header
+                    sent = sum(len(d) for d in written[1:])
+                    in_flight.append(sent)
+                    most = max(most, len(in_flight))
+
+            async def drain(self):
+                # The panel acknowledges each chunk it has read, oldest first.
+                while in_flight:
+                    end = in_flight.pop(0)
+                    acks.put_nowait(module.CAMERA_STREAM_ACK_STRUCT.pack(
+                        module.CAMERA_STREAM_ACK_MAGIC, 7, end + ack_shift))
+
+        class Reader:
+            async def readexactly(self, n):
+                return await acks.get()
+
+        writer = Writer()
+        original = writer.drain
+
+        async def drain_after_window():
+            # Hold the acknowledgements until the sender stops writing: it
+            # must never have more than `window` chunks out.
+            if len(in_flight) < window and sum(len(d) for d in written[1:]) < len(jpeg):
+                return
+            await original()
+
+        writer.drain = drain_after_window
+        metrics = await module.CameraStreamConnection._async_send_frame(
+            Reader(), writer, 7, jpeg, window=window)
+        return jpeg, written, metrics, most, chunk
+
+    async def test_one_chunk_in_flight_by_default(self):
+        jpeg, written, metrics, most, chunk = await self.send(50_000, 1)
+        self.assertEqual(b"".join(written[1:]), jpeg)
+        self.assertEqual(most, 1)
+        self.assertEqual(metrics.chunks, -(-len(jpeg) // chunk))
+
+    async def test_two_chunks_in_flight_when_asked(self):
+        jpeg, written, metrics, most, chunk = await self.send(50_000, 2)
+        self.assertEqual(b"".join(written[1:]), jpeg)
+        self.assertEqual(most, 2)
+        self.assertEqual(metrics.chunks, -(-len(jpeg) // chunk))
+
+    async def test_a_wrong_acknowledgement_still_ends_the_stream(self):
+        with self.assertRaisesRegex(ValueError, "camera_invalid_ack"):
+            await self.send(50_000, 2, ack_shift=1)
+
+    def test_the_window_is_checked(self):
+        validate = self.module.CameraStreamManager._validate_window
+        self.assertEqual(validate(None), 1)
+        self.assertEqual(validate(2), 2)
+        self.assertEqual(validate("1"), 1)
+        for window in (0, 3, "x"):
+            with self.assertRaisesRegex(ValueError, "camera_invalid_stream_request"):
+                validate(window)
 
 
 if __name__ == "__main__":

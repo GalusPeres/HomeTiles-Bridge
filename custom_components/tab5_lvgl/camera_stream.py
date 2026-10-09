@@ -46,6 +46,11 @@ CAMERA_FULL_MAX_SIDE: Final = 1280
 CAMERA_FULL_MAX_PIXELS: Final = 1280 * 800
 CAMERA_VIEWS: Final = ("popup", "full")
 CAMERA_FULL_FITS: Final = ("contain", "cover")
+# Chunks that may travel before the oldest is acknowledged. A panel asks for
+# more than one (full screen, #65: 9.4 Mbit/s with one chunk held 50 KB
+# frames at about 20 FPS); every other stream keeps one, the protection of
+# the P4's network memory it was built with.
+CAMERA_STREAM_MAX_WINDOW: Final = 2
 # Clockwise turn -> FFmpeg filters (transpose=1 is 90 clockwise).
 CAMERA_TURN_FILTERS: Final = {
   0: (),
@@ -209,6 +214,7 @@ class CameraStreamSession:
   view: str = "popup"
   rotate: int = 0
   fit: str = "cover"
+  window: int = 1
 
 
 def upright_size(session: Any) -> tuple[int, int]:
@@ -716,9 +722,11 @@ class CameraStreamManager:
     view: str | None = None,
     rotate: Any = 0,
     fit: str | None = None,
+    window: Any = None,
   ) -> CameraStreamSession:
     """Resolve a direct stream or a still-image camera into a video session."""
     view, rotate, fit = self._validate_view(view, rotate, fit)
+    window = self._validate_window(window)
     width, height, fps = self._validate_stream_request(width, height, fps, view)
     source: str | None = None
     try:
@@ -776,6 +784,7 @@ class CameraStreamManager:
       view=view,
       rotate=rotate,
       fit=fit,
+      window=window,
     )
     async with self._lock:
       self._drop_expired_sessions_locked()
@@ -800,6 +809,19 @@ class CameraStreamManager:
     if rotate not in CAMERA_TURN_FILTERS or fit not in CAMERA_FULL_FITS:
       raise ValueError("camera_invalid_stream_request")
     return view, rotate, fit
+
+  @staticmethod
+  def _validate_window(window: Any) -> int:
+    """Chunks in flight the panel asked for: 1 unless it asks for more."""
+    if window is None:
+      return 1
+    try:
+      window = int(window)
+    except (TypeError, ValueError) as err:
+      raise ValueError("camera_invalid_stream_request") from err
+    if window < 1 or window > CAMERA_STREAM_MAX_WINDOW:
+      raise ValueError("camera_invalid_stream_request")
+    return window
 
   @staticmethod
   def _validate_stream_request(
@@ -1028,8 +1050,9 @@ class CameraStreamConnection:
     writer: asyncio.StreamWriter,
     sequence: int,
     jpeg: bytes,
+    window: int = 1,
   ) -> CameraFrameSendMetrics:
-    """Send one JPEG while allowing at most one unacknowledged chunk."""
+    """Send one JPEG with at most `window` unacknowledged chunks."""
     transport_started = time.monotonic()
     drain_seconds = 0.0
     ack_wait_seconds = 0.0
@@ -1046,15 +1069,21 @@ class CameraStreamConnection:
     drain_seconds += time.monotonic() - drain_started
 
     acknowledged = 0
+    sent = 0
+    # Chunk ends sent and not acknowledged yet, oldest first.
+    pending: list[int] = []
     while acknowledged < len(jpeg):
-      chunk_end = min(
-        len(jpeg),
-        acknowledged + CAMERA_STREAM_CHUNK_BYTES,
-      )
-      writer.write(jpeg[acknowledged:chunk_end])
-      drain_started = time.monotonic()
-      await writer.drain()
-      drain_seconds += time.monotonic() - drain_started
+      while sent < len(jpeg) and len(pending) < window:
+        chunk_end = min(
+          len(jpeg),
+          sent + CAMERA_STREAM_CHUNK_BYTES,
+        )
+        writer.write(jpeg[sent:chunk_end])
+        drain_started = time.monotonic()
+        await writer.drain()
+        drain_seconds += time.monotonic() - drain_started
+        pending.append(chunk_end)
+        sent = chunk_end
       ack_started = time.monotonic()
       raw_ack = await asyncio.wait_for(
         reader.readexactly(CAMERA_STREAM_ACK_STRUCT.size),
@@ -1072,10 +1101,10 @@ class CameraStreamConnection:
       if (
         magic != CAMERA_STREAM_ACK_MAGIC
         or ack_sequence != sequence
-        or ack_bytes != chunk_end
+        or ack_bytes != pending[0]
       ):
         raise ValueError("camera_invalid_ack")
-      acknowledged = chunk_end
+      acknowledged = pending.pop(0)
       chunks += 1
     return CameraFrameSendMetrics(
       chunks=chunks,
@@ -1590,6 +1619,7 @@ class CameraStreamConnection:
         writer,
         sequence,
         jpeg,
+        window=getattr(session, "window", 1),
       )
       diagnostics.note_sent(jpeg, send_metrics)
       diagnostics.maybe_log()

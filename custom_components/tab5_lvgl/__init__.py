@@ -4593,6 +4593,7 @@ class Tab5Bridge:
         parsed.get("view"),
         parsed.get("rotate", 0),
         parsed.get("fit"),
+        parsed.get("window"),
       )
 
       async def _async_notify_panel_end(stopped_entity: str = entity_id) -> None:
@@ -4605,7 +4606,7 @@ class Tab5Bridge:
 
       session.on_panel_end = _async_notify_panel_end
       _LOGGER.info(
-        "HomeTiles camera session ready (%s, mode=%s, %dx%d@%d, view=%s, rotate=%d, fit=%s)",
+        "HomeTiles camera session ready (%s, mode=%s, %dx%d@%d, view=%s, rotate=%d, fit=%s, window=%d)",
         entity_id,
         "image" if session.source is None else "stream",
         session.width,
@@ -4614,6 +4615,7 @@ class Tab5Bridge:
         session.view,
         session.rotate,
         session.fit,
+        session.window,
       )
       if self._device_ip:
         source_ip = await ha_network.async_get_source_ip(
@@ -4641,6 +4643,7 @@ class Tab5Bridge:
         "height": session.height,
         "fps": session.fps,
         "view": session.view,
+        "window": session.window,
       }
       if session.view == "full":
         response_payload["rotate"] = session.rotate
