@@ -58,6 +58,8 @@ CONF_MEDIA_PLAYERS = "media_players"
 CONF_CLIMATES = "climates"
 CONF_COVERS = "covers"
 CONF_CAMERAS = "cameras"
+# Image entities a panel may show as its screensaver picture (images.py).
+CONF_IMAGES = "images"
 CONF_LOCKS = "locks"
 CONF_ALARM_PANELS = "alarm_panels"
 CONF_FANS = "fans"

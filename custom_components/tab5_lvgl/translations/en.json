@@ -130,6 +130,7 @@
           "climates": "Climate devices",
           "covers": "Covers",
           "cameras": "Cameras",
+          "images": "Images (screensaver)",
           "scene_entities": "Scenes / Scripts / Buttons",
           "scene_map_text": "Action aliases",
           "numbers": "Numbers / number helpers",

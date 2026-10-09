@@ -11,7 +11,7 @@ import json
 import logging
 import secrets
 from time import monotonic
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import voluptuous as vol
 
@@ -52,6 +52,7 @@ except Exception:  # pragma: no cover - optional weather helper
   async_get_forecasts = None
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.components.camera import async_get_image as async_get_camera_image
 from homeassistant.core import Event, HomeAssistant, ServiceCall, State, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
@@ -73,7 +74,8 @@ from homeassistant.util import dt as dt_util, slugify
 # Every MQTT call also reaches panels on the direct link (link_mqtt.py).
 from . import link_mqtt as mqtt
 from .link_runtime import LinkRuntime
-from .images import ImageService, render_jpeg
+from .images import CAMERA_REFRESH_S, ImageService, content_key, render_jpeg
+from .images import Source as ImageSource
 from .binary_history import (
   BINARY_HISTORY_KIND,
   BINARY_HISTORY_RECORDER_MAX_CHANGES,
@@ -118,6 +120,7 @@ from .const import (
   CONF_BASE_TOPIC,
   CONF_BINARY_SENSORS,
   CONF_CAMERAS,
+  CONF_IMAGES,
   CONF_ALARM_PANELS,
   CONF_CLIMATES,
   CONF_COVERS,
@@ -202,7 +205,7 @@ from .access_helpers import (
   plan_access_call,
 )
 from .fan_helpers import FAN_DOMAIN, build_fan_detail, build_fan_service_call, parse_fan_command
-from .media_artwork import ArtworkClearGate, artwork_url, image_key_field
+from .media_artwork import ArtworkClearGate, artwork_url, image_key, image_key_field
 from .camera_stream import (
   CAMERA_BRIDGE_PROTOCOL_VERSION,
   CAMERA_STREAM_FPS,
@@ -503,14 +506,52 @@ async def async_ensure_link_runtime(hass: HomeAssistant) -> LinkRuntime:
 
 
 def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageService:
-  """Pictures for linked panels (images.py): the artwork of the players
-  each panel is served, cut to the size the panel subscribed."""
+  """Pictures for linked panels (images.py): the covers of the players, the
+  image entities and the camera still images each panel is served, cut to
+  the size the panel subscribed."""
 
-  def artwork(entity_id: str) -> str:
+  def absolute(url: str) -> str:
+    if url.startswith("/") and get_url is not None:
+      try:
+        base = get_url(hass, prefer_external=False, allow_internal=True, allow_external=True)
+      except Exception:  # pragma: no cover - get_url may raise NoURLAvailableError
+        base = None
+      if isinstance(base, str) and base:
+        return base.rstrip("/") + url
+    return url if url.startswith(("http://", "https://")) else ""
+
+  async def camera_still(entity_id: str) -> Optional[bytes]:
+    try:
+      image = await async_get_camera_image(hass, entity_id)
+    except Exception as err:  # pragma: no cover - camera dependent
+      _LOGGER.debug("HomeTiles pictures: no still image from %s (%s)", entity_id, err)
+      return None
+    return image.content if image is not None else None
+
+  def source(entity_id: str) -> Optional[ImageSource]:
     state = hass.states.get(entity_id)
-    if state is None:
-      return ""
-    return artwork_url(_extract_media_player_payload(state, hass))
+    if state is None or state.state == "unavailable":
+      return None
+    domain = entity_domain(entity_id)
+    if domain == "media_player":
+      url = artwork_url(_extract_media_player_payload(state, hass))
+      return ImageSource(image_key(url), lambda: fetch(url)) if url else None
+    if domain == "image":
+      # An image entity's state is the time of its last picture.
+      url = absolute(str(state.attributes.get("entity_picture") or ""))
+      if not url or state.state == "unknown":
+        return None
+      return ImageSource(content_key(f"{image_key(url)} {state.state}".encode("utf-8")), lambda: fetch(url))
+    if domain == "camera":
+      return ImageSource(None, lambda: camera_still(entity_id), CAMERA_REFRESH_S)
+    return None
+
+  def track(entities: Iterable[str], changed: Callable[[str], None]) -> Callable[[], None]:
+    @callback
+    def _changed(event: Event) -> None:
+      changed(event.data["entity_id"])
+
+    return async_track_state_change_event(hass, list(entities), _changed)
 
   async def fetch(url: str) -> Optional[bytes]:
     try:
@@ -534,12 +575,17 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
     return await hass.async_add_executor_job(render_jpeg, data, width, height, budget)
 
   def allowed(session: Any, entity_id: str) -> bool:
+    lists = {
+      "media_player": ("media_players",),
+      "image": ("images",),
+      "camera": ("images", "cameras"),
+    }.get(entity_domain(entity_id), ())
     for bridge in hass.data.get(DOMAIN, {}).get("entries", {}).values():
       if getattr(bridge, "device_id", None) == getattr(session, "device_id", None):
-        return entity_id in getattr(bridge, "media_players", [])
+        return any(entity_id in getattr(bridge, name, []) for name in lists)
     return False
 
-  return ImageService(runtime.broker, artwork=artwork, fetch=fetch, render=render, allowed=allowed)
+  return ImageService(runtime.broker, source=source, render=render, allowed=allowed, track=track)
 
 
 async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
@@ -1311,6 +1357,7 @@ class Tab5Bridge:
     self.datetimes = editable_selection(data.get(CONF_DATETIMES, []), EDITABLE_LISTS["datetimes"])
     self.covers: List[str] = _unique_entities(list(data.get(CONF_COVERS, [])))
     self.cameras: List[str] = _unique_entities(list(data.get(CONF_CAMERAS, [])))
+    self.images: List[str] = _unique_entities(list(data.get(CONF_IMAGES, [])))
     self.locks: List[str] = _unique_entities(list(data.get(CONF_LOCKS, [])))
     self.alarm_panels: List[str] = _unique_entities(list(data.get(CONF_ALARM_PANELS, [])))
     self.fans: List[str] = _unique_entities(list(data.get(CONF_FANS, [])))
@@ -1482,6 +1529,7 @@ class Tab5Bridge:
     all_datetimes: List[str] = []
     all_covers: List[str] = []
     all_cameras: List[str] = []
+    all_images: List[str] = []
     all_weathers: List[str] = []
     all_locks: List[str] = []
     all_alarm_panels: List[str] = []
@@ -1516,6 +1564,7 @@ class Tab5Bridge:
       all_datetimes.extend(editable_selection(data.get(CONF_DATETIMES, []), EDITABLE_LISTS["datetimes"]))
       all_covers.extend(list(data.get(CONF_COVERS, [])))
       all_cameras.extend(list(data.get(CONF_CAMERAS, [])))
+      all_images.extend(list(data.get(CONF_IMAGES, [])))
       all_locks.extend(list(data.get(CONF_LOCKS, [])))
       all_alarm_panels.extend(list(data.get(CONF_ALARM_PANELS, [])))
       all_fans.extend(list(data.get(CONF_FANS, [])))
@@ -1538,6 +1587,7 @@ class Tab5Bridge:
       "datetimes": _unique_entities(all_datetimes),
       "covers": _unique_entities(all_covers),
       "cameras": _unique_entities(all_cameras),
+      "images": [item for item in _unique_entities(all_images) if entity_domain(item) == "image"],
       "weathers": _unique_entities(all_weathers),
       "locks": [item for item in _unique_entities(all_locks) if entity_domain(item) == LOCK_DOMAIN],
       "alarm_panels": [
@@ -1567,7 +1617,8 @@ class Tab5Bridge:
         "switches": _unique_entities(source["switches"] + local_relays),
         "media_players": source["media_players"], "climates": source["climates"],
         "numbers": source["numbers"], "selects": source["selects"], "datetimes": source["datetimes"],
-        "covers": source["covers"], "cameras": source["cameras"], "weathers": source["weathers"],
+        "covers": source["covers"], "cameras": source["cameras"], "images": source["images"],
+        "weathers": source["weathers"],
         "locks": source["locks"], "alarm_panels": source["alarm_panels"], "fans": source["fans"],
       }
 
@@ -1920,6 +1971,8 @@ class Tab5Bridge:
           "editable_meta": self._build_entity_meta(self.numbers + self.selects + self.datetimes),
           CONF_CAMERAS: self.cameras,
           "camera_meta": self._build_entity_meta(self.cameras),
+          CONF_IMAGES: self.images,
+          "image_meta": self._build_entity_meta(self.images),
           CONF_LOCKS: self.locks,
           "lock_meta": self._build_entity_meta(self.locks),
           CONF_ALARM_PANELS: self.alarm_panels,
@@ -2433,9 +2486,6 @@ class Tab5Bridge:
       key = image_key_field(payload)
       if key is not None:
         payload["image_key"] = key
-      images = self.hass.data.get(DOMAIN, {}).get(DATA_IMAGES)
-      if images is not None:
-        images.artwork_changed(entity_id)
       if include_media_cover:
         await self._async_attach_media_cover_data(entity_id, payload)
       payload_text = json.dumps(payload, default=str)

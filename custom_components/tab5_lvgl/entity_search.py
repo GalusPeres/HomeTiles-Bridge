@@ -37,6 +37,8 @@ LIST_DOMAINS: Dict[str, Tuple[str, ...]] = {
   "climates": ("climate",),
   "covers": ("cover",),
   "cameras": ("camera",),
+  # The screensaver picture: an image, or a camera's still image.
+  "images": ("image", "camera"),
   "locks": ("lock",),
   "alarm_panels": ("alarm_control_panel",),
   "fans": ("fan",),
@@ -47,7 +49,8 @@ LIST_ATTRS: Dict[str, Tuple[str, ...]] = {
   "sensors": ("sensors",), "binary_sensors": ("binary_sensors",), "numbers": ("numbers",),
   "selects": ("selects",), "datetimes": ("datetimes",), "weathers": ("weathers",),
   "switches": ("lights", "switches"), "media": ("media_players",), "climates": ("climates",),
-  "covers": ("covers",), "cameras": ("cameras",), "locks": ("locks",),
+  "covers": ("covers",), "cameras": ("cameras",), "images": ("images", "cameras"),
+  "locks": ("locks",),
   "alarm_panels": ("alarm_panels",), "fans": ("fans",),
 }
 

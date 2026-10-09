@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import types
 import unittest
 from io import BytesIO
 
@@ -48,6 +47,10 @@ class TopicsAndKeysTest(unittest.TestCase):
         self.assertEqual(IMAGES.parse_image_topic(TOPIC), ("media_player.tv", 480, 480))
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/media_player/tv/image/1280x800"),
                          ("media_player.tv", 1280, 800))
+        self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/image/frame/image/1280x800"),
+                         ("image.frame", 1280, 800))
+        self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/camera/door/image/800x480"),
+                         ("camera.door", 800, 480))
         for bad in (f"{PREFIX}/media_player/tv/image/8x8", f"{PREFIX}/media_player/tv/image/2000x480",
                     f"{PREFIX}/light/desk/image/480x480", f"{PREFIX}/media_player/TV/image/480x480",
                     f"{PREFIX}/media_player/tv/image/480", f"{PREFIX}/media_player/tv/state",
@@ -64,6 +67,7 @@ class TopicsAndKeysTest(unittest.TestCase):
         payload = {"entity_picture": proxy, "media_image_url": "https://cdn.example/a.jpg"}
         self.assertEqual(ARTWORK.artwork_url(payload), "https://cdn.example/a.jpg")
         self.assertEqual(ARTWORK.artwork_url({"entity_picture": "/relative"}), "")
+        self.assertRegex(IMAGES.content_key(b"picture"), r"\A[0-9a-f]{16}\Z")
 
     def test_state_image_key_follows_the_artwork_gate(self):
         url = "https://cdn.example/a.jpg"
@@ -94,36 +98,71 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.broker = BROKER.LinkBroker()
         self.url = "https://cdn.example/song-1.jpg"
-        self.fetched = []
-        self.allowed = {"PANEL1": {"media_player.tv"}, "PANEL2": {"media_player.tv"}}
+        self.loads = []
+        self.camera_color = (10, 20, 30)
+        self.image_state = "2026-10-09T10:00:00"
+        self.allowed = {"PANEL1": {"media_player.tv", "image.frame", "camera.door"},
+                        "PANEL2": {"media_player.tv"}}
+        self.tracked = []
+        self.budgets = []
 
-        async def fetch(url):
-            self.fetched.append(url)
-            return jpeg_source()
+        def source(entity_id):
+            if entity_id == "media_player.tv":
+                url = self.url
+
+                async def load_cover():
+                    self.loads.append(url)
+                    return jpeg_source()
+                return IMAGES.Source(ARTWORK.image_key(url), load_cover)
+            if entity_id == "image.frame":
+                state = self.image_state
+
+                async def load_image():
+                    self.loads.append(state)
+                    return jpeg_source(color=(0, 90, 200))
+                return IMAGES.Source(IMAGES.content_key(state.encode()), load_image)
+            if entity_id == "camera.door":
+                async def load_still():
+                    self.loads.append("camera")
+                    return jpeg_source(color=self.camera_color)
+                return IMAGES.Source(None, load_still, 0.05)
+            return None
 
         async def render(data, width, height, budget):
             self.budgets.append(budget)
             return IMAGES.render_jpeg(data, width, height, budget)
 
-        self.budgets = []
+        def track(entities, changed):
+            entry = [sorted(entities), changed, True]
+            self.tracked.append(entry)
+
+            def untrack():
+                entry[2] = False
+            return untrack
+
         self.service = IMAGES.ImageService(
-            self.broker,
-            artwork=lambda entity_id: self.url if entity_id == "media_player.tv" else "",
-            fetch=fetch,
-            render=render,
+            self.broker, source=source, render=render, track=track,
             allowed=lambda session, entity_id: entity_id in self.allowed.get(session.device_id, set()),
         )
 
     async def asyncTearDown(self):
         self.service.stop()
 
-    async def settle(self):
-        for _ in range(20):
+    async def settle(self, rounds=20):
+        for _ in range(rounds):
             await asyncio.sleep(0)
 
     def attach(self, session):
         self.broker.attach(session)
         return session
+
+    def change(self, entity_id):
+        for entities, changed, active in self.tracked:
+            if active and entity_id in entities:
+                changed(entity_id)
+
+    def active_tracks(self):
+        return [entities for entities, _changed, active in self.tracked if active]
 
     async def test_a_subscription_gets_the_picture_once_per_artwork(self):
         panel = self.attach(Session())
@@ -136,19 +175,58 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.broker.retained(TOPIC), payload)
         with Image.open(BytesIO(payload.split(b"\n", 1)[1])) as picture:
             self.assertEqual(picture.size, (480, 480))
+        self.assertEqual(self.active_tracks(), [["media_player.tv"]])
 
         # A state change without new artwork renders nothing.
-        self.service.artwork_changed("media_player.tv")
+        self.change("media_player.tv")
         await self.settle()
         self.assertEqual(len(panel.received), 1)
-        self.assertEqual(self.fetched, [self.url])
+        self.assertEqual(self.loads, [self.url])
 
         # New artwork: a new picture with its own key.
         self.url = "https://cdn.example/song-2.jpg"
-        self.service.artwork_changed("media_player.tv")
+        self.change("media_player.tv")
         await self.settle()
         self.assertEqual(len(panel.received), 2)
         self.assertTrue(panel.received[-1][1].startswith(f"HTIMG1 {ARTWORK.image_key(self.url)} ".encode()))
+
+    async def test_an_image_entity_sends_a_new_picture_with_each_state(self):
+        topic = f"{PREFIX}/image/frame/image/1280x800"
+        panel = self.attach(Session())
+        self.broker.panel_subscribe(panel, topic)
+        await self.settle()
+        self.assertEqual(len(panel.received), 1)
+        with Image.open(BytesIO(panel.received[0][1].split(b"\n", 1)[1])) as picture:
+            self.assertEqual(picture.size, (1280, 800))
+        self.change("image.frame")
+        await self.settle()
+        self.assertEqual(len(panel.received), 1, "same state, same picture")
+        self.image_state = "2026-10-09T10:05:00"
+        self.change("image.frame")
+        await self.settle()
+        self.assertEqual(len(panel.received), 2)
+        self.assertEqual(self.loads, ["2026-10-09T10:00:00", "2026-10-09T10:05:00"])
+
+    async def test_a_camera_is_reloaded_while_shown_and_sent_only_when_it_changed(self):
+        topic = f"{PREFIX}/camera/door/image/480x480"
+        panel = self.attach(Session())
+        self.broker.panel_subscribe(panel, topic)
+        await self.settle()
+        self.assertEqual(len(panel.received), 1)
+        await asyncio.sleep(0.12)
+        await self.settle()
+        self.assertGreaterEqual(self.loads.count("camera"), 2, "reloaded on its interval")
+        self.assertEqual(len(panel.received), 1, "an unchanged still image is not sent again")
+        self.camera_color = (200, 200, 30)
+        await asyncio.sleep(0.08)
+        await self.settle()
+        self.assertEqual(len(panel.received), 2)
+        self.broker.panel_unsubscribe(panel, topic)
+        loads = self.loads.count("camera")
+        await asyncio.sleep(0.12)
+        await self.settle()
+        self.assertEqual(self.loads.count("camera"), loads, "no reloads once nobody shows it")
+        self.assertEqual(self.active_tracks(), [])
 
     async def test_a_second_panel_gets_the_retained_picture_without_a_render(self):
         first = self.attach(Session("PANEL1"))
@@ -158,14 +236,18 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.broker.panel_subscribe(second, TOPIC)
         await self.settle()
         self.assertEqual(second.received, [(TOPIC, first.received[-1][1], True)])
-        self.assertEqual(len(self.fetched), 1)
+        self.assertEqual(len(self.loads), 1)
 
-    async def test_players_the_panel_is_not_served_get_nothing(self):
-        stranger = self.attach(Session("OTHER"))
-        self.broker.panel_subscribe(stranger, TOPIC)
+    async def test_entities_the_panel_is_not_served_get_nothing(self):
+        stranger = self.attach(Session("PANEL2"))
+        self.broker.panel_subscribe(stranger, f"{PREFIX}/image/frame/image/480x480")
+        self.broker.panel_subscribe(stranger, f"{PREFIX}/camera/door/image/480x480")
+        other = self.attach(Session("OTHER"))
+        self.broker.panel_subscribe(other, TOPIC)
         await self.settle()
         self.assertEqual(stranger.received, [])
-        self.assertEqual(self.fetched, [])
+        self.assertEqual(other.received, [])
+        self.assertEqual(self.loads, [])
         self.assertEqual(self.service.wanted(), {})
 
     async def test_leaving_stops_the_renders_and_budget_follows_the_smallest_room(self):
@@ -180,13 +262,9 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
         self.broker.detach(small)
         self.assertEqual(self.service.wanted(), {})
         self.url = "https://cdn.example/song-3.jpg"
-        self.service.artwork_changed("media_player.tv")
+        self.service.entity_changed("media_player.tv")
         await self.settle()
-        self.assertNotIn(self.url, self.fetched)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertNotIn(self.url, self.loads)
 
 
 class WiringTest(unittest.TestCase):
@@ -196,5 +274,20 @@ class WiringTest(unittest.TestCase):
         self.assertRegex(source, r"images = _create_image_service\(hass, runtime\)\s*domain_data\[DATA_IMAGES\] = images")
         self.assertRegex(source, r"async def _async_stop_link\(_event: Event\) -> None:\s*images\.stop\(\)")
         self.assertRegex(source, r"self\._gate_media_artwork\(entity_id, payload\)\s*# Linked panels show the picture with this key \(images\.py\)\.\s*key = image_key_field\(payload\)\s*if key is not None:\s*payload\[\"image_key\"\] = key")
-        self.assertIn("images.artwork_changed(entity_id)", source)
-        self.assertRegex(source, r"return entity_id in getattr\(bridge, \"media_players\", \[\]\)")
+        self.assertNotIn("artwork_changed", source)
+        self.assertIn('"camera": ("images", "cameras"),', source)
+        self.assertIn("return ImageSource(None, lambda: camera_still(entity_id), CAMERA_REFRESH_S)", source)
+        self.assertIn("return async_track_state_change_event(hass, list(entities), _changed)", source)
+
+    def test_images_are_a_released_and_searchable_list(self):
+        search = load_link_module("entity_search")
+        self.assertEqual(search.LIST_DOMAINS["images"], ("image", "camera"))
+        self.assertEqual(search.LIST_ATTRS["images"], ("images", "cameras"))
+        served = search.served_lists({"images": ["image.frame"], "cameras": ["camera.door"]},
+                                     {"images": [], "cameras": []},
+                                     {"own": True, "lists": {"images": ["image.frame", "camera.door", "image.secret"]}})
+        self.assertEqual(served["images"], ["image.frame", "camera.door"])
+
+
+if __name__ == "__main__":
+    unittest.main()
