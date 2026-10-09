@@ -190,6 +190,23 @@ class FfmpegCommandTest(unittest.TestCase):
         self.assertIn(":flags=area", filters[1])
         self.assertTrue(filters[1].endswith("crop=752:424,setsar=1"))
 
+    def test_inside_keeps_the_whole_picture_without_bars(self):
+        # b26: the ESP32-S3's full screen asks for "inside"; its software
+        # decoder spent almost half of each 480 x 480 contain frame on bars.
+        session = types.SimpleNamespace(source=SOURCE, width=480, height=480, fps=8,
+                                        view="full", rotate=0, fit="inside")
+        filters = self.filters(self.module.CameraStreamConnection._ffmpeg_command(
+            "ffmpeg", session, 11))
+        self.assertIn("scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2:", filters)
+        self.assertNotIn("pad=", filters)
+        self.assertNotIn("crop=", filters)
+        self.assertTrue(filters.endswith(":flags=area,setsar=1"))
+        validate = self.module.CameraStreamManager._validate_view
+        self.assertEqual(validate("full", 0, "inside"), ("full", 0, "inside"))
+        self.assertEqual(validate("full", 0, None), ("full", 0, "contain"))
+        with self.assertRaisesRegex(ValueError, "camera_invalid_stream_request"):
+            validate("full", 0, "stretch")
+
     def test_still_image_cameras_keep_their_command(self):
         command = self.command(source=None)
         self.assertEqual(command[:command.index("-i") + 2], [

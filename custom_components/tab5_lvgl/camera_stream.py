@@ -46,7 +46,11 @@ CAMERA_FULL_MIN_SIDE: Final = 320
 CAMERA_FULL_MAX_SIDE: Final = 1280
 CAMERA_FULL_MAX_PIXELS: Final = 1280 * 800
 CAMERA_VIEWS: Final = ("popup", "full")
-CAMERA_FULL_FITS: Final = ("contain", "cover")
+# contain: the whole picture with black bars to exactly width x height (the
+# P4 decodes straight into its framebuffer); inside: the whole picture only,
+# within width x height, the panel draws the black around it (the ESP32-S3
+# decodes in software, and the bars were almost half of a 480 x 480 frame).
+CAMERA_FULL_FITS: Final = ("contain", "cover", "inside")
 # Chunks that may travel before the oldest is acknowledged. A panel asks for
 # more than one (full screen, #65: one chunk held the V2 at 9.4 Mbit/s, two
 # at 11.9 Mbit/s); every other stream keeps one, the protection of the P4's
@@ -1598,7 +1602,14 @@ class CameraStreamConnection:
       )
       scale_flags = ":flags=area"
     width, height = upright_size(session)
-    if getattr(session, "fit", "cover") == "contain":
+    if getattr(session, "fit", "cover") == "inside":
+      # The whole picture, as large as it fits, without bars.
+      video_filters.append(
+        f"scale={width}:{height}:"
+        "force_original_aspect_ratio=decrease:force_divisible_by=2:"
+        f"out_color_matrix=bt601:out_range=full{scale_flags}"
+      )
+    elif getattr(session, "fit", "cover") == "contain":
       # The whole picture, black bars where its shape differs.
       video_filters.extend([
         (
