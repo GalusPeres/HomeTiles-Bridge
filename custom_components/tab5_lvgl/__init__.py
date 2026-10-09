@@ -4590,6 +4590,9 @@ class Tab5Bridge:
         parsed.get("width", CAMERA_STREAM_WIDTH),
         parsed.get("height", CAMERA_STREAM_HEIGHT),
         parsed.get("fps", CAMERA_STREAM_FPS),
+        parsed.get("view"),
+        parsed.get("rotate", 0),
+        parsed.get("fit"),
       )
 
       async def _async_notify_panel_end(stopped_entity: str = entity_id) -> None:
@@ -4602,12 +4605,15 @@ class Tab5Bridge:
 
       session.on_panel_end = _async_notify_panel_end
       _LOGGER.info(
-        "HomeTiles camera session ready (%s, mode=%s, %dx%d@%d)",
+        "HomeTiles camera session ready (%s, mode=%s, %dx%d@%d, view=%s, rotate=%d, fit=%s)",
         entity_id,
         "image" if session.source is None else "stream",
         session.width,
         session.height,
         session.fps,
+        session.view,
+        session.rotate,
+        session.fit,
       )
       if self._device_ip:
         source_ip = await ha_network.async_get_source_ip(
@@ -4634,7 +4640,11 @@ class Tab5Bridge:
         "width": session.width,
         "height": session.height,
         "fps": session.fps,
+        "view": session.view,
       }
+      if session.view == "full":
+        response_payload["rotate"] = session.rotate
+        response_payload["fit"] = session.fit
     except Exception as err:
       _LOGGER.warning("HomeTiles camera stream setup failed for %s: %s", entity_id, err)
       error_code = str(err)

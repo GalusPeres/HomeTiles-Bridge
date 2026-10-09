@@ -38,6 +38,21 @@ CAMERA_STREAM_MAX_FPS: Final = 30
 CAMERA_STREAM_MIN_WIDTH: Final = 320
 CAMERA_STREAM_MIN_HEIGHT: Final = 180
 CAMERA_STREAM_MAX_PIXELS: Final = CAMERA_STREAM_WIDTH * CAMERA_STREAM_HEIGHT
+# Full screen (#65): frames in the panel's own framebuffer size and
+# orientation, which its JPEG decoder writes straight into the framebuffer.
+# Both sides a multiple of 16 so a 4:2:0 frame decodes to exactly that size.
+CAMERA_FULL_MIN_SIDE: Final = 320
+CAMERA_FULL_MAX_SIDE: Final = 1280
+CAMERA_FULL_MAX_PIXELS: Final = 1280 * 800
+CAMERA_VIEWS: Final = ("popup", "full")
+CAMERA_FULL_FITS: Final = ("contain", "cover")
+# Clockwise turn -> FFmpeg filters (transpose=1 is 90 clockwise).
+CAMERA_TURN_FILTERS: Final = {
+  0: (),
+  90: ("transpose=1",),
+  180: ("hflip", "vflip"),
+  270: ("transpose=2",),
+}
 # Still-image cameras are fetched back to back with one request in flight,
 # never faster than this rate and never faster than the camera answers.
 CAMERA_STILL_MAX_FPS: Final = 10
@@ -188,6 +203,19 @@ class CameraStreamSession:
   # popup then gets a neutral "stopped" (on_panel_end) after its stream closed.
   ended_by_panel: bool = False
   on_panel_end: Callable[[], Awaitable[None]] | None = None
+  # Full screen (#65): "full" frames are width x height as the panel scans
+  # them, the picture placed upright (contain: whole with black bars, cover:
+  # filled) and then turned clockwise by `rotate`.
+  view: str = "popup"
+  rotate: int = 0
+  fit: str = "cover"
+
+
+def upright_size(session: Any) -> tuple[int, int]:
+  """The picture's size before the full-screen turn (the popup's as sent)."""
+  if getattr(session, "view", "popup") == "full" and getattr(session, "rotate", 0) in (90, 270):
+    return session.height, session.width
+  return session.width, session.height
 
 
 @dataclass(slots=True)
@@ -551,6 +579,9 @@ class CameraStreamManager:
       session.height,
       session.fps,
       jpeg_quality,
+      getattr(session, "view", "popup"),
+      getattr(session, "rotate", 0),
+      getattr(session, "fit", "cover"),
     )
     broadcast = self._broadcasts.get(key)
     if broadcast is None:
@@ -682,9 +713,13 @@ class CameraStreamManager:
     width: int = CAMERA_STREAM_WIDTH,
     height: int = CAMERA_STREAM_HEIGHT,
     fps: int = CAMERA_STREAM_FPS,
+    view: str | None = None,
+    rotate: Any = 0,
+    fit: str | None = None,
   ) -> CameraStreamSession:
     """Resolve a direct stream or a still-image camera into a video session."""
-    width, height, fps = self._validate_stream_request(width, height, fps)
+    view, rotate, fit = self._validate_view(view, rotate, fit)
+    width, height, fps = self._validate_stream_request(width, height, fps, view)
     source: str | None = None
     try:
       async with asyncio.timeout(10):
@@ -738,6 +773,9 @@ class CameraStreamManager:
       expires_at=time.monotonic() + CAMERA_SESSION_TTL_SECONDS,
       stop_event=stop_event,
       live=live,
+      view=view,
+      rotate=rotate,
+      fit=fit,
     )
     async with self._lock:
       self._drop_expired_sessions_locked()
@@ -747,8 +785,25 @@ class CameraStreamManager:
     return session
 
   @staticmethod
+  def _validate_view(view: Any, rotate: Any, fit: Any) -> tuple[str, int, str]:
+    """The popup frame, or a full-screen frame turned and placed as asked."""
+    view = str(view or "popup").strip().lower()
+    if view not in CAMERA_VIEWS:
+      raise ValueError("camera_invalid_stream_request")
+    if view == "popup":
+      return "popup", 0, "cover"
+    try:
+      rotate = int(rotate)
+    except (TypeError, ValueError) as err:
+      raise ValueError("camera_invalid_stream_request") from err
+    fit = str(fit or "contain").strip().lower()
+    if rotate not in CAMERA_TURN_FILTERS or fit not in CAMERA_FULL_FITS:
+      raise ValueError("camera_invalid_stream_request")
+    return view, rotate, fit
+
+  @staticmethod
   def _validate_stream_request(
-    width: int, height: int, fps: int
+    width: int, height: int, fps: int, view: str = "popup"
   ) -> tuple[int, int, int]:
     """Validate a P4 popup format without relying on a device model name."""
     try:
@@ -758,18 +813,24 @@ class CameraStreamManager:
     except (TypeError, ValueError) as err:
       raise ValueError("camera_invalid_stream_request") from err
 
-    if (
-      width < CAMERA_STREAM_MIN_WIDTH
-      or width > CAMERA_STREAM_WIDTH
-      or height < CAMERA_STREAM_MIN_HEIGHT
-      or height > CAMERA_STREAM_HEIGHT
-      or width % 2
-      or height % 2
-      or width * height > CAMERA_STREAM_MAX_PIXELS
-      or abs(width * 9 - height * 16) > 16
-      or fps < 1
-      or fps > CAMERA_STREAM_MAX_FPS
-    ):
+    if view == "full":
+      size_ok = (
+        CAMERA_FULL_MIN_SIDE <= width <= CAMERA_FULL_MAX_SIDE
+        and CAMERA_FULL_MIN_SIDE <= height <= CAMERA_FULL_MAX_SIDE
+        and width % 16 == 0
+        and height % 16 == 0
+        and width * height <= CAMERA_FULL_MAX_PIXELS
+      )
+    else:
+      size_ok = (
+        CAMERA_STREAM_MIN_WIDTH <= width <= CAMERA_STREAM_WIDTH
+        and CAMERA_STREAM_MIN_HEIGHT <= height <= CAMERA_STREAM_HEIGHT
+        and width % 2 == 0
+        and height % 2 == 0
+        and width * height <= CAMERA_STREAM_MAX_PIXELS
+        and abs(width * 9 - height * 16) <= 16
+      )
+    if not size_ok or fps < 1 or fps > CAMERA_STREAM_MAX_FPS:
       raise ValueError("camera_invalid_stream_request")
     return width, height, fps
 
@@ -1257,8 +1318,8 @@ class CameraStreamConnection:
               self._manager.hass,
               session.entity_id,
               timeout=5,
-              width=session.width,
-              height=session.height,
+              width=upright_size(session)[0],
+              height=upright_size(session)[1],
             ),
             f"HomeTiles camera refresh {session.entity_id}",
           )
@@ -1417,15 +1478,30 @@ class CameraStreamConnection:
         f"+gt(floor(t*{session.fps}),floor(prev_selected_t*{session.fps}))'"
       )
       scale_flags = ":flags=area"
-    video_filters.extend([
-      (
-        f"scale={session.width}:{session.height}:"
-        "force_original_aspect_ratio=increase:"
-        f"out_color_matrix=bt601:out_range=full{scale_flags}"
-      ),
-      f"crop={session.width}:{session.height}",
-      "setsar=1",
-    ])
+    width, height = upright_size(session)
+    if getattr(session, "fit", "cover") == "contain":
+      # The whole picture, black bars where its shape differs.
+      video_filters.extend([
+        (
+          f"scale={width}:{height}:"
+          "force_original_aspect_ratio=decrease:force_divisible_by=2:"
+          f"out_color_matrix=bt601:out_range=full{scale_flags}"
+        ),
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black",
+      ])
+    else:
+      video_filters.extend([
+        (
+          f"scale={width}:{height}:"
+          "force_original_aspect_ratio=increase:"
+          f"out_color_matrix=bt601:out_range=full{scale_flags}"
+        ),
+        f"crop={width}:{height}",
+      ])
+    if getattr(session, "view", "popup") == "full":
+      # Into the panel's own orientation: no turn on the panel at all.
+      video_filters.extend(CAMERA_TURN_FILTERS[session.rotate])
+    video_filters.append("setsar=1")
     command.extend([
       "-map", "0:v:0",
       "-an",

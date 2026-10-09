@@ -296,5 +296,74 @@ class LagRestartTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(debug.call_count, 1)
 
 
+
+class FullScreenFrameTest(unittest.TestCase):
+    """#65: full-screen frames in the panel's own framebuffer size and
+    orientation, which its JPEG decoder writes straight into the framebuffer
+    (no scaling or turning on the panel)."""
+
+    def setUp(self):
+        self.module = load_camera_stream_module()
+        self.manager = self.module.CameraStreamManager
+
+    def filters(self, rotate, fit, width=800, height=1280):
+        session = types.SimpleNamespace(source=SOURCE, width=width, height=height, fps=30,
+                                        view="full", rotate=rotate, fit=fit)
+        command = self.module.CameraStreamConnection._ffmpeg_command("ffmpeg", session, 11)
+        return command[command.index("-vf") + 1]
+
+    def test_full_sizes_are_framebuffers_decoded_without_padding(self):
+        validate = self.manager._validate_stream_request
+        for size in ((800, 1280), (720, 1280), (1280, 800), (1280, 720)):
+            self.assertEqual(validate(*size, 30, "full"), (*size, 30))
+        # Sides off the 16 px decoder blocks, too small, too large.
+        for size in ((1024, 600), (800, 1290), (1296, 800), (304, 1280), (1280, 1280)):
+            with self.assertRaisesRegex(ValueError, "camera_invalid_stream_request"):
+                validate(*size, 30, "full")
+        # The popup keeps its own limits.
+        with self.assertRaisesRegex(ValueError, "camera_invalid_stream_request"):
+            validate(800, 1280, 30)
+        self.assertEqual(validate(752, 424, 30), (752, 424, 30))
+
+    def test_view_turn_and_placement_are_checked(self):
+        view = self.manager._validate_view
+        self.assertEqual(view(None, None, None), ("popup", 0, "cover"))
+        self.assertEqual(view("popup", 90, "contain"), ("popup", 0, "cover"))
+        self.assertEqual(view("full", 270, None), ("full", 270, "contain"))
+        self.assertEqual(view("FULL", "90", "cover"), ("full", 90, "cover"))
+        for args in (("wall", 0, "contain"), ("full", 45, "contain"),
+                     ("full", "x", "contain"), ("full", 90, "stretch")):
+            with self.assertRaisesRegex(ValueError, "camera_invalid_stream_request"):
+                view(*args)
+
+    def test_contain_places_the_whole_picture_upright_then_turns_it(self):
+        filters = self.filters(270, "contain")
+        # The landscape screen of an 800 x 1280 panel turned a quarter.
+        self.assertIn("scale=1280:800:force_original_aspect_ratio=decrease:"
+                      "force_divisible_by=2:", filters)
+        self.assertTrue(filters.endswith(
+            "pad=1280:800:(ow-iw)/2:(oh-ih)/2:color=black,transpose=2,setsar=1"))
+
+    def test_cover_fills_the_screen_and_turns_the_other_way(self):
+        filters = self.filters(90, "cover")
+        self.assertIn("scale=1280:800:force_original_aspect_ratio=increase:", filters)
+        self.assertTrue(filters.endswith("crop=1280:800,transpose=1,setsar=1"))
+
+    def test_no_turn_and_a_half_turn(self):
+        self.assertTrue(self.filters(0, "cover").endswith("crop=800:1280,setsar=1"))
+        self.assertTrue(self.filters(180, "cover", 1280, 800).endswith(
+            "crop=1280:800,hflip,vflip,setsar=1"))
+
+    def test_the_popup_frame_is_unchanged(self):
+        session = types.SimpleNamespace(source=SOURCE, width=752, height=424, fps=30)
+        command = self.module.CameraStreamConnection._ffmpeg_command("ffmpeg", session, 11)
+        filters = command[command.index("-vf") + 1]
+        self.assertTrue(filters.endswith(
+            "scale=752:424:force_original_aspect_ratio=increase:out_color_matrix=bt601:"
+            "out_range=full:flags=area,crop=752:424,setsar=1"))
+        self.assertNotIn("transpose", filters)
+        self.assertNotIn("pad=", filters)
+
+
 if __name__ == "__main__":
     unittest.main()

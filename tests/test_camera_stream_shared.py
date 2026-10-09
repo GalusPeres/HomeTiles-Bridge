@@ -68,8 +68,10 @@ class SharedStreamTest(unittest.IsolatedAsyncioTestCase):
             while not predicate():
                 await asyncio.sleep(0.005)
 
-    async def open_panel(self, device, width=752, height=424, fps=30):
-        session = await self.manager.async_create_session(device, ENTITY, width, height, fps)
+    async def open_panel(self, device, width=752, height=424, fps=30, view=None,
+                         rotate=0, fit=None):
+        session = await self.manager.async_create_session(
+            device, ENTITY, width, height, fps, view, rotate, fit)
         await self.manager.async_take_session(session.token)
         return asyncio.create_task(self.connection._async_stream(session, None, device))
 
@@ -120,6 +122,21 @@ class SharedStreamTest(unittest.IsolatedAsyncioTestCase):
         for task in tasks:
             await asyncio.wait_for(task, 3)
         await self.wait_for(lambda: all(p.returncode is not None for p in self.processes))
+
+    async def test_full_screen_frames_get_their_own_pipeline(self):
+        # #65: the popup and a full-screen view of the same camera never share
+        # frames; the full-screen session keeps its turn and placement.
+        a = await self.open_panel("a")
+        await self.wait_for(lambda: self.processes)
+        b = await self.open_panel("b", 800, 1280, 30, "full", 270, "contain")
+        await self.wait_for(lambda: len(self.processes) == 2)
+        filters = self.commands[1][list(self.commands[1]).index("-vf") + 1]
+        self.assertIn("pad=1280:800:", filters)
+        self.assertIn("transpose=2", filters)
+        self.assertNotIn("transpose", self.commands[0][list(self.commands[0]).index("-vf") + 1])
+        for device, task in (("a", a), ("b", b)):
+            await self.manager.async_stop_device(device)
+            await asyncio.wait_for(task, 3)
 
     async def test_a_panel_opened_later_joins_the_running_pipeline(self):
         a = await self.open_panel("a")
