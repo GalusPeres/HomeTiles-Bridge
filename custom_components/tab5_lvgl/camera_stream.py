@@ -47,10 +47,15 @@ CAMERA_FULL_MAX_PIXELS: Final = 1280 * 800
 CAMERA_VIEWS: Final = ("popup", "full")
 CAMERA_FULL_FITS: Final = ("contain", "cover")
 # Chunks that may travel before the oldest is acknowledged. A panel asks for
-# more than one (full screen, #65: 9.4 Mbit/s with one chunk held 50 KB
-# frames at about 20 FPS); every other stream keeps one, the protection of
-# the P4's network memory it was built with.
-CAMERA_STREAM_MAX_WINDOW: Final = 2
+# more than one (full screen, #65: one chunk held the V2 at 9.4 Mbit/s, two
+# at 11.9 Mbit/s); every other stream keeps one, the protection of the P4's
+# network memory it was built with.
+CAMERA_STREAM_MAX_WINDOW: Final = 4
+# A shared pipeline keeps running this long after its last panel left, so a
+# panel switching between the popup and the full screen (or opening the
+# camera again) joins a running FFmpeg instead of waiting for a new one and
+# the camera's first frame (about a second).
+CAMERA_PIPELINE_LINGER_SECONDS: Final = 30.0
 # Clockwise turn -> FFmpeg filters (transpose=1 is 90 clockwise).
 CAMERA_TURN_FILTERS: Final = {
   0: (),
@@ -426,6 +431,19 @@ class CameraStreamBroadcast:
     self._stop = asyncio.Event()
     self._process: asyncio.subprocess.Process | None = None
     self.task: asyncio.Task[None] | None = None
+    # The stop after the last panel left (CAMERA_PIPELINE_LINGER_SECONDS).
+    self._linger: asyncio.TimerHandle | None = None
+
+  def hold(self) -> None:
+    """A panel joined: a pending stop after the last one no longer applies."""
+    if self._linger is not None:
+      self._linger.cancel()
+      self._linger = None
+
+  def linger(self, seconds: float, expired: Callable[[], None]) -> None:
+    """Keep running without panels for `seconds`, then call `expired`."""
+    self.hold()
+    self._linger = asyncio.get_running_loop().call_later(seconds, expired)
 
   def start(self) -> None:
     self.task = self._manager.hass.async_create_task(
@@ -435,6 +453,7 @@ class CameraStreamBroadcast:
 
   def stop(self) -> None:
     """Stop the pipeline; its task terminates FFmpeg and closes viewers."""
+    self.hold()
     self._stop.set()
     process = self._process
     if process is not None and process.returncode is None:
@@ -596,6 +615,8 @@ class CameraStreamManager:
       )
       self._broadcasts[key] = broadcast
       broadcast.start()
+    else:
+      broadcast.hold()
     viewer = CameraStreamViewer(diagnostics)
     broadcast.viewers.append(viewer)
     return broadcast, viewer
@@ -603,13 +624,26 @@ class CameraStreamManager:
   def leave_broadcast(
     self, broadcast: CameraStreamBroadcast, viewer: CameraStreamViewer
   ) -> None:
-    """Remove a panel; the last one leaving stops the shared pipeline."""
+    """Remove a panel; after the last one the pipeline lingers, then stops."""
     viewer.close()
     with suppress(ValueError):
       broadcast.viewers.remove(viewer)
-    if not broadcast.viewers:
-      self.forget_broadcast(broadcast)
-      broadcast.stop()
+    if broadcast.viewers:
+      return
+    linger = CAMERA_PIPELINE_LINGER_SECONDS
+    if linger > 0 and self._broadcasts.get(broadcast.key) is broadcast:
+      broadcast.linger(linger, lambda: self._end_linger(broadcast))
+      return
+    self.forget_broadcast(broadcast)
+    broadcast.stop()
+
+  def _end_linger(self, broadcast: CameraStreamBroadcast) -> None:
+    """The linger ran out: stop the pipeline unless a panel came back."""
+    broadcast._linger = None
+    if broadcast.viewers:
+      return
+    self.forget_broadcast(broadcast)
+    broadcast.stop()
 
   def forget_broadcast(self, broadcast: CameraStreamBroadcast) -> None:
     """Let the next panel start a new pipeline instead of a stopping one."""

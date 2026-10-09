@@ -20,6 +20,9 @@ from test_local_camera_stream import jpeg, load_camera_stream_module
 class SharedStreamTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.module = load_camera_stream_module()
+        # The pipeline stops with its last panel here; LingerTest covers the
+        # linger.
+        self.module.CAMERA_PIPELINE_LINGER_SECONDS = 0
         self.manager = self.module.CameraStreamManager(FakeHass())
         self.connection = self.manager._tcp_connection
         self.processes = []
@@ -206,6 +209,52 @@ class SharedStreamTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(asyncio.gather(a, b), 3)
         self.assertIsNotNone(self.processes[0].returncode)
         self.assertEqual(self.manager._broadcasts, {})
+
+
+
+class LingerTest(SharedStreamTest):
+    """A pipeline keeps running a while after its last panel left: switching
+    between the popup and the full screen joins it instead of starting a new
+    FFmpeg (#65)."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.module.CAMERA_PIPELINE_LINGER_SECONDS = 0.3
+
+    async def test_a_panel_coming_back_joins_the_lingering_pipeline(self):
+        a = await self.open_panel("a")
+        await self.wait_for(lambda: self.processes)
+        await self.manager.async_stop_device("a")
+        await asyncio.wait_for(a, 3)
+        await asyncio.sleep(0.1)
+        self.assertIsNone(self.processes[0].returncode)
+        b = await self.open_panel("a")
+        await asyncio.sleep(0.4)  # past the linger: the panel holds it
+        self.assertEqual(len(self.processes), 1)
+        self.assertIsNone(self.processes[0].returncode)
+        frame = jpeg(66)
+        self.processes[0].stdout.queue.put_nowait(frame)
+        await self.wait_for(lambda: frame in self.frames("a"))
+        await self.manager.async_stop_device("a")
+        await asyncio.wait_for(b, 3)
+        await self.wait_for(lambda: self.processes[0].returncode is not None)
+        self.assertEqual(self.manager._broadcasts, {})
+
+    async def test_the_pipeline_stops_after_the_linger(self):
+        a = await self.open_panel("a")
+        await self.wait_for(lambda: self.processes)
+        await self.manager.async_stop_device("a")
+        await asyncio.wait_for(a, 3)
+        await self.wait_for(lambda: self.processes[0].returncode is not None)
+        self.assertEqual(self.manager._broadcasts, {})
+
+    async def test_shutdown_stops_a_lingering_pipeline(self):
+        a = await self.open_panel("a")
+        await self.wait_for(lambda: self.processes)
+        await self.manager.async_stop_device("a")
+        await asyncio.wait_for(a, 3)
+        await self.manager.async_shutdown()
+        await self.wait_for(lambda: self.processes[0].returncode is not None)
 
 
 if __name__ == "__main__":

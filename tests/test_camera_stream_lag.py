@@ -429,6 +429,12 @@ class ChunkWindowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(most, 2)
         self.assertEqual(metrics.chunks, -(-len(jpeg) // chunk))
 
+    async def test_four_chunks_in_flight_when_asked(self):
+        jpeg, written, metrics, most, chunk = await self.send(70_000, 4)
+        self.assertEqual(b"".join(written[1:]), jpeg)
+        self.assertEqual(most, 4)
+        self.assertEqual(metrics.chunks, -(-len(jpeg) // chunk))
+
     async def test_a_wrong_acknowledgement_still_ends_the_stream(self):
         with self.assertRaisesRegex(ValueError, "camera_invalid_ack"):
             await self.send(50_000, 2, ack_shift=1)
@@ -438,7 +444,8 @@ class ChunkWindowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(validate(None), 1)
         self.assertEqual(validate(2), 2)
         self.assertEqual(validate("1"), 1)
-        for window in (0, 3, "x"):
+        self.assertEqual(validate(4), 4)
+        for window in (0, 5, "x"):
             with self.assertRaisesRegex(ValueError, "camera_invalid_stream_request"):
                 validate(window)
 
