@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "tab5_lvgl"
 PLATFORMS = ("binary_sensor", "light", "number", "select", "sensor", "switch", "camera")
 EXPECTED = {
     ("binary_sensor", "mqtt_connection"): ("MQTT Connection", "MQTT Verbindung"),
+    ("binary_sensor", "encryption"): ("Encryption", "Verschl\u00fcsselung"),
     ("light", "display_brightness"): ("Display Brightness", "Display Helligkeit"),
     ("light", "screensaver_brightness"): ("Screensaver Brightness", "Screensaver Helligkeit"),
     ("number", "display_brightness"): ("Display Brightness", "Display Helligkeit"),
