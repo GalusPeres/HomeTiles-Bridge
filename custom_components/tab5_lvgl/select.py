@@ -37,7 +37,7 @@ async def async_setup_entry(
             base_topic,
             TOPIC_SLEEP_MAINS,
             f"{entry_device_id(entry)}_sleep_mains",
-            "Auto-Sleep Netzteil",
+            "sleep_mains",
             "mdi:power-plug",
         ),
         Tab5SleepSelect(
@@ -45,7 +45,7 @@ async def async_setup_entry(
             base_topic,
             TOPIC_SLEEP_BATTERY,
             f"{entry_device_id(entry)}_sleep_battery",
-            "Auto-Sleep Batterie",
+            "sleep_battery",
             "mdi:battery",
         ),
     ]
@@ -67,13 +67,13 @@ class Tab5SleepSelect(SelectEntity):
         base_topic: str,
         leaf: str,
         unique_id: str,
-        name: str,
+        translation_key: str,
         icon: str,
     ) -> None:
         self._entry = entry
         self._device_info = entry_device_info(entry)
         self._attr_unique_id = unique_id
-        self._attr_name = name
+        self._attr_translation_key = translation_key
         self._attr_icon = icon
         self._topic_cmd = command_topic(base_topic, leaf)
         self._topic_state = state_topic(base_topic, leaf)

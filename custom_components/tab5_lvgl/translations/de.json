@@ -162,6 +162,12 @@
     "select": {
       "view": {
         "name": "Ansicht"
+      },
+      "sleep_mains": {
+        "name": "Auto-Sleep Netzteil"
+      },
+      "sleep_battery": {
+        "name": "Auto-Sleep Batterie"
       }
     },
     "switch": {
@@ -172,6 +178,30 @@
     "binary_sensor": {
       "encryption": {
         "name": "Verschl\u00fcsselung"
+      },
+      "mqtt_connection": {
+        "name": "MQTT Verbindung"
+      }
+    },
+    "light": {
+      "display_brightness": {
+        "name": "Display Helligkeit"
+      },
+      "screensaver_brightness": {
+        "name": "Screensaver Helligkeit"
+      }
+    },
+    "number": {
+      "display_brightness": {
+        "name": "Display Helligkeit"
+      }
+    },
+    "sensor": {
+      "battery_soc": {
+        "name": "Batterie SoC"
+      },
+      "external_temperature": {
+        "name": "Externe Temperatur"
       }
     }
   },

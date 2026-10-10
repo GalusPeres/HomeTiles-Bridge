@@ -162,6 +162,12 @@
     "select": {
       "view": {
         "name": "View"
+      },
+      "sleep_mains": {
+        "name": "Auto-Sleep Power"
+      },
+      "sleep_battery": {
+        "name": "Auto-Sleep Battery"
       }
     },
     "switch": {
@@ -172,6 +178,30 @@
     "binary_sensor": {
       "encryption": {
         "name": "Verschl\u00fcsselung"
+      },
+      "mqtt_connection": {
+        "name": "MQTT Connection"
+      }
+    },
+    "light": {
+      "display_brightness": {
+        "name": "Display Brightness"
+      },
+      "screensaver_brightness": {
+        "name": "Screensaver Brightness"
+      }
+    },
+    "number": {
+      "display_brightness": {
+        "name": "Display Brightness"
+      }
+    },
+    "sensor": {
+      "battery_soc": {
+        "name": "Battery SoC"
+      },
+      "external_temperature": {
+        "name": "External Temperature"
       }
     }
   },
