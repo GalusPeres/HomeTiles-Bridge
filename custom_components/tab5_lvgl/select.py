@@ -17,7 +17,7 @@ from homeassistant.helpers.entity import EntityCategory
 
 from .capabilities import merged_capabilities_data, supports
 from .view_navigation import ViewNavigation
-from .const import SLEEP_OPTIONS, TOPIC_SLEEP_BATTERY, TOPIC_SLEEP_MAINS
+from .const import SLEEP_OPTION_LABELS, SLEEP_OPTIONS, TOPIC_SLEEP_BATTERY, TOPIC_SLEEP_MAINS
 from .device_helpers import (
     command_topic,
     entry_base_topic,
@@ -37,7 +37,7 @@ async def async_setup_entry(
             base_topic,
             TOPIC_SLEEP_MAINS,
             f"{entry_device_id(entry)}_sleep_mains",
-            "Auto-Sleep Netzteil",
+            "sleep_mains",
             "mdi:power-plug",
         ),
         Tab5SleepSelect(
@@ -45,13 +45,24 @@ async def async_setup_entry(
             base_topic,
             TOPIC_SLEEP_BATTERY,
             f"{entry_device_id(entry)}_sleep_battery",
-            "Auto-Sleep Batterie",
+            "sleep_battery",
             "mdi:battery",
         ),
     ]
     if supports(merged_capabilities_data(entry), "view_navigation"):
         entities.append(HomeTilesViewSelect(entry, base_topic))
     async_add_entities(entities)
+
+
+def sleep_option_from_payload(payload) -> str | None:
+    """Option key for the panel's sleep label ("5 min", "Nie"), or None."""
+    raw = str(payload or "").strip().lower()
+    if raw in {"off", "never", "nie", "0"}:
+        return "never"
+    for option, label in SLEEP_OPTION_LABELS.items():
+        if raw in (label.lower(), option):
+            return option
+    return None
 
 
 class Tab5SleepSelect(SelectEntity):
@@ -67,13 +78,13 @@ class Tab5SleepSelect(SelectEntity):
         base_topic: str,
         leaf: str,
         unique_id: str,
-        name: str,
+        translation_key: str,
         icon: str,
     ) -> None:
         self._entry = entry
         self._device_info = entry_device_info(entry)
         self._attr_unique_id = unique_id
-        self._attr_name = name
+        self._attr_translation_key = translation_key
         self._attr_icon = icon
         self._topic_cmd = command_topic(base_topic, leaf)
         self._topic_state = state_topic(base_topic, leaf)
@@ -87,16 +98,9 @@ class Tab5SleepSelect(SelectEntity):
         await super().async_added_to_hass()
 
         async def _handle_state(msg: mqtt.ReceiveMessage) -> None:
-            raw = msg.payload.strip()
-            if not raw:
-                return
-            if raw not in SLEEP_OPTIONS:
-                raw = raw.strip().title()
-            if raw not in SLEEP_OPTIONS:
-                if raw.lower() in {"off", "never", "nie"}:
-                    raw = "Nie"
-            if raw in SLEEP_OPTIONS:
-                self._attr_current_option = raw
+            option = sleep_option_from_payload(msg.payload)
+            if option is not None:
+                self._attr_current_option = option
                 self.async_write_ha_state()
 
         self._unsub_state = await mqtt.async_subscribe(
@@ -110,9 +114,10 @@ class Tab5SleepSelect(SelectEntity):
         await super().async_will_remove_from_hass()
 
     async def async_select_option(self, option: str) -> None:
-        if option not in SLEEP_OPTIONS:
+        label = SLEEP_OPTION_LABELS.get(option)
+        if label is None:
             return
-        await mqtt.async_publish(self.hass, self._topic_cmd, option, qos=0, retain=False)
+        await mqtt.async_publish(self.hass, self._topic_cmd, label, qos=0, retain=False)
         self._attr_current_option = option
         self.async_write_ha_state()
 

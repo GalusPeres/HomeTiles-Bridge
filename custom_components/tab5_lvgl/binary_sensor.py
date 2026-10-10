@@ -26,7 +26,7 @@ class HomeTilesMqttConnectionSensor(BinarySensorEntity):
     """Shows whether the panel is currently connected to MQTT."""
 
     _attr_has_entity_name = True
-    _attr_name = "MQTT Verbindung"
+    _attr_translation_key = "mqtt_connection"
     _attr_icon = "mdi:lan-connect"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_entity_category = EntityCategory.DIAGNOSTIC

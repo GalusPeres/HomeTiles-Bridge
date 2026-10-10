@@ -28,7 +28,6 @@ from .local_io import (
     parse_on_off_payload,
     parse_temperature_payload,
 )
-from .sensor_selection import BATTERY_SENSOR_NAME, EXTERNAL_TEMPERATURE_SENSOR_NAME
 
 
 async def async_setup_entry(
@@ -140,7 +139,7 @@ class Tab5BatterySensor(SensorEntity):
     """Battery state-of-charge in percent."""
 
     _attr_has_entity_name = True
-    _attr_name = BATTERY_SENSOR_NAME
+    _attr_translation_key = "battery_soc"
     _attr_icon = "mdi:battery"
     _attr_native_unit_of_measurement = "%"
     _attr_device_class = SensorDeviceClass.BATTERY
@@ -196,7 +195,7 @@ class Tab5ExternalTemperatureSensor(SensorEntity):
     """External DS18x20 temperature from Tab5."""
 
     _attr_has_entity_name = True
-    _attr_name = EXTERNAL_TEMPERATURE_SENSOR_NAME
+    _attr_translation_key = "external_temperature"
     _attr_icon = "mdi:thermometer"
     _attr_native_unit_of_measurement = "C"
     _attr_device_class = SensorDeviceClass.TEMPERATURE

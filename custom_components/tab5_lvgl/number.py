@@ -56,7 +56,7 @@ class Tab5BrightnessNumber(NumberEntity):
     """Display brightness control."""
 
     _attr_has_entity_name = True
-    _attr_name = "Display Helligkeit"
+    _attr_translation_key = "display_brightness"
     _attr_icon = "mdi:brightness-6"
     _attr_native_min_value = MIN_BRIGHTNESS_PERCENT
     _attr_native_max_value = MAX_BRIGHTNESS_PERCENT
