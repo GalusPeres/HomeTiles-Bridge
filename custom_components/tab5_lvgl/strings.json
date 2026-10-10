@@ -173,6 +173,11 @@
       "encryption": {
         "name": "Verschl\u00fcsselung"
       }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Speaker"
+      }
     }
   },
   "exceptions": {
@@ -181,6 +186,15 @@
     },
     "invalid_view": {
       "message": "The selected view no longer exists."
+    },
+    "speaker_not_connected": {
+      "message": "The display's speaker cannot be reached: the encrypted connection is not ready."
+    },
+    "speaker_invalid_url": {
+      "message": "The display can only play an absolute http:// URL."
+    },
+    "speaker_https_unsupported": {
+      "message": "The display cannot download https:// URLs. Set an http:// local network URL for Home Assistant (Settings \u2192 System \u2192 Network)."
     }
   }
 }

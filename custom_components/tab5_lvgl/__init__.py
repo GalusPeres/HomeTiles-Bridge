@@ -212,6 +212,7 @@ from .capabilities import (
   normalise_capabilities,
   stale_internal_sensor,
   stale_local_camera,
+  stale_speaker,
 )
 from .command_channel import (
   BridgeChannel,
@@ -233,6 +234,7 @@ from .announcement_guard import (
   check_signature,
 )
 from .local_camera import is_local_camera_self_loop, local_camera_command_topic
+from .speaker import audio_command_topic
 from .numeric_history import fetch_numeric_history_values
 from .request_limits import RequestGate
 from .sun_times import sun_days, sun_entries
@@ -256,7 +258,7 @@ from .sensor_selection import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor", "camera"]
+PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor", "camera", "media_player"]
 
 MEDIA_COVER_MAX_BYTES = 14000
 # Home Assistant sends SUBSCRIBE packets batched, a moment after async_subscribe
@@ -761,6 +763,10 @@ def _remove_stale_local_io_entities(hass: HomeAssistant, entry: ConfigEntry) -> 
       # The panel withdrew its own camera (opt-in off, sensor missing or
       # older firmware); a registry orphan would stay unavailable forever.
       # The camera's pause switch shares the camera's unique ID suffix.
+      stale.append(entity.entity_id)
+    elif entity.domain == "media_player" and stale_speaker(unique_id, merged):
+      # The panel no longer announces its speaker (codec missing or older
+      # firmware).
       stale.append(entity.entity_id)
     elif local_io_announced and (
       unique_id == legacy_temperature_id
@@ -2818,6 +2824,16 @@ class Tab5Bridge:
       return
     await mqtt.async_publish(
       self.hass, local_camera_command_topic(self.base_topic), text, qos=0, retain=False,
+    )
+
+  async def async_publish_audio_command(self, text: str) -> None:
+    """Play, stop and volume commands for the panel's own speaker."""
+    channel = self._command_channel
+    if channel is not None and not channel.removing:
+      await self._async_publish_sealed_data("audio", text)
+      return
+    await mqtt.async_publish(
+      self.hass, audio_command_topic(self.base_topic), text, qos=0, retain=False,
     )
 
   async def _async_handle_connected(self, msg: ReceiveMessage) -> None:
