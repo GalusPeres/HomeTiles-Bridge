@@ -65,7 +65,20 @@ TOPIC_SLEEP_MAINS = "sleep_mains"
 TOPIC_SLEEP_BATTERY = "sleep_battery"
 TOPIC_SENSOR_SOC = "soc_pct"
 
-SLEEP_OPTIONS = ["5 s", "15 s", "30 s", "60 s", "5 min", "15 min", "30 min", "60 min", "Nie"]
+# Auto-sleep options: stable Home Assistant option keys (translated as
+# entity states) and the labels the panel sends and accepts on MQTT.
+SLEEP_OPTION_LABELS = {
+    "5s": "5 s",
+    "15s": "15 s",
+    "30s": "30 s",
+    "60s": "60 s",
+    "5min": "5 min",
+    "15min": "15 min",
+    "30min": "30 min",
+    "60min": "60 min",
+    "never": "Nie",
+}
+SLEEP_OPTIONS = list(SLEEP_OPTION_LABELS)
 
 CONFIG_TOPIC_ROOT = "tab5_lvgl/config"
 CONFIG_TOPIC_SUB = f"{CONFIG_TOPIC_ROOT}/+/bridge"

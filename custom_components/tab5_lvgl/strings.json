@@ -164,10 +164,32 @@
         "name": "View"
       },
       "sleep_mains": {
-        "name": "Auto-Sleep Power"
+        "name": "Auto-Sleep Power",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Never"
+        }
       },
       "sleep_battery": {
-        "name": "Auto-Sleep Battery"
+        "name": "Auto-Sleep Battery",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Never"
+        }
       }
     },
     "switch": {
@@ -177,7 +199,7 @@
     },
     "binary_sensor": {
       "encryption": {
-        "name": "Verschl\u00fcsselung"
+        "name": "Encryption"
       },
       "mqtt_connection": {
         "name": "MQTT Connection"
