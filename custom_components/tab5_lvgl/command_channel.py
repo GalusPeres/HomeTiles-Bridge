@@ -57,7 +57,7 @@ SEALED_COMMANDS = frozenset({
 # Commands that exist only sealed: Lock and Alarm never have a plain topic.
 SEALED_ONLY_COMMANDS = frozenset({"lock", "alarm"})
 # Bridge-to-panel messages that carry stream tokens and travel sealed.
-SEALED_DATA = frozenset({"camera", "local_camera"})
+SEALED_DATA = frozenset({"audio", "camera", "local_camera"})
 
 TYPE_HELLO = "hello"
 TYPE_SESSION = "session"

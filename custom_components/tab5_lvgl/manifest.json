@@ -6,7 +6,7 @@
   "issue_tracker": "https://github.com/GalusPeres/HomeTiles-Bridge/issues",
   "requirements": [],
   "dependencies": ["mqtt", "camera", "ffmpeg", "network"],
-  "after_dependencies": ["recorder"],
+  "after_dependencies": ["media_source", "recorder"],
   "codeowners": ["@GalusPeres"],
   "integration_type": "device",
   "iot_class": "local_push",
