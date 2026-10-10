@@ -253,6 +253,11 @@
       "external_temperature": {
         "name": "Temperatura zewn\u0119trzna"
       }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "G\u0142o\u015bnik"
+      }
     }
   },
   "exceptions": {
@@ -261,6 +266,15 @@
     },
     "invalid_view": {
       "message": "Wybrany widok ju\u017c nie istnieje."
+    },
+    "speaker_not_connected": {
+      "message": "G\u0142o\u015bnik wy\u015bwietlacza jest nieosi\u0105galny: szyfrowane po\u0142\u0105czenie nie jest jeszcze gotowe."
+    },
+    "speaker_invalid_url": {
+      "message": "Wy\u015bwietlacz mo\u017ce odtworzy\u0107 tylko bezwzgl\u0119dny adres URL http://."
+    },
+    "speaker_https_unsupported": {
+      "message": "Wy\u015bwietlacz nie mo\u017ce pobiera\u0107 adres\u00f3w URL https://. Ustaw dla Home Assistant adres URL http:// w sieci lokalnej (Ustawienia \u2192 System \u2192 Sie\u0107)."
     }
   }
 }

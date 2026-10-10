@@ -253,6 +253,11 @@
       "external_temperature": {
         "name": "Temp\u00e9rature externe"
       }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Haut-parleur"
+      }
     }
   },
   "exceptions": {
@@ -261,6 +266,15 @@
     },
     "invalid_view": {
       "message": "La vue s\u00e9lectionn\u00e9e n'existe plus."
+    },
+    "speaker_not_connected": {
+      "message": "Le haut-parleur de l\u2019\u00e9cran est injoignable : la connexion chiffr\u00e9e n\u2019est pas encore pr\u00eate."
+    },
+    "speaker_invalid_url": {
+      "message": "L\u2019\u00e9cran ne peut lire qu\u2019une URL http:// absolue."
+    },
+    "speaker_https_unsupported": {
+      "message": "L\u2019\u00e9cran ne peut pas t\u00e9l\u00e9charger d\u2019URL https://. D\u00e9finissez une URL http:// du r\u00e9seau local pour Home Assistant (Param\u00e8tres \u2192 Syst\u00e8me \u2192 R\u00e9seau)."
     }
   }
 }

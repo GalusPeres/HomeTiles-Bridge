@@ -12,7 +12,7 @@ def normalise_capabilities(value: Any) -> dict[str, bool]:
     if not isinstance(value, dict):
         raise ValueError("invalid_capabilities")
     result = {}
-    for key in ("battery_soc", "legacy_external_temperature", "local_camera",
+    for key in ("audio_output", "battery_soc", "legacy_external_temperature", "local_camera",
                 "local_camera_stream", "view_navigation"):
         if key in value:
             if type(value[key]) is not bool:
@@ -33,7 +33,7 @@ def supports(data: Mapping[str, Any], capability: str) -> bool:
     explicit = data.get(CAPABILITIES, {})
     if capability in explicit:
         return explicit[capability] is True
-    if capability in ("view_navigation", "local_camera", "local_camera_stream"):
+    if capability in ("view_navigation", "local_camera", "local_camera_stream", "audio_output"):
         # Never inferred: only firmware that announces it can answer requests.
         return False
     # No fixed external channel exists once firmware announces local I/O,
@@ -57,3 +57,7 @@ def stale_internal_sensor(unique_id: str, data: Mapping[str, Any]) -> bool:
 
 def stale_local_camera(unique_id: str, data: Mapping[str, Any]) -> bool:
     return unique_id.endswith("_local_camera") and not supports(data, "local_camera")
+
+
+def stale_speaker(unique_id: str, data: Mapping[str, Any]) -> bool:
+    return unique_id.endswith("_speaker") and not supports(data, "audio_output")

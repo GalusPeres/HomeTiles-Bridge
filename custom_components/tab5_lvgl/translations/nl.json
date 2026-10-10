@@ -253,6 +253,11 @@
       "external_temperature": {
         "name": "Externe temperatuur"
       }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Luidspreker"
+      }
     }
   },
   "exceptions": {
@@ -261,6 +266,15 @@
     },
     "invalid_view": {
       "message": "De gekozen weergave bestaat niet meer."
+    },
+    "speaker_not_connected": {
+      "message": "De luidspreker van het scherm is niet bereikbaar: de versleutelde verbinding is nog niet klaar."
+    },
+    "speaker_invalid_url": {
+      "message": "Het scherm kan alleen een absolute http://-URL afspelen."
+    },
+    "speaker_https_unsupported": {
+      "message": "Het scherm kan geen https://-URL's downloaden. Stel een http://-URL in het lokale netwerk in voor Home Assistant (Instellingen → Systeem → Netwerk)."
     }
   }
 }

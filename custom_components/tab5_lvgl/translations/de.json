@@ -253,6 +253,11 @@
       "external_temperature": {
         "name": "Externe Temperatur"
       }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Lautsprecher"
+      }
     }
   },
   "exceptions": {
@@ -261,6 +266,15 @@
     },
     "invalid_view": {
       "message": "Die gew\u00e4hlte Ansicht existiert nicht mehr."
+    },
+    "speaker_not_connected": {
+      "message": "Der Lautsprecher des Displays ist nicht erreichbar: Die verschl\u00fcsselte Verbindung ist noch nicht bereit."
+    },
+    "speaker_invalid_url": {
+      "message": "Das Display kann nur eine absolute http://-URL abspielen."
+    },
+    "speaker_https_unsupported": {
+      "message": "Das Display kann keine https://-URLs laden. Lege eine http://-URL f\u00fcr das lokale Netzwerk in Home Assistant fest (Einstellungen \u2192 System \u2192 Netzwerk)."
     }
   }
 }

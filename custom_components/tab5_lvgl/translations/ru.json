@@ -253,6 +253,11 @@
       "external_temperature": {
         "name": "Внешняя температура"
       }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Динамик"
+      }
     }
   },
   "exceptions": {
@@ -261,6 +266,15 @@
     },
     "invalid_view": {
       "message": "Выбранный вид больше не существует."
+    },
+    "speaker_not_connected": {
+      "message": "Динамик дисплея недоступен: зашифрованное соединение ещё не готово."
+    },
+    "speaker_invalid_url": {
+      "message": "Дисплей может воспроизводить только абсолютный URL http://."
+    },
+    "speaker_https_unsupported": {
+      "message": "Дисплей не может загружать URL https://. Укажите для Home Assistant URL http:// локальной сети (Настройки → Система → Сеть)."
     }
   }
 }

@@ -253,6 +253,11 @@
       "external_temperature": {
         "name": "Extern temperatur"
       }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Högtalare"
+      }
     }
   },
   "exceptions": {
@@ -261,6 +266,15 @@
     },
     "invalid_view": {
       "message": "Den valda vyn finns inte längre."
+    },
+    "speaker_not_connected": {
+      "message": "Skärmens högtalare kan inte nås: den krypterade anslutningen är inte klar ännu."
+    },
+    "speaker_invalid_url": {
+      "message": "Skärmen kan bara spela upp en absolut http://-URL."
+    },
+    "speaker_https_unsupported": {
+      "message": "Skärmen kan inte ladda ner https://-URL:er. Ange en http://-URL i det lokala nätverket för Home Assistant (Inställningar → System → Nätverk)."
     }
   }
 }

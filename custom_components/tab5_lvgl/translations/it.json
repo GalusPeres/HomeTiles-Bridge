@@ -253,6 +253,11 @@
       "external_temperature": {
         "name": "Temperatura esterna"
       }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Altoparlante"
+      }
     }
   },
   "exceptions": {
@@ -261,6 +266,15 @@
     },
     "invalid_view": {
       "message": "La vista selezionata non esiste più."
+    },
+    "speaker_not_connected": {
+      "message": "L’altoparlante del display non è raggiungibile: la connessione cifrata non è ancora pronta."
+    },
+    "speaker_invalid_url": {
+      "message": "Il display può riprodurre solo un URL http:// assoluto."
+    },
+    "speaker_https_unsupported": {
+      "message": "Il display non può scaricare URL https://. Imposta un URL http:// di rete locale per Home Assistant (Impostazioni → Sistema → Rete)."
     }
   }
 }

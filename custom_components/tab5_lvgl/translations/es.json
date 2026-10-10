@@ -253,6 +253,11 @@
       "external_temperature": {
         "name": "Temperatura externa"
       }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Altavoz"
+      }
     }
   },
   "exceptions": {
@@ -261,6 +266,15 @@
     },
     "invalid_view": {
       "message": "La vista seleccionada ya no existe."
+    },
+    "speaker_not_connected": {
+      "message": "No se puede acceder al altavoz de la pantalla: la conexión cifrada aún no está lista."
+    },
+    "speaker_invalid_url": {
+      "message": "La pantalla solo puede reproducir una URL http:// absoluta."
+    },
+    "speaker_https_unsupported": {
+      "message": "La pantalla no puede descargar URL https://. Configura una URL http:// de red local para Home Assistant (Ajustes → Sistema → Red)."
     }
   }
 }
