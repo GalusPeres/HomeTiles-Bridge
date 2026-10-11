@@ -12,6 +12,8 @@ ARTWORK_CLEAR_DELAY = 3.0
 # artwork. Keep the cover the panel already shows.
 ARTWORK_KEEP_STATES = frozenset({"buffering", "unavailable", "unknown"})
 ARTWORK_URL_KEYS = ("entity_picture", "media_image_url")
+# Home Assistant's own address for a player's picture (media_player_proxy).
+HA_MEDIA_PROXY_PATH = "/api/media_player_proxy/"
 
 
 def has_artwork(payload: Dict[str, Any]) -> bool:
@@ -29,6 +31,16 @@ def artwork_url(payload: Dict[str, Any]) -> str:
     if isinstance(value, str) and value.startswith(("http://", "https://")):
       return value
   return ""
+
+
+def is_ha_media_proxy(url: str) -> bool:
+  """True for Home Assistant's own picture address of a player. The Bridge
+  reads that picture from the player itself: a request to Home Assistant's
+  https address fails on a certificate from a private CA (Bridge issue #10)."""
+  try:
+    return urlsplit(url).path.startswith(HA_MEDIA_PROXY_PATH)
+  except ValueError:
+    return False
 
 
 def image_key(url: str) -> str:

@@ -205,7 +205,7 @@ from .access_helpers import (
   plan_access_call,
 )
 from .fan_helpers import FAN_DOMAIN, build_fan_detail, build_fan_service_call, parse_fan_command
-from .media_artwork import ArtworkClearGate, artwork_url, image_key, image_key_field
+from .media_artwork import ArtworkClearGate, artwork_url, image_key, image_key_field, is_ha_media_proxy
 from .camera_stream import (
   CAMERA_BRIDGE_PROTOCOL_VERSION,
   CAMERA_STREAM_FPS,
@@ -300,6 +300,8 @@ MEDIA_COVER_FETCH_MAX_BYTES = 1_500_000
 IMAGE_PICTURE_MAX_BYTES = 12_000_000
 IMAGE_PICTURE_TIMEOUT_S = 10
 MEDIA_COVER_CACHE_MAX = 24
+# A player's own picture (read from the entity, like HA's media_player_proxy).
+MEDIA_COVER_ENTITY_TIMEOUT_S = 10
 MEDIA_COVER_THUMBNAIL_SIZE = 240
 MEDIA_COVER_WARNING_INTERVAL_SECONDS = 15 * 60
 MEDIA_COVER_WARNING_MAX_KEYS = 64
@@ -365,6 +367,30 @@ def _resize_media_cover(data: bytes) -> Optional[Tuple[bytes, str]]:
       len(data),
     )
     return None
+
+
+def _media_player_entity(hass: HomeAssistant, entity_id: str) -> Any:
+  """The player entity behind entity_id, None when it is not at hand."""
+  component = hass.data.get("media_player")
+  entity = component.get_entity(entity_id) if hasattr(component, "get_entity") else None
+  return entity if hasattr(entity, "async_get_media_image") else None
+
+
+async def _async_media_player_image(entity: Any, entity_id: str) -> Tuple[bytes, str]:
+  """A player's picture and its MIME type as Home Assistant's media_player_proxy
+  serves them, read from the entity itself. The proxy's address is Home
+  Assistant's own; over https with a certificate from a private CA the
+  Bridge's request to it failed (ClientConnectorCertificateError, Bridge issue
+  #10). Empty bytes when the player has no picture."""
+  try:
+    async with asyncio.timeout(MEDIA_COVER_ENTITY_TIMEOUT_S):
+      data, content_type = await entity.async_get_media_image()
+  except Exception as err:  # pragma: no cover - integration dependent
+    _LOGGER.debug("Tab5 media cover: no picture from %s (%s)", entity_id, type(err).__name__)
+    return b"", ""
+  if not isinstance(data, (bytes, bytearray)):
+    return b"", ""
+  return bytes(data), (content_type if isinstance(content_type, str) else "")
 
 
 LIGHT_SERVICE_FIELDS = {
@@ -544,6 +570,19 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
       return None
     return data or None
 
+  async def player_picture(entity_id: str, url: str) -> Optional[bytes]:
+    """A player's cover: Home Assistant's own proxy address is read from the
+    player itself (no request to HA's https address), other addresses (the
+    upstream CDN) are downloaded; also when the player is not at hand."""
+    entity = _media_player_entity(hass, entity_id) if is_ha_media_proxy(url) else None
+    if entity is None:
+      return await fetch(url)
+    data, _content_type = await _async_media_player_image(entity, entity_id)
+    if len(data) > MEDIA_COVER_FETCH_MAX_BYTES:
+      _LOGGER.info("HomeTiles pictures: a picture above %d bytes was not loaded", MEDIA_COVER_FETCH_MAX_BYTES)
+      return None
+    return data or None
+
   async def camera_still(entity_id: str) -> Optional[bytes]:
     try:
       image = await async_get_camera_image(hass, entity_id)
@@ -559,7 +598,7 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
     domain = entity_domain(entity_id)
     if domain == "media_player":
       url = artwork_url(_extract_media_player_payload(state, hass))
-      return ImageSource(image_key(url), lambda: fetch(url)) if url else None
+      return ImageSource(image_key(url), lambda: player_picture(entity_id, url)) if url else None
     if domain == "image":
       # An image entity's state is the time of its last picture; "unknown"
       # when the integration does not tell, then the picture shows once.
@@ -2635,6 +2674,47 @@ class Tab5Bridge:
       self._media_cover_warning_last.pop(oldest_key, None)
     _LOGGER.warning(message, *args)
 
+  async def _async_download_media_cover(self, entity_id: str, url: str) -> Optional[Tuple[bytes, str]]:
+    """The cover from its address and the reported MIME type; None after a
+    failure, which is logged (rate-limited)."""
+    try:
+      session = async_get_clientsession(self.hass)
+      async with session.get(url, timeout=5) as response:
+        if response.status != 200:
+          self._log_media_cover_warning(
+            entity_id,
+            f"http_{response.status}",
+            "Tab5 media cover fetch failed for %s: HTTP %s",
+            entity_id,
+            response.status,
+          )
+          return None
+        content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+        # Drain the response in chunks. A single read(N) on aiohttp
+        # occasionally returns short when the server uses chunked transfer
+        # encoding (HA media_player_proxy does this), which leaves the JPEG
+        # truncated. Looping until EOF or the byte cap is reached avoids that.
+        chunks: List[bytes] = []
+        received = 0
+        async for chunk in response.content.iter_chunked(16384):
+          if not chunk:
+            break
+          chunks.append(chunk)
+          received += len(chunk)
+          if received > MEDIA_COVER_FETCH_MAX_BYTES:
+            break
+        data = b"".join(chunks)
+    except Exception as err:  # pragma: no cover - network dependent
+      self._log_media_cover_warning(
+        entity_id,
+        "network",
+        "Tab5 media cover fetch failed for %s: %s",
+        entity_id,
+        type(err).__name__,
+      )
+      return None
+    return data, content_type
+
   async def _async_attach_media_cover_data(self, entity_id: str, payload: Dict[str, Any]) -> None:
     url = ""
     # Prefer media_image_url first - it usually points at the upstream CDN
@@ -2662,42 +2742,16 @@ class Tab5Bridge:
       )
       return
 
-    try:
-      session = async_get_clientsession(self.hass)
-      async with session.get(url, timeout=5) as response:
-        if response.status != 200:
-          self._log_media_cover_warning(
-            entity_id,
-            f"http_{response.status}",
-            "Tab5 media cover fetch failed for %s: HTTP %s",
-            entity_id,
-            response.status,
-          )
-          return
-        content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
-        # Drain the response in chunks. A single read(N) on aiohttp
-        # occasionally returns short when the server uses chunked transfer
-        # encoding (HA media_player_proxy does this), which leaves the JPEG
-        # truncated. Looping until EOF or the byte cap is reached avoids that.
-        chunks: List[bytes] = []
-        received = 0
-        async for chunk in response.content.iter_chunked(16384):
-          if not chunk:
-            break
-          chunks.append(chunk)
-          received += len(chunk)
-          if received > MEDIA_COVER_FETCH_MAX_BYTES:
-            break
-        data = b"".join(chunks)
-    except Exception as err:  # pragma: no cover - network dependent
-      self._log_media_cover_warning(
-        entity_id,
-        "network",
-        "Tab5 media cover fetch failed for %s: %s",
-        entity_id,
-        type(err).__name__,
-      )
-      return
+    entity = _media_player_entity(self.hass, entity_id) if is_ha_media_proxy(url) else None
+    if entity is not None:
+      # Home Assistant's own proxy: the picture comes from the player itself.
+      data, content_type = await _async_media_player_image(entity, entity_id)
+      content_type = content_type.split(";")[0].strip().lower()
+    else:
+      downloaded = await self._async_download_media_cover(entity_id, url)
+      if downloaded is None:
+        return
+      data, content_type = downloaded
 
     if len(data) == 0:
       self._log_media_cover_warning(
