@@ -88,7 +88,7 @@
       "pairing_done": "Verschl\u00fcsselt. Das Display sendet seine Befehle jetzt verschl\u00fcsselt.",
       "pairing_confirmed": "Best\u00e4tigt. Jetzt auch am Display best\u00e4tigen.",
       "pairing_rejected": "Abgelehnt. Das Display bleibt unverschl\u00fcsselt verbunden.",
-      "pairing_expired": "Dieser Versuch ist beendet. Am Display erneut auf Verschl\u00fcsseln tippen.",
+      "pairing_expired": "Dieser Versuch ist beendet. Am Display erneut auf Koppeln tippen (bei Firmware bis v0.8.0: Verschl\u00fcsseln).",
       "link_unavailable": "Der Verbindungsdienst der HomeTiles Bridge l\u00e4uft nicht. Details stehen im Home-Assistant-Protokoll.",
       "link_failed": "Das Panel hat sich nicht gemeldet oder das Koppeln wurde abgebrochen. Das Panel bleibt erreichbar; am Panel unter Einstellungen > System > Sicherheit erneut koppeln oder es hier noch einmal hinzuf\u00fcgen.",
       "link_rejected": "Abgelehnt. Das Panel wurde nicht hinzugef\u00fcgt.",
@@ -176,7 +176,7 @@
     },
     "abort": {
       "pairing_removed": "Verschl\u00fcsselung ausgeschaltet. Das Display schaltet sie beim Verbinden auch aus.",
-      "pairing_not_paired": "Nicht verschl\u00fcsselt. Zum Einrichten am Display Einstellungen \u2192 System \u2192 Sicherheit \u2192 Verschl\u00fcsseln w\u00e4hlen.",
+      "pairing_not_paired": "Nicht verschl\u00fcsselt. Zum Einrichten am Display Einstellungen \u2192 System \u2192 Sicherheit \u2192 Koppeln w\u00e4hlen (bei Firmware bis v0.8.0: Verschl\u00fcsseln).",
       "pairing_removing": "Verschl\u00fcsselung wird ausgeschaltet. Das Display schaltet sie beim Verbinden aus.",
       "no_access_entities": "Zuerst unter \u201eEntity-Konfiguration\u201c Schl\u00f6sser oder Alarmanlagen ausw\u00e4hlen."
     }

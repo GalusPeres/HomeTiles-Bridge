@@ -88,7 +88,7 @@
       "pairing_done": "Encrypted. The display now sends encrypted commands.",
       "pairing_confirmed": "Confirmed. Now confirm on the display too.",
       "pairing_rejected": "Rejected. The display stays connected unencrypted.",
-      "pairing_expired": "This attempt has ended. Tap Encrypt on the display again.",
+      "pairing_expired": "This attempt has ended. Tap Pair on the display again (Encrypt on firmware up to v0.8.0).",
       "link_unavailable": "The connection service of the HomeTiles Bridge is not running. The Home Assistant log has the details.",
       "link_failed": "The panel did not answer or the pairing was cancelled. Pair again on the panel under Settings > System > Security, or add it here once more.",
       "link_rejected": "Rejected. The panel was not added.",
@@ -176,7 +176,7 @@
     },
     "abort": {
       "pairing_removed": "Encryption turned off. The display turns it off too when it connects.",
-      "pairing_not_paired": "Not encrypted. To set it up, choose Settings → System → Security → Encrypt on the display.",
+      "pairing_not_paired": "Not encrypted. To set it up, choose Settings → System → Security → Pair on the display (Encrypt on firmware up to v0.8.0).",
       "pairing_removing": "Encryption is turning off. The display turns it off when it connects.",
       "no_access_entities": "First select locks or alarm panels under “Entity configuration”."
     }

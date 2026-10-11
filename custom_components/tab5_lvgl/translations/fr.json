@@ -88,7 +88,7 @@
       "pairing_done": "Chiffr\u00e9. L'\u00e9cran envoie maintenant des commandes chiffr\u00e9es.",
       "pairing_confirmed": "Confirm\u00e9. Confirmez maintenant aussi sur l'\u00e9cran.",
       "pairing_rejected": "Refus\u00e9. L'\u00e9cran reste connect\u00e9 sans chiffrement.",
-      "pairing_expired": "Cette tentative est termin\u00e9e. Touchez \u00e0 nouveau \u00ab Chiffrer \u00bb sur l'\u00e9cran.",
+      "pairing_expired": "Cette tentative est termin\u00e9e. Touchez \u00e0 nouveau \u00ab Appairer \u00bb sur l'\u00e9cran (\u00ab Chiffrer \u00bb avec un firmware jusqu'\u00e0 v0.8.0).",
       "link_unavailable": "Le service de connexion du Bridge HomeTiles ne fonctionne pas. Le journal de Home Assistant contient les d\u00e9tails.",
       "link_failed": "L'\u00e9cran n'a pas r\u00e9pondu ou l'appairage a \u00e9t\u00e9 annul\u00e9. Appairez \u00e0 nouveau sur l'\u00e9cran sous Param\u00e8tres > Syst\u00e8me > S\u00e9curit\u00e9, ou ajoutez-le ici une nouvelle fois.",
       "link_rejected": "Refus\u00e9. L'\u00e9cran n'a pas \u00e9t\u00e9 ajout\u00e9.",
@@ -176,7 +176,7 @@
     },
     "abort": {
       "pairing_removed": "Chiffrement d\u00e9sactiv\u00e9. L'\u00e9cran le d\u00e9sactive aussi lorsqu'il se connecte.",
-      "pairing_not_paired": "Non chiffr\u00e9. Pour le configurer, choisissez Param\u00e8tres \u2192 Syst\u00e8me \u2192 S\u00e9curit\u00e9 \u2192 Chiffrer sur l'\u00e9cran.",
+      "pairing_not_paired": "Non chiffr\u00e9. Pour le configurer, choisissez Param\u00e8tres \u2192 Syst\u00e8me \u2192 S\u00e9curit\u00e9 \u2192 Appairer sur l'\u00e9cran (Chiffrer avec un firmware jusqu'\u00e0 v0.8.0).",
       "pairing_removing": "Le chiffrement est en cours de d\u00e9sactivation. L'\u00e9cran le d\u00e9sactive lorsqu'il se connecte.",
       "no_access_entities": "S\u00e9lectionnez d'abord des serrures ou des panneaux d'alarme sous \u00ab Configuration des entit\u00e9s \u00bb."
     }

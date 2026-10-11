@@ -2,183 +2,183 @@
   "config": {
     "step": {
       "user": {
-        "title": "Panel hinzuf\u00fcgen",
-        "description": "Neues HomeTiles-Panel einrichten.",
+        "title": "Add panel",
+        "description": "Set up a new HomeTiles panel.",
         "data": {
-          "base_topic": "MQTT-Basis",
-          "ha_prefix": "HA-Praefix",
-          "device_name": "Ger\u00e4tename (optional)",
-          "manufacturer": "Hersteller (optional)",
-          "model": "Modell (optional)"
+          "base_topic": "MQTT base topic",
+          "ha_prefix": "HA entity prefix",
+          "device_name": "Device name (optional)",
+          "manufacturer": "Manufacturer (optional)",
+          "model": "Model (optional)"
         }
       },
       "zeroconf_confirm": {
-        "title": "Panel gefunden",
-        "description": "**{name}** ({model}) wurde im Netzwerk unter {host} gefunden. Die HomeTiles Bridge sendet die MQTT-Zugangsdaten unten an das Panel; es startet danach neu. Host und Port sind automatisch vorausgef\u00fcllt. Benutzername und Passwort bitte eintragen, falls dein MQTT-Broker Login-Daten verlangt.",
+        "title": "Panel discovered",
+        "description": "**{name}** ({model}) was found on the network at {host}. HomeTiles Bridge will send the MQTT credentials below to the panel; it will then restart. Host and port are prefilled automatically. Enter username and password if your MQTT broker requires login credentials.",
         "data": {
-          "mqtt_host": "MQTT Host / IP",
-          "mqtt_port": "MQTT Port",
-          "mqtt_username": "MQTT-Benutzername",
-          "mqtt_password": "MQTT-Passwort",
-          "base_topic": "MQTT-Basis",
-          "ha_prefix": "HA-Praefix",
+          "mqtt_host": "MQTT host / IP",
+          "mqtt_port": "MQTT port",
+          "mqtt_username": "MQTT username",
+          "mqtt_password": "MQTT password",
+          "base_topic": "MQTT base topic",
+          "ha_prefix": "HA entity prefix",
           "panel_password": "Panel Web Admin password (only if set)"
         },
         "data_description": {
-          "panel_password": "Leer lassen, wenn am Panel kein Web-Admin-Passwort gesetzt ist. Es wird nur f\u00fcr diese Einrichtung verwendet und nicht gespeichert."
+          "panel_password": "Leave empty if the panel has no Web Admin password. It is used only for this setup and is not stored."
         }
       },
       "discovery_confirm": {
-        "title": "Panel gefunden",
-        "description": "**{name}** hat sich per MQTT mit der Basis {base_topic} gemeldet. Nur hinzuf\u00fcgen, wenn es dein Panel ist."
+        "title": "Panel discovered",
+        "description": "**{name}** announced itself over MQTT with base topic {base_topic}. Only add it if it is your panel."
       },
       "adopt_confirm": {
-        "title": "Panel verkn\u00fcpfen",
-        "description": "**{name}** hat sich per MQTT mit der Basis {base_topic} gemeldet, die der Eintrag **{entry}** nutzt. Nur verkn\u00fcpfen, wenn es dein Panel ist."
+        "title": "Link panel",
+        "description": "**{name}** announced itself over MQTT with base topic {base_topic}, which the entry **{entry}** uses. Only link it if it is your panel."
       },
       "pairing_confirm": {
-        "title": "Verschl\u00fcsselung einrichten",
-        "description": "Verschl\u00fcsselt das vorhandene Display **{name}**. Es wird kein neues Ger\u00e4t angelegt.\n\n# {number}\n\nNur best\u00e4tigen, wenn das Display diese Zahl zeigt.",
+        "title": "Set up encryption",
+        "description": "Encrypts the existing display **{name}**. No new device is added.\n\n# {number}\n\nConfirm only if the display shows this number.",
         "menu_options": {
-          "pairing_accept": "Zahlen stimmen: verschl\u00fcsseln",
-          "pairing_reject": "Ablehnen (bleibt unverschl\u00fcsselt)"
+          "pairing_accept": "Numbers match: encrypt",
+          "pairing_reject": "Reject (stays unencrypted)"
         }
       },
       "link_confirm": {
-        "title": "Panel gefunden",
-        "description": "Am Panel **{name}** ({model}, {host}) wurde Koppeln gedr\u00fcckt. Es verbindet sich direkt mit Home Assistant, ein MQTT-Broker wird nicht gebraucht.\n\nNach dem Hinzuf\u00fcgen zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl."
+        "title": "Panel found",
+        "description": "Pair was pressed on the panel **{name}** ({model}, {host}). It connects to Home Assistant directly; no MQTT broker is needed.\n\nAfter you add it, the panel and this dialog show the same six-digit number."
       },
       "link_number": {
-        "title": "Zahl vergleichen",
-        "description": "Das Panel **{name}** zeigt jetzt eine Zahl.\n\n# {number}\n\nNur best\u00e4tigen, wenn das Panel genau diese Zahl zeigt. Danach auch am Panel best\u00e4tigen.",
+        "title": "Compare the number",
+        "description": "The panel **{name}** now shows a number.\n\n# {number}\n\nConfirm only if the panel shows exactly this number. Then confirm on the panel as well.",
         "menu_options": {
-          "link_accept": "Zahlen stimmen: verbinden",
-          "link_reject": "Ablehnen"
+          "link_accept": "Numbers match: connect",
+          "link_reject": "Reject"
         }
       },
       "link_switch": {
-        "title": "Panel verbinden",
-        "description": "Am Panel **{name}** ({host}) wurde Koppeln gedr\u00fcckt. Es ist hier schon eingerichtet und verbindet sich jetzt direkt mit Home Assistant, ohne MQTT. Eintrag, Bereich, Namen und Entit\u00e4ten bleiben erhalten.\n\nNach dem Best\u00e4tigen zeigen das Panel und dieser Dialog dieselbe sechsstellige Zahl."
+        "title": "Connect the panel",
+        "description": "Pair was pressed on the panel **{name}** ({host}). It is already set up here and now connects to Home Assistant directly, without MQTT. Its entry, area, names and entities stay.\n\nAfter you confirm, the panel and this dialog show the same six-digit number."
       }
     },
     "progress": {
-      "link_wait": "Das Panel **{name}** verbindet sich mit Home Assistant. Das dauert ein paar Sekunden.",
-      "link_finish": "Jetzt am Panel **{name}** auf Best\u00e4tigen tippen."
+      "link_wait": "The panel **{name}** connects to Home Assistant. This takes a few seconds.",
+      "link_finish": "Now tap Confirm on the panel **{name}**."
     },
     "error": {
-      "topic_already_configured": "Ein Panel mit diesem MQTT-Topic ist bereits konfiguriert.",
-      "cannot_connect": "Das Panel war nicht erreichbar. Bitte pr\u00fcfen, ob es noch im Netzwerk ist, und erneut versuchen.",
-      "mqtt_host_required": "Bitte einen MQTT Host oder eine IP-Adresse eintragen.",
-      "invalid_port": "Bitte einen g\u00fcltigen MQTT Port zwischen 1 und 65535 eintragen.",
+      "topic_already_configured": "A panel with this MQTT topic is already configured.",
+      "cannot_connect": "Could not reach the panel. Check that it's still on the network and try again.",
+      "mqtt_host_required": "Enter an MQTT host or IP address.",
+      "invalid_port": "Enter a valid MQTT port between 1 and 65535.",
       "invalid_panel_password": "The panel rejected the Web Admin password.",
       "panel_password_required": "The panel's Web Admin is protected by a password. Enter the Web Admin password.",
       "panel_locked": "Too many wrong passwords. Wait a few minutes and try again.",
       "panel_identity_failed": "The device could not prove that it is the panel with this password. No credentials were sent.",
-      "link_unsupported": "Die Firmware des Panels kann sich noch nicht direkt verbinden. Bitte das Panel zuerst aktualisieren.",
-      "link_window_closed": "Das Panel nimmt die Verbindung nicht mehr an. Am Panel erneut auf Koppeln dr\u00fccken und es innerhalb von zwei Minuten hinzuf\u00fcgen."
+      "link_unsupported": "The panel's firmware cannot connect directly yet. Update the panel first.",
+      "link_window_closed": "The panel no longer accepts the connection. Press Pair on the panel again and add it within two minutes."
     },
     "abort": {
-      "missing_device_id": "Das gefundene Ger\u00e4t hat keine g\u00fcltige Kennung gesendet.",
-      "mqtt_not_configured": "In Home Assistant ist keine MQTT-Integration eingerichtet. Bitte zuerst die MQTT-Integration konfigurieren.",
-      "unsupported_broker": "Der konfigurierte MQTT-Broker verlangt TLS oder ein Client-Zertifikat - das Panel unterst\u00fctzt das nicht. Bitte die Broker-Zugangsdaten manuell im Web-Interface des Panels eintragen.",
-      "mqtt_read_failed": "Die MQTT-Zugangsdaten konnten nicht gelesen werden.",
-      "already_configured": "Dieses Panel ist bereits konfiguriert.",
-      "panel_linked": "Das Panel wurde mit dem bestehenden Eintrag verkn\u00fcpft.",
-      "adopt_target_changed": "Der Eintrag ist inzwischen einem anderen Panel zugeordnet oder nutzt eine andere Basis.",
-      "pairing_done": "Verschl\u00fcsselt. Das Display sendet seine Befehle jetzt verschl\u00fcsselt.",
-      "pairing_confirmed": "Best\u00e4tigt. Jetzt auch am Display best\u00e4tigen.",
-      "pairing_rejected": "Abgelehnt. Das Display bleibt unverschl\u00fcsselt verbunden.",
-      "pairing_expired": "Dieser Versuch ist beendet. Am Display erneut auf Verschl\u00fcsseln tippen.",
-      "link_unavailable": "Der Verbindungsdienst der HomeTiles Bridge l\u00e4uft nicht. Details stehen im Home-Assistant-Protokoll.",
-      "link_failed": "Das Panel hat sich nicht gemeldet oder das Koppeln wurde abgebrochen. Das Panel bleibt erreichbar; am Panel unter Einstellungen > System > Sicherheit erneut koppeln oder es hier noch einmal hinzuf\u00fcgen.",
-      "link_rejected": "Abgelehnt. Das Panel wurde nicht hinzugef\u00fcgt.",
-      "link_press_pair": "Am Panel unter Einstellungen > System > Sicherheit auf Koppeln dr\u00fccken, dann erscheint es hier.",
-      "link_switched": "Fertig. Das Panel ist jetzt direkt und verschl\u00fcsselt verbunden."
+      "missing_device_id": "The discovered device did not send a valid identifier.",
+      "mqtt_not_configured": "No MQTT integration is set up in Home Assistant. Please set up the MQTT integration first.",
+      "unsupported_broker": "The configured MQTT broker requires TLS or a client certificate, which the panel does not support. Please enter the broker credentials manually in the panel's web interface.",
+      "mqtt_read_failed": "Could not read the MQTT credentials.",
+      "already_configured": "This panel is already configured.",
+      "panel_linked": "The panel was linked to the existing entry.",
+      "adopt_target_changed": "The entry now belongs to another panel or uses another base topic.",
+      "pairing_done": "Encrypted. The display now sends encrypted commands.",
+      "pairing_confirmed": "Confirmed. Now confirm on the display too.",
+      "pairing_rejected": "Rejected. The display stays connected unencrypted.",
+      "pairing_expired": "This attempt has ended. Tap Pair on the display again (Encrypt on firmware up to v0.8.0).",
+      "link_unavailable": "The connection service of the HomeTiles Bridge is not running. The Home Assistant log has the details.",
+      "link_failed": "The panel did not answer or the pairing was cancelled. Pair again on the panel under Settings > System > Security, or add it here once more.",
+      "link_rejected": "Rejected. The panel was not added.",
+      "link_press_pair": "Press Pair on the panel under Settings > System > Security; it then appears here.",
+      "link_switched": "Done. The panel is now connected directly and encrypted."
     }
   },
   "options": {
     "step": {
       "init": {
         "menu_options": {
-          "panel": "Panel-Einstellungen",
-          "entities": "Entity-Konfiguration (alle Displays)",
-          "access_codes": "Codes f\u00fcr Schl\u00f6sser und Alarmanlagen (alle Displays)",
-          "energy": "Energie Dashboard (alle Displays)",
-          "security": "Sicherheit: {security}"
+          "panel": "Panel settings",
+          "entities": "Entity configuration (all displays)",
+          "access_codes": "Codes for locks and alarm panels (all displays)",
+          "energy": "Energy Dashboard (all displays)",
+          "security": "Security: {security}"
         }
       },
       "panel": {
-        "title": "Panel-Einstellungen",
+        "title": "Panel settings",
         "data": {
-          "base_topic": "MQTT-Basis",
-          "ha_prefix": "HA-Praefix",
-          "device_name": "Ger\u00e4tename (optional)",
-          "manufacturer": "Hersteller (optional)",
-          "model": "Modell (optional)"
+          "base_topic": "MQTT base topic",
+          "ha_prefix": "HA entity prefix",
+          "device_name": "Device name (optional)",
+          "manufacturer": "Manufacturer (optional)",
+          "model": "Model (optional)"
         }
       },
       "entities": {
-        "title": "Entity-Konfiguration",
-        "description": "Gilt f\u00fcr alle Displays. Schaltbare Entit\u00e4ten: Switch, Input Boolean, Automation, Fan, Humidifier, Remote und Siren. Automationen werden aktiviert/deaktiviert. Szenen und Skripte werden gestartet, Buttons und Input Buttons einmal gedr\u00fcckt.",
+        "title": "Entity configuration",
+        "description": "Applies to all displays. Switchable entities: switch, input_boolean, automation, fan, humidifier, remote and siren. Automations are enabled/disabled. Scenes and scripts are started; buttons and input buttons are pressed once.",
         "data": {
-          "sensors": "Sensoren",
-          "binary_sensors": "Bin\u00e4rsensoren",
-          "weathers": "Wetter",
-          "lights": "Lichter",
-          "switches": "Schalter / schaltbare Entit\u00e4ten",
-          "media_players": "Media Player",
-          "climates": "Klima / Heizung",
-          "covers": "Abdeckungen / Rolll\u00e4den",
-          "cameras": "Kameras",
-          "images": "Bilder (Bildschirmschoner)",
-          "scene_entities": "Szenen / Skripte / Buttons",
-          "scene_map_text": "Aktions-Alias",
-          "numbers": "Zahlenwerte / Zahlenhelfer",
-          "selects": "Auswahl / Auswahlhelfer",
-          "datetimes": "Datum / Uhrzeit / Helfer",
-          "fans": "Ventilatoren",
-          "locks": "Schl\u00f6sser",
-          "alarm_panels": "Alarmanlagen",
-          "open_without_code": "Ohne Code \u00f6ffnen erlauben"
+          "sensors": "Sensors",
+          "binary_sensors": "Binary sensors",
+          "weathers": "Weather",
+          "lights": "Lights",
+          "switches": "Switches / switchable entities",
+          "media_players": "Media players",
+          "climates": "Climate devices",
+          "covers": "Covers",
+          "cameras": "Cameras",
+          "images": "Images (screensaver)",
+          "scene_entities": "Scenes / Scripts / Buttons",
+          "scene_map_text": "Action aliases",
+          "numbers": "Numbers / number helpers",
+          "selects": "Selects / dropdown helpers",
+          "datetimes": "Date / Time / helpers",
+          "fans": "Fans",
+          "locks": "Locks",
+          "alarm_panels": "Alarm panels",
+          "open_without_code": "Allow opening without a code"
         },
         "data_description": {
-          "locks": "Bedienbar nur von einem gekoppelten (verschl\u00fcsselten) Display mit Web-Admin-Passwort. Den Code pr\u00fcft Home Assistant oder, wenn unter \u201eCodes f\u00fcr Schl\u00f6sser und Alarmanlagen\u201c einer hinterlegt ist, die Bridge.",
-          "alarm_panels": "Bedienbar nur von einem gekoppelten (verschl\u00fcsselten) Display mit Web-Admin-Passwort. Den Code pr\u00fcft Home Assistant oder, wenn unter \u201eCodes f\u00fcr Schl\u00f6sser und Alarmanlagen\u201c einer hinterlegt ist, die Bridge.",
-          "open_without_code": "Achtung: Diese Schl\u00f6sser und Alarmanlagen kann jeder am Display ohne Code entsperren, \u00f6ffnen oder unscharf schalten. Nur f\u00fcr Ger\u00e4te ohne eigenen Code oder mit Standard-Code."
+          "locks": "Can only be operated from a paired (encrypted) display with a Web Admin password. Home Assistant checks the code, or the Bridge when one is set under “Codes for locks and alarm panels”.",
+          "alarm_panels": "Can only be operated from a paired (encrypted) display with a Web Admin password. Home Assistant checks the code, or the Bridge when one is set under “Codes for locks and alarm panels”.",
+          "open_without_code": "Warning: anyone at the display can unlock, open or disarm these locks and alarm panels without a code. Only for devices without their own code or with a default code."
         }
       },
       "access_codes": {
-        "title": "Codes f\u00fcr Schl\u00f6sser und Alarmanlagen",
-        "description": "Optional. Viele Ger\u00e4te ignorieren einen falschen Code, ohne einen Fehler zu melden: Home Assistant meldet dann Erfolg, und das Display kann weder \u201eFalscher Code\u201c noch die Sperre nach mehreren Fehlversuchen zeigen. Steht hier ein Code, pr\u00fcft die Bridge jeden Code vom Display selbst und gibt nur einen richtigen an Home Assistant weiter. Mehrere Codes mit Komma trennen. Leer lassen, wenn Home Assistant einen falschen Code schon meldet. \u00c4ndert sich der Code am Ger\u00e4t, hier ebenfalls \u00e4ndern."
+        "title": "Codes for locks and alarm panels",
+        "description": "Optional. Many devices ignore a wrong code without reporting an error: Home Assistant then reports success, and the display can show neither “wrong code” nor the lockout after several wrong codes. With a code here, the Bridge checks every code from a display itself and passes only a correct one on to Home Assistant. Separate several codes with commas. Leave it empty when Home Assistant already reports a wrong code. When the code on the device changes, change it here too."
       },
       "energy": {
-        "title": "Energie Dashboard",
-        "description": "Daten aus dem Home Assistant Energie Dashboard an die Ger\u00e4te senden.",
+        "title": "Energy Dashboard",
+        "description": "Send data from the Home Assistant Energy Dashboard to devices.",
         "data": {
-          "energy_electricity": "Strom",
+          "energy_electricity": "Electricity",
           "energy_gas": "Gas",
-          "energy_water": "Wasser"
+          "energy_water": "Water"
         }
       },
       "security": {
-        "title": "Verschl\u00fcsselung",
-        "description": "Dieses Display ist verschl\u00fcsselt (Schl\u00fcssel-ID {key_id}).",
+        "title": "Encryption",
+        "description": "This display is encrypted (key id {key_id}).",
         "data": {
-          "remove_pairing": "Verschl\u00fcsselung ausschalten"
+          "remove_pairing": "Turn off encryption"
         }
       }
     },
     "error": {
-      "invalid_scene_map": "Alias muss dem Muster alias=entity_id folgen (eine Zeile pro Alias).",
-      "invalid_editable_entities": "Bitte passende Zahlen-, Auswahl- oder Datum-/Uhrzeit-Entit\u00e4ten ausw\u00e4hlen.",
-      "pairing_nothing_selected": "Nichts ge\u00e4ndert. Zum Ausschalten das H\u00e4kchen setzen.",
-      "invalid_access_codes": "Bis zu 10 Codes mit Komma getrennt, jeder h\u00f6chstens 32 Zeichen."
+      "invalid_scene_map": "Aliases must follow the pattern alias=entity_id (one per line).",
+      "invalid_editable_entities": "Choose compatible Number, Select or Date/Time entities.",
+      "pairing_nothing_selected": "Nothing changed. Tick the box to turn encryption off.",
+      "invalid_access_codes": "Up to 10 codes separated by commas, each at most 32 characters."
     },
     "abort": {
-      "pairing_removed": "Verschl\u00fcsselung ausgeschaltet. Das Display schaltet sie beim Verbinden auch aus.",
-      "pairing_not_paired": "Nicht verschl\u00fcsselt. Zum Einrichten am Display Einstellungen \u2192 System \u2192 Sicherheit \u2192 Verschl\u00fcsseln w\u00e4hlen.",
-      "pairing_removing": "Verschl\u00fcsselung wird ausgeschaltet. Das Display schaltet sie beim Verbinden aus.",
-      "no_access_entities": "Zuerst unter \u201eEntity-Konfiguration\u201c Schl\u00f6sser oder Alarmanlagen ausw\u00e4hlen."
+      "pairing_removed": "Encryption turned off. The display turns it off too when it connects.",
+      "pairing_not_paired": "Not encrypted. To set it up, choose Settings → System → Security → Pair on the display (Encrypt on firmware up to v0.8.0).",
+      "pairing_removing": "Encryption is turning off. The display turns it off when it connects.",
+      "no_access_entities": "First select locks or alarm panels under “Entity configuration”."
     }
   },
   "entity": {

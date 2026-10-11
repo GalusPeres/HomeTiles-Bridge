@@ -88,7 +88,7 @@
       "pairing_done": "Zaszyfrowano. Wy\u015bwietlacz wysy\u0142a teraz zaszyfrowane polecenia.",
       "pairing_confirmed": "Potwierdzono. Teraz potwierd\u017a tak\u017ce na wy\u015bwietlaczu.",
       "pairing_rejected": "Odrzucono. Wy\u015bwietlacz pozostaje po\u0142\u0105czony bez szyfrowania.",
-      "pairing_expired": "Ta pr\u00f3ba si\u0119 zako\u0144czy\u0142a. Dotknij ponownie \u201eSzyfruj\u201d na wy\u015bwietlaczu.",
+      "pairing_expired": "Ta pr\u00f3ba si\u0119 zako\u0144czy\u0142a. Dotknij ponownie \u201eParuj\u201d na wy\u015bwietlaczu (w oprogramowaniu do v0.8.0: \u201eSzyfruj\u201d).",
       "link_unavailable": "Us\u0142uga po\u0142\u0105czenia HomeTiles Bridge nie dzia\u0142a. Szczeg\u00f3\u0142y s\u0105 w dzienniku Home Assistant.",
       "link_failed": "Panel nie odpowiedzia\u0142 lub parowanie zosta\u0142o przerwane. Sparuj ponownie na panelu w Ustawienia > System > Bezpiecze\u0144stwo albo dodaj go tutaj jeszcze raz.",
       "link_rejected": "Odrzucono. Panel nie zosta\u0142 dodany.",
@@ -176,7 +176,7 @@
     },
     "abort": {
       "pairing_removed": "Szyfrowanie wy\u0142\u0105czone. Wy\u015bwietlacz wy\u0142\u0105czy je r\u00f3wnie\u017c przy po\u0142\u0105czeniu.",
-      "pairing_not_paired": "Brak szyfrowania. Aby je skonfigurowa\u0107, wybierz na wy\u015bwietlaczu Ustawienia \u2192 System \u2192 Bezpiecze\u0144stwo \u2192 Szyfruj.",
+      "pairing_not_paired": "Brak szyfrowania. Aby je skonfigurowa\u0107, wybierz na wy\u015bwietlaczu Ustawienia \u2192 System \u2192 Bezpiecze\u0144stwo \u2192 Paruj (w oprogramowaniu do v0.8.0: Szyfruj).",
       "pairing_removing": "Szyfrowanie jest wy\u0142\u0105czane. Wy\u015bwietlacz wy\u0142\u0105czy je przy po\u0142\u0105czeniu.",
       "no_access_entities": "Najpierw wybierz zamki lub centrale alarmowe w \u201eKonfiguracja encji\u201d."
     }
