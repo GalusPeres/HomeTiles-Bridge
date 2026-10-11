@@ -784,7 +784,7 @@ class FlowTextsTest(unittest.TestCase):
             self.assertIn("security", options["step"]["init"]["menu_options"], path)
             # Entities and energy are copied to every panel entry; the menu says so.
             for shared in ("entities", "energy"):
-                self.assertRegex(options["step"]["init"]["menu_options"][shared], r"\((all displays|alle Displays)\)$", path)
+                self.assertRegex(options["step"]["init"]["menu_options"][shared], r"\((all displays|alle Displays|tous les écrans|wszystkie wyświetlacze)\)$", path)
             step = options["step"]["security"]
             self.assertEqual(set(step["data"]), {"remove_pairing"}, path)
             self.assertIn("{key_id}", step["description"], path)

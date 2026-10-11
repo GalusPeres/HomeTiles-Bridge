@@ -1,0 +1,266 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ajouter un \u00e9cran",
+        "description": "Configurer un nouvel \u00e9cran HomeTiles.",
+        "data": {
+          "base_topic": "Topic MQTT de base",
+          "ha_prefix": "Pr\u00e9fixe des entit\u00e9s HA",
+          "device_name": "Nom de l'appareil (facultatif)",
+          "manufacturer": "Fabricant (facultatif)",
+          "model": "Mod\u00e8le (facultatif)"
+        }
+      },
+      "zeroconf_confirm": {
+        "title": "\u00c9cran d\u00e9tect\u00e9",
+        "description": "**{name}** ({model}) a \u00e9t\u00e9 trouv\u00e9 sur le r\u00e9seau \u00e0 l'adresse {host}. Le Bridge HomeTiles envoie \u00e0 l'\u00e9cran les identifiants MQTT ci-dessous ; l'\u00e9cran red\u00e9marre ensuite. L'h\u00f4te et le port sont pr\u00e9remplis automatiquement. Saisissez le nom d'utilisateur et le mot de passe si votre broker MQTT exige une connexion.",
+        "data": {
+          "mqtt_host": "H\u00f4te / IP MQTT",
+          "mqtt_port": "Port MQTT",
+          "mqtt_username": "Nom d'utilisateur MQTT",
+          "mqtt_password": "Mot de passe MQTT",
+          "base_topic": "Topic MQTT de base",
+          "ha_prefix": "Pr\u00e9fixe des entit\u00e9s HA",
+          "panel_password": "Mot de passe Web Admin de l'\u00e9cran (seulement s'il est d\u00e9fini)"
+        },
+        "data_description": {
+          "panel_password": "Laissez vide si l'\u00e9cran n'a pas de mot de passe Web Admin. Il sert uniquement \u00e0 cette configuration et n'est pas enregistr\u00e9."
+        }
+      },
+      "discovery_confirm": {
+        "title": "\u00c9cran d\u00e9tect\u00e9",
+        "description": "**{name}** s'est annonc\u00e9 via MQTT avec le topic de base {base_topic}. Ajoutez-le seulement s'il s'agit de votre \u00e9cran."
+      },
+      "adopt_confirm": {
+        "title": "Associer l'\u00e9cran",
+        "description": "**{name}** s'est annonc\u00e9 via MQTT avec le topic de base {base_topic}, utilis\u00e9 par l'entr\u00e9e **{entry}**. Associez-le seulement s'il s'agit de votre \u00e9cran."
+      },
+      "pairing_confirm": {
+        "title": "Configurer le chiffrement",
+        "description": "Chiffre l'\u00e9cran existant **{name}**. Aucun nouvel appareil n'est ajout\u00e9.\n\n# {number}\n\nConfirmez seulement si l'\u00e9cran affiche ce nombre.",
+        "menu_options": {
+          "pairing_accept": "Les nombres correspondent : chiffrer",
+          "pairing_reject": "Refuser (reste non chiffr\u00e9)"
+        }
+      },
+      "link_confirm": {
+        "title": "\u00c9cran trouv\u00e9",
+        "description": "\u00ab Appairer \u00bb a \u00e9t\u00e9 touch\u00e9 sur l'\u00e9cran **{name}** ({model}, {host}). Il se connecte directement \u00e0 Home Assistant ; aucun broker MQTT n'est n\u00e9cessaire.\n\nApr\u00e8s l'ajout, l'\u00e9cran et cette fen\u00eatre affichent le m\u00eame nombre \u00e0 six chiffres."
+      },
+      "link_number": {
+        "title": "Comparer le nombre",
+        "description": "L'\u00e9cran **{name}** affiche maintenant un nombre.\n\n# {number}\n\nConfirmez seulement si l'\u00e9cran affiche exactement ce nombre. Confirmez ensuite aussi sur l'\u00e9cran.",
+        "menu_options": {
+          "link_accept": "Les nombres correspondent : connecter",
+          "link_reject": "Refuser"
+        }
+      },
+      "link_switch": {
+        "title": "Connecter l'\u00e9cran",
+        "description": "\u00ab Appairer \u00bb a \u00e9t\u00e9 touch\u00e9 sur l'\u00e9cran **{name}** ({host}). Il est d\u00e9j\u00e0 configur\u00e9 ici et se connecte maintenant directement \u00e0 Home Assistant, sans MQTT. Son entr\u00e9e, sa pi\u00e8ce, ses noms et ses entit\u00e9s sont conserv\u00e9s.\n\nApr\u00e8s votre confirmation, l'\u00e9cran et cette fen\u00eatre affichent le m\u00eame nombre \u00e0 six chiffres."
+      }
+    },
+    "progress": {
+      "link_wait": "L'\u00e9cran **{name}** se connecte \u00e0 Home Assistant. Cela prend quelques secondes.",
+      "link_finish": "Touchez maintenant \u00ab Confirmer \u00bb sur l'\u00e9cran **{name}**."
+    },
+    "error": {
+      "topic_already_configured": "Un \u00e9cran avec ce topic MQTT est d\u00e9j\u00e0 configur\u00e9.",
+      "cannot_connect": "Impossible de joindre l'\u00e9cran. V\u00e9rifiez qu'il est toujours sur le r\u00e9seau et r\u00e9essayez.",
+      "mqtt_host_required": "Saisissez un h\u00f4te ou une adresse IP MQTT.",
+      "invalid_port": "Saisissez un port MQTT valide entre 1 et 65535.",
+      "invalid_panel_password": "L'\u00e9cran a refus\u00e9 le mot de passe Web Admin.",
+      "panel_password_required": "Le Web Admin de l'\u00e9cran est prot\u00e9g\u00e9 par un mot de passe. Saisissez le mot de passe Web Admin.",
+      "panel_locked": "Trop de mots de passe erron\u00e9s. Patientez quelques minutes et r\u00e9essayez.",
+      "panel_identity_failed": "L'appareil n'a pas pu prouver qu'il est l'\u00e9cran associ\u00e9 \u00e0 ce mot de passe. Aucun identifiant n'a \u00e9t\u00e9 envoy\u00e9.",
+      "link_unsupported": "Le firmware de l'\u00e9cran ne permet pas encore la connexion directe. Mettez d'abord l'\u00e9cran \u00e0 jour.",
+      "link_window_closed": "L'\u00e9cran n'accepte plus la connexion. Touchez \u00e0 nouveau \u00ab Appairer \u00bb sur l'\u00e9cran et ajoutez-le dans les deux minutes."
+    },
+    "abort": {
+      "missing_device_id": "L'appareil d\u00e9tect\u00e9 n'a pas envoy\u00e9 d'identifiant valide.",
+      "mqtt_not_configured": "Aucune int\u00e9gration MQTT n'est configur\u00e9e dans Home Assistant. Configurez d'abord l'int\u00e9gration MQTT.",
+      "unsupported_broker": "Le broker MQTT configur\u00e9 exige TLS ou un certificat client, ce que l'\u00e9cran ne prend pas en charge. Saisissez les identifiants du broker manuellement dans l'interface web de l'\u00e9cran.",
+      "mqtt_read_failed": "Impossible de lire les identifiants MQTT.",
+      "already_configured": "Cet \u00e9cran est d\u00e9j\u00e0 configur\u00e9.",
+      "panel_linked": "L'\u00e9cran a \u00e9t\u00e9 associ\u00e9 \u00e0 l'entr\u00e9e existante.",
+      "adopt_target_changed": "L'entr\u00e9e appartient maintenant \u00e0 un autre \u00e9cran ou utilise un autre topic de base.",
+      "pairing_done": "Chiffr\u00e9. L'\u00e9cran envoie maintenant des commandes chiffr\u00e9es.",
+      "pairing_confirmed": "Confirm\u00e9. Confirmez maintenant aussi sur l'\u00e9cran.",
+      "pairing_rejected": "Refus\u00e9. L'\u00e9cran reste connect\u00e9 sans chiffrement.",
+      "pairing_expired": "Cette tentative est termin\u00e9e. Touchez \u00e0 nouveau \u00ab Chiffrer \u00bb sur l'\u00e9cran.",
+      "link_unavailable": "Le service de connexion du Bridge HomeTiles ne fonctionne pas. Le journal de Home Assistant contient les d\u00e9tails.",
+      "link_failed": "L'\u00e9cran n'a pas r\u00e9pondu ou l'appairage a \u00e9t\u00e9 annul\u00e9. Appairez \u00e0 nouveau sur l'\u00e9cran sous Param\u00e8tres > Syst\u00e8me > S\u00e9curit\u00e9, ou ajoutez-le ici une nouvelle fois.",
+      "link_rejected": "Refus\u00e9. L'\u00e9cran n'a pas \u00e9t\u00e9 ajout\u00e9.",
+      "link_press_pair": "Touchez \u00ab Appairer \u00bb sur l'\u00e9cran sous Param\u00e8tres > Syst\u00e8me > S\u00e9curit\u00e9 ; il appara\u00eet ensuite ici.",
+      "link_switched": "Termin\u00e9. L'\u00e9cran est maintenant connect\u00e9 directement et chiffr\u00e9."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "panel": "Param\u00e8tres de l'\u00e9cran",
+          "entities": "Configuration des entit\u00e9s (tous les \u00e9crans)",
+          "access_codes": "Codes des serrures et des alarmes (tous les \u00e9crans)",
+          "energy": "Tableau de bord \u00c9nergie (tous les \u00e9crans)",
+          "security": "S\u00e9curit\u00e9 : {security}"
+        }
+      },
+      "panel": {
+        "title": "Param\u00e8tres de l'\u00e9cran",
+        "data": {
+          "base_topic": "Topic MQTT de base",
+          "ha_prefix": "Pr\u00e9fixe des entit\u00e9s HA",
+          "device_name": "Nom de l'appareil (facultatif)",
+          "manufacturer": "Fabricant (facultatif)",
+          "model": "Mod\u00e8le (facultatif)"
+        }
+      },
+      "entities": {
+        "title": "Configuration des entit\u00e9s",
+        "description": "S'applique \u00e0 tous les \u00e9crans. Entit\u00e9s commutables : switch, input_boolean, automation, fan, humidifier, remote et siren. Les automatisations sont activ\u00e9es ou d\u00e9sactiv\u00e9es. Les sc\u00e8nes et les scripts sont lanc\u00e9s ; les boutons et les input buttons sont press\u00e9s une fois.",
+        "data": {
+          "sensors": "Capteurs",
+          "binary_sensors": "Capteurs binaires",
+          "weathers": "M\u00e9t\u00e9o",
+          "lights": "Lumi\u00e8res",
+          "switches": "Interrupteurs / entit\u00e9s commutables",
+          "media_players": "Lecteurs multim\u00e9dias",
+          "climates": "Thermostats",
+          "covers": "Volets",
+          "cameras": "Cam\u00e9ras",
+          "images": "Images (\u00e9cran de veille)",
+          "scene_entities": "Sc\u00e8nes / scripts / boutons",
+          "scene_map_text": "Alias d'actions",
+          "numbers": "Nombres / entr\u00e9es num\u00e9riques",
+          "selects": "S\u00e9lections / listes d\u00e9roulantes",
+          "datetimes": "Date / heure / entr\u00e9es",
+          "fans": "Ventilateurs",
+          "locks": "Serrures",
+          "alarm_panels": "Panneaux d'alarme",
+          "open_without_code": "Autoriser l'ouverture sans code"
+        },
+        "data_description": {
+          "locks": "Utilisable uniquement depuis un \u00e9cran appair\u00e9 (chiffr\u00e9) avec un mot de passe Web Admin. Home Assistant v\u00e9rifie le code, ou le Bridge lorsqu'un code est d\u00e9fini sous \u00ab Codes des serrures et des alarmes \u00bb.",
+          "alarm_panels": "Utilisable uniquement depuis un \u00e9cran appair\u00e9 (chiffr\u00e9) avec un mot de passe Web Admin. Home Assistant v\u00e9rifie le code, ou le Bridge lorsqu'un code est d\u00e9fini sous \u00ab Codes des serrures et des alarmes \u00bb.",
+          "open_without_code": "Attention : toute personne devant l'\u00e9cran peut d\u00e9verrouiller, ouvrir ou d\u00e9sarmer ces serrures et ces alarmes sans code. Uniquement pour les appareils sans code propre ou avec un code par d\u00e9faut."
+        }
+      },
+      "access_codes": {
+        "title": "Codes des serrures et des alarmes",
+        "description": "Facultatif. Beaucoup d'appareils ignorent un code erron\u00e9 sans signaler d'erreur : Home Assistant indique alors un succ\u00e8s, et l'\u00e9cran ne peut afficher ni \u00ab code erron\u00e9 \u00bb ni le blocage apr\u00e8s plusieurs codes erron\u00e9s. Avec un code ici, le Bridge v\u00e9rifie lui-m\u00eame chaque code venant d'un \u00e9cran et ne transmet \u00e0 Home Assistant qu'un code correct. S\u00e9parez plusieurs codes par des virgules. Laissez vide si Home Assistant signale d\u00e9j\u00e0 un code erron\u00e9. Si le code de l'appareil change, modifiez-le aussi ici."
+      },
+      "energy": {
+        "title": "Tableau de bord \u00c9nergie",
+        "description": "Envoie aux appareils les donn\u00e9es du tableau de bord \u00c9nergie de Home Assistant.",
+        "data": {
+          "energy_electricity": "\u00c9lectricit\u00e9",
+          "energy_gas": "Gaz",
+          "energy_water": "Eau"
+        }
+      },
+      "security": {
+        "title": "Chiffrement",
+        "description": "Cet \u00e9cran est chiffr\u00e9 (identifiant de cl\u00e9 {key_id}).",
+        "data": {
+          "remove_pairing": "D\u00e9sactiver le chiffrement"
+        }
+      }
+    },
+    "error": {
+      "invalid_scene_map": "Les alias doivent suivre le mod\u00e8le alias=entity_id (un par ligne).",
+      "invalid_editable_entities": "Choisissez des entit\u00e9s Nombre, S\u00e9lection ou Date/heure compatibles.",
+      "pairing_nothing_selected": "Rien n'a chang\u00e9. Cochez la case pour d\u00e9sactiver le chiffrement.",
+      "invalid_access_codes": "Jusqu'\u00e0 10 codes s\u00e9par\u00e9s par des virgules, chacun de 32 caract\u00e8res au plus."
+    },
+    "abort": {
+      "pairing_removed": "Chiffrement d\u00e9sactiv\u00e9. L'\u00e9cran le d\u00e9sactive aussi lorsqu'il se connecte.",
+      "pairing_not_paired": "Non chiffr\u00e9. Pour le configurer, choisissez Param\u00e8tres \u2192 Syst\u00e8me \u2192 S\u00e9curit\u00e9 \u2192 Chiffrer sur l'\u00e9cran.",
+      "pairing_removing": "Le chiffrement est en cours de d\u00e9sactivation. L'\u00e9cran le d\u00e9sactive lorsqu'il se connecte.",
+      "no_access_entities": "S\u00e9lectionnez d'abord des serrures ou des panneaux d'alarme sous \u00ab Configuration des entit\u00e9s \u00bb."
+    }
+  },
+  "entity": {
+    "camera": {
+      "local_camera": {
+        "name": "Cam\u00e9ra"
+      }
+    },
+    "select": {
+      "view": {
+        "name": "Vue"
+      },
+      "sleep_mains": {
+        "name": "Veille auto (secteur)",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Jamais"
+        }
+      },
+      "sleep_battery": {
+        "name": "Veille auto (batterie)",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Jamais"
+        }
+      }
+    },
+    "switch": {
+      "local_camera": {
+        "name": "Cam\u00e9ra"
+      }
+    },
+    "binary_sensor": {
+      "encryption": {
+        "name": "Chiffrement"
+      },
+      "mqtt_connection": {
+        "name": "Connexion MQTT"
+      }
+    },
+    "light": {
+      "display_brightness": {
+        "name": "Luminosit\u00e9 de l'\u00e9cran"
+      },
+      "screensaver_brightness": {
+        "name": "Luminosit\u00e9 de l'\u00e9cran de veille"
+      }
+    },
+    "number": {
+      "display_brightness": {
+        "name": "Luminosit\u00e9 de l'\u00e9cran"
+      }
+    },
+    "sensor": {
+      "battery_soc": {
+        "name": "Charge de la batterie"
+      },
+      "external_temperature": {
+        "name": "Temp\u00e9rature externe"
+      }
+    }
+  },
+  "exceptions": {
+    "view_unavailable": {
+      "message": "L'\u00e9cran est hors ligne ou son catalogue de vues n'est pas pr\u00eat."
+    },
+    "invalid_view": {
+      "message": "La vue s\u00e9lectionn\u00e9e n'existe plus."
+    }
+  }
+}

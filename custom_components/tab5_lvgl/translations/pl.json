@@ -1,0 +1,266 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Dodaj panel",
+        "description": "Skonfiguruj nowy panel HomeTiles.",
+        "data": {
+          "base_topic": "Bazowy temat MQTT",
+          "ha_prefix": "Prefiks encji HA",
+          "device_name": "Nazwa urz\u0105dzenia (opcjonalnie)",
+          "manufacturer": "Producent (opcjonalnie)",
+          "model": "Model (opcjonalnie)"
+        }
+      },
+      "zeroconf_confirm": {
+        "title": "Wykryto panel",
+        "description": "Znaleziono **{name}** ({model}) w sieci pod adresem {host}. HomeTiles Bridge wy\u015ble do panelu poni\u017csze dane logowania MQTT; panel uruchomi si\u0119 potem ponownie. Host i port s\u0105 uzupe\u0142niane automatycznie. Podaj nazw\u0119 u\u017cytkownika i has\u0142o, je\u015bli Tw\u00f3j broker MQTT wymaga logowania.",
+        "data": {
+          "mqtt_host": "Host / IP MQTT",
+          "mqtt_port": "Port MQTT",
+          "mqtt_username": "Nazwa u\u017cytkownika MQTT",
+          "mqtt_password": "Has\u0142o MQTT",
+          "base_topic": "Bazowy temat MQTT",
+          "ha_prefix": "Prefiks encji HA",
+          "panel_password": "Has\u0142o Web Admin panelu (tylko je\u015bli ustawione)"
+        },
+        "data_description": {
+          "panel_password": "Pozostaw puste, je\u015bli panel nie ma has\u0142a Web Admin. Jest u\u017cywane tylko do tej konfiguracji i nie jest zapisywane."
+        }
+      },
+      "discovery_confirm": {
+        "title": "Wykryto panel",
+        "description": "**{name}** zg\u0142osi\u0142 si\u0119 przez MQTT z bazowym tematem {base_topic}. Dodaj go tylko wtedy, gdy to Tw\u00f3j panel."
+      },
+      "adopt_confirm": {
+        "title": "Po\u0142\u0105cz panel",
+        "description": "**{name}** zg\u0142osi\u0142 si\u0119 przez MQTT z bazowym tematem {base_topic}, kt\u00f3rego u\u017cywa wpis **{entry}**. Po\u0142\u0105cz go tylko wtedy, gdy to Tw\u00f3j panel."
+      },
+      "pairing_confirm": {
+        "title": "Skonfiguruj szyfrowanie",
+        "description": "Szyfruje istniej\u0105cy wy\u015bwietlacz **{name}**. Nowe urz\u0105dzenie nie zostanie dodane.\n\n# {number}\n\nPotwierd\u017a tylko wtedy, gdy wy\u015bwietlacz pokazuje t\u0119 liczb\u0119.",
+        "menu_options": {
+          "pairing_accept": "Liczby si\u0119 zgadzaj\u0105: szyfruj",
+          "pairing_reject": "Odrzu\u0107 (pozostaje bez szyfrowania)"
+        }
+      },
+      "link_confirm": {
+        "title": "Znaleziono panel",
+        "description": "Na panelu **{name}** ({model}, {host}) naci\u015bni\u0119to \u201eParuj\u201d. \u0141\u0105czy si\u0119 on bezpo\u015brednio z Home Assistant; broker MQTT nie jest potrzebny.\n\nPo dodaniu panel i to okno poka\u017c\u0105 t\u0119 sam\u0105 sze\u015bciocyfrow\u0105 liczb\u0119."
+      },
+      "link_number": {
+        "title": "Por\u00f3wnaj liczb\u0119",
+        "description": "Panel **{name}** pokazuje teraz liczb\u0119.\n\n# {number}\n\nPotwierd\u017a tylko wtedy, gdy panel pokazuje dok\u0142adnie t\u0119 liczb\u0119. Nast\u0119pnie potwierd\u017a tak\u017ce na panelu.",
+        "menu_options": {
+          "link_accept": "Liczby si\u0119 zgadzaj\u0105: po\u0142\u0105cz",
+          "link_reject": "Odrzu\u0107"
+        }
+      },
+      "link_switch": {
+        "title": "Po\u0142\u0105cz panel",
+        "description": "Na panelu **{name}** ({host}) naci\u015bni\u0119to \u201eParuj\u201d. Jest on ju\u017c tutaj skonfigurowany i teraz \u0142\u0105czy si\u0119 bezpo\u015brednio z Home Assistant, bez MQTT. Jego wpis, obszar, nazwy i encje pozostaj\u0105.\n\nPo potwierdzeniu panel i to okno poka\u017c\u0105 t\u0119 sam\u0105 sze\u015bciocyfrow\u0105 liczb\u0119."
+      }
+    },
+    "progress": {
+      "link_wait": "Panel **{name}** \u0142\u0105czy si\u0119 z Home Assistant. Potrwa to kilka sekund.",
+      "link_finish": "Teraz dotknij \u201ePotwierd\u017a\u201d na panelu **{name}**."
+    },
+    "error": {
+      "topic_already_configured": "Panel z tym tematem MQTT jest ju\u017c skonfigurowany.",
+      "cannot_connect": "Nie mo\u017cna po\u0142\u0105czy\u0107 si\u0119 z panelem. Sprawd\u017a, czy nadal jest w sieci, i spr\u00f3buj ponownie.",
+      "mqtt_host_required": "Podaj host lub adres IP MQTT.",
+      "invalid_port": "Podaj prawid\u0142owy port MQTT od 1 do 65535.",
+      "invalid_panel_password": "Panel odrzuci\u0142 has\u0142o Web Admin.",
+      "panel_password_required": "Web Admin panelu jest chroniony has\u0142em. Podaj has\u0142o Web Admin.",
+      "panel_locked": "Zbyt wiele b\u0142\u0119dnych hase\u0142. Odczekaj kilka minut i spr\u00f3buj ponownie.",
+      "panel_identity_failed": "Urz\u0105dzenie nie mog\u0142o udowodni\u0107, \u017ce jest panelem z tym has\u0142em. Nie wys\u0142ano \u017cadnych danych logowania.",
+      "link_unsupported": "Oprogramowanie panelu nie obs\u0142uguje jeszcze po\u0142\u0105czenia bezpo\u015bredniego. Najpierw zaktualizuj panel.",
+      "link_window_closed": "Panel nie przyjmuje ju\u017c po\u0142\u0105czenia. Naci\u015bnij ponownie \u201eParuj\u201d na panelu i dodaj go w ci\u0105gu dw\u00f3ch minut."
+    },
+    "abort": {
+      "missing_device_id": "Wykryte urz\u0105dzenie nie wys\u0142a\u0142o prawid\u0142owego identyfikatora.",
+      "mqtt_not_configured": "W Home Assistant nie skonfigurowano integracji MQTT. Najpierw skonfiguruj integracj\u0119 MQTT.",
+      "unsupported_broker": "Skonfigurowany broker MQTT wymaga TLS lub certyfikatu klienta, kt\u00f3rych panel nie obs\u0142uguje. Wprowad\u017a dane brokera r\u0119cznie w interfejsie webowym panelu.",
+      "mqtt_read_failed": "Nie mo\u017cna odczyta\u0107 danych logowania MQTT.",
+      "already_configured": "Ten panel jest ju\u017c skonfigurowany.",
+      "panel_linked": "Panel zosta\u0142 po\u0142\u0105czony z istniej\u0105cym wpisem.",
+      "adopt_target_changed": "Wpis nale\u017cy teraz do innego panelu lub u\u017cywa innego bazowego tematu.",
+      "pairing_done": "Zaszyfrowano. Wy\u015bwietlacz wysy\u0142a teraz zaszyfrowane polecenia.",
+      "pairing_confirmed": "Potwierdzono. Teraz potwierd\u017a tak\u017ce na wy\u015bwietlaczu.",
+      "pairing_rejected": "Odrzucono. Wy\u015bwietlacz pozostaje po\u0142\u0105czony bez szyfrowania.",
+      "pairing_expired": "Ta pr\u00f3ba si\u0119 zako\u0144czy\u0142a. Dotknij ponownie \u201eSzyfruj\u201d na wy\u015bwietlaczu.",
+      "link_unavailable": "Us\u0142uga po\u0142\u0105czenia HomeTiles Bridge nie dzia\u0142a. Szczeg\u00f3\u0142y s\u0105 w dzienniku Home Assistant.",
+      "link_failed": "Panel nie odpowiedzia\u0142 lub parowanie zosta\u0142o przerwane. Sparuj ponownie na panelu w Ustawienia > System > Bezpiecze\u0144stwo albo dodaj go tutaj jeszcze raz.",
+      "link_rejected": "Odrzucono. Panel nie zosta\u0142 dodany.",
+      "link_press_pair": "Na panelu w Ustawienia > System > Bezpiecze\u0144stwo naci\u015bnij \u201eParuj\u201d; wtedy pojawi si\u0119 tutaj.",
+      "link_switched": "Gotowe. Panel jest teraz po\u0142\u0105czony bezpo\u015brednio i szyfrowany."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "panel": "Ustawienia panelu",
+          "entities": "Konfiguracja encji (wszystkie wy\u015bwietlacze)",
+          "access_codes": "Kody do zamk\u00f3w i central alarmowych (wszystkie wy\u015bwietlacze)",
+          "energy": "Pulpit energii (wszystkie wy\u015bwietlacze)",
+          "security": "Bezpiecze\u0144stwo: {security}"
+        }
+      },
+      "panel": {
+        "title": "Ustawienia panelu",
+        "data": {
+          "base_topic": "Bazowy temat MQTT",
+          "ha_prefix": "Prefiks encji HA",
+          "device_name": "Nazwa urz\u0105dzenia (opcjonalnie)",
+          "manufacturer": "Producent (opcjonalnie)",
+          "model": "Model (opcjonalnie)"
+        }
+      },
+      "entities": {
+        "title": "Konfiguracja encji",
+        "description": "Dotyczy wszystkich wy\u015bwietlaczy. Encje prze\u0142\u0105czalne: switch, input_boolean, automation, fan, humidifier, remote i siren. Automatyzacje s\u0105 w\u0142\u0105czane lub wy\u0142\u0105czane. Sceny i skrypty s\u0105 uruchamiane; przyciski i input buttons s\u0105 naciskane jeden raz.",
+        "data": {
+          "sensors": "Sensory",
+          "binary_sensors": "Sensory binarne",
+          "weathers": "Pogoda",
+          "lights": "\u015awiat\u0142a",
+          "switches": "Prze\u0142\u0105czniki / encje prze\u0142\u0105czalne",
+          "media_players": "Odtwarzacze multimedialne",
+          "climates": "Urz\u0105dzenia klimatyzacyjne",
+          "covers": "Rolety",
+          "cameras": "Kamery",
+          "images": "Obrazy (wygaszacz ekranu)",
+          "scene_entities": "Sceny / skrypty / przyciski",
+          "scene_map_text": "Aliasy akcji",
+          "numbers": "Liczby / pomocnicy liczbowi",
+          "selects": "Listy wyboru / pomocnicy list rozwijanych",
+          "datetimes": "Data / czas / pomocnicy",
+          "fans": "Wentylatory",
+          "locks": "Zamki",
+          "alarm_panels": "Centrale alarmowe",
+          "open_without_code": "Zezw\u00f3l na otwieranie bez kodu"
+        },
+        "data_description": {
+          "locks": "Obs\u0142uga tylko z wy\u015bwietlacza sparowanego (szyfrowanego) z has\u0142em Web Admin. Kod sprawdza Home Assistant albo Bridge, je\u015bli kod ustawiono w \u201eKody do zamk\u00f3w i central alarmowych\u201d.",
+          "alarm_panels": "Obs\u0142uga tylko z wy\u015bwietlacza sparowanego (szyfrowanego) z has\u0142em Web Admin. Kod sprawdza Home Assistant albo Bridge, je\u015bli kod ustawiono w \u201eKody do zamk\u00f3w i central alarmowych\u201d.",
+          "open_without_code": "Uwaga: ka\u017cdy przy wy\u015bwietlaczu mo\u017ce bez kodu odblokowa\u0107, otworzy\u0107 lub rozbroi\u0107 te zamki i centrale alarmowe. Tylko dla urz\u0105dze\u0144 bez w\u0142asnego kodu lub z kodem domy\u015blnym."
+        }
+      },
+      "access_codes": {
+        "title": "Kody do zamk\u00f3w i central alarmowych",
+        "description": "Opcjonalnie. Wiele urz\u0105dze\u0144 ignoruje b\u0142\u0119dny kod bez zg\u0142aszania b\u0142\u0119du: Home Assistant zg\u0142asza wtedy sukces, a wy\u015bwietlacz nie mo\u017ce pokaza\u0107 ani \u201eb\u0142\u0119dny kod\u201d, ani blokady po kilku b\u0142\u0119dnych kodach. Gdy kod jest ustawiony tutaj, Bridge sam sprawdza ka\u017cdy kod z wy\u015bwietlacza i przekazuje do Home Assistant tylko poprawny. Kilka kod\u00f3w oddziel przecinkami. Pozostaw puste, je\u015bli Home Assistant ju\u017c zg\u0142asza b\u0142\u0119dny kod. Gdy kod w urz\u0105dzeniu si\u0119 zmieni, zmie\u0144 go tak\u017ce tutaj."
+      },
+      "energy": {
+        "title": "Pulpit energii",
+        "description": "Wysy\u0142a do urz\u0105dze\u0144 dane z pulpitu energii Home Assistant.",
+        "data": {
+          "energy_electricity": "Pr\u0105d",
+          "energy_gas": "Gaz",
+          "energy_water": "Woda"
+        }
+      },
+      "security": {
+        "title": "Szyfrowanie",
+        "description": "Ten wy\u015bwietlacz jest szyfrowany (identyfikator klucza {key_id}).",
+        "data": {
+          "remove_pairing": "Wy\u0142\u0105cz szyfrowanie"
+        }
+      }
+    },
+    "error": {
+      "invalid_scene_map": "Aliasy musz\u0105 mie\u0107 posta\u0107 alias=entity_id (po jednym w wierszu).",
+      "invalid_editable_entities": "Wybierz zgodne encje typu liczba, lista wyboru lub data/czas.",
+      "pairing_nothing_selected": "Nic nie zmieniono. Zaznacz pole, aby wy\u0142\u0105czy\u0107 szyfrowanie.",
+      "invalid_access_codes": "Do 10 kod\u00f3w oddzielonych przecinkami, ka\u017cdy najwy\u017cej 32 znaki."
+    },
+    "abort": {
+      "pairing_removed": "Szyfrowanie wy\u0142\u0105czone. Wy\u015bwietlacz wy\u0142\u0105czy je r\u00f3wnie\u017c przy po\u0142\u0105czeniu.",
+      "pairing_not_paired": "Brak szyfrowania. Aby je skonfigurowa\u0107, wybierz na wy\u015bwietlaczu Ustawienia \u2192 System \u2192 Bezpiecze\u0144stwo \u2192 Szyfruj.",
+      "pairing_removing": "Szyfrowanie jest wy\u0142\u0105czane. Wy\u015bwietlacz wy\u0142\u0105czy je przy po\u0142\u0105czeniu.",
+      "no_access_entities": "Najpierw wybierz zamki lub centrale alarmowe w \u201eKonfiguracja encji\u201d."
+    }
+  },
+  "entity": {
+    "camera": {
+      "local_camera": {
+        "name": "Kamera"
+      }
+    },
+    "select": {
+      "view": {
+        "name": "Widok"
+      },
+      "sleep_mains": {
+        "name": "Auto-u\u015bpienie (zasilacz)",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Nigdy"
+        }
+      },
+      "sleep_battery": {
+        "name": "Auto-u\u015bpienie (bateria)",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Nigdy"
+        }
+      }
+    },
+    "switch": {
+      "local_camera": {
+        "name": "Kamera"
+      }
+    },
+    "binary_sensor": {
+      "encryption": {
+        "name": "Szyfrowanie"
+      },
+      "mqtt_connection": {
+        "name": "Po\u0142\u0105czenie MQTT"
+      }
+    },
+    "light": {
+      "display_brightness": {
+        "name": "Jasno\u015b\u0107 wy\u015bwietlacza"
+      },
+      "screensaver_brightness": {
+        "name": "Jasno\u015b\u0107 wygaszacza ekranu"
+      }
+    },
+    "number": {
+      "display_brightness": {
+        "name": "Jasno\u015b\u0107 wy\u015bwietlacza"
+      }
+    },
+    "sensor": {
+      "battery_soc": {
+        "name": "Poziom na\u0142adowania baterii"
+      },
+      "external_temperature": {
+        "name": "Temperatura zewn\u0119trzna"
+      }
+    }
+  },
+  "exceptions": {
+    "view_unavailable": {
+      "message": "Wy\u015bwietlacz jest offline lub jego katalog widok\u00f3w nie jest gotowy."
+    },
+    "invalid_view": {
+      "message": "Wybrany widok ju\u017c nie istnieje."
+    }
+  }
+}
