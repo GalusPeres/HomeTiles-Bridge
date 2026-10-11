@@ -1,0 +1,266 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Añadir panel",
+        "description": "Configura un nuevo panel HomeTiles.",
+        "data": {
+          "base_topic": "Tema base MQTT",
+          "ha_prefix": "Prefijo de entidades de HA",
+          "device_name": "Nombre del dispositivo (opcional)",
+          "manufacturer": "Fabricante (opcional)",
+          "model": "Modelo (opcional)"
+        }
+      },
+      "zeroconf_confirm": {
+        "title": "Panel descubierto",
+        "description": "Se ha encontrado **{name}** ({model}) en la red en {host}. HomeTiles Bridge enviará al panel las credenciales MQTT de abajo; después se reiniciará. El host y el puerto se rellenan automáticamente. Introduce usuario y contraseña si tu broker MQTT requiere credenciales.",
+        "data": {
+          "mqtt_host": "Host / IP de MQTT",
+          "mqtt_port": "Puerto MQTT",
+          "mqtt_username": "Usuario MQTT",
+          "mqtt_password": "Contraseña MQTT",
+          "base_topic": "Tema base MQTT",
+          "ha_prefix": "Prefijo de entidades de HA",
+          "panel_password": "Contraseña de Web Admin del panel (solo si está definida)"
+        },
+        "data_description": {
+          "panel_password": "Déjalo vacío si el panel no tiene contraseña de Web Admin. Solo se usa para esta configuración y no se guarda."
+        }
+      },
+      "discovery_confirm": {
+        "title": "Panel descubierto",
+        "description": "**{name}** se ha anunciado por MQTT con el tema base {base_topic}. Añádelo solo si es tu panel."
+      },
+      "adopt_confirm": {
+        "title": "Vincular panel",
+        "description": "**{name}** se ha anunciado por MQTT con el tema base {base_topic}, que usa la entrada **{entry}**. Vincúlalo solo si es tu panel."
+      },
+      "pairing_confirm": {
+        "title": "Configurar el cifrado",
+        "description": "Cifra la pantalla existente **{name}**. No se añade ningún dispositivo nuevo.\n\n# {number}\n\nConfirma solo si la pantalla muestra este número.",
+        "menu_options": {
+          "pairing_accept": "Los números coinciden: cifrar",
+          "pairing_reject": "Rechazar (sigue sin cifrar)"
+        }
+      },
+      "link_confirm": {
+        "title": "Panel encontrado",
+        "description": "Se ha pulsado Pair en el panel **{name}** ({model}, {host}). Se conecta directamente a Home Assistant; no hace falta un broker MQTT.\n\nDespués de añadirlo, el panel y este diálogo muestran el mismo número de seis cifras."
+      },
+      "link_number": {
+        "title": "Compara el número",
+        "description": "El panel **{name}** muestra ahora un número.\n\n# {number}\n\nConfirma solo si el panel muestra exactamente este número. Después confirma también en el panel.",
+        "menu_options": {
+          "link_accept": "Los números coinciden: conectar",
+          "link_reject": "Rechazar"
+        }
+      },
+      "link_switch": {
+        "title": "Conectar el panel",
+        "description": "Se ha pulsado Pair en el panel **{name}** ({host}). Ya está configurado aquí y ahora se conecta directamente a Home Assistant, sin MQTT. Su entrada, área, nombres y entidades se mantienen.\n\nDespués de confirmar, el panel y este diálogo muestran el mismo número de seis cifras."
+      }
+    },
+    "progress": {
+      "link_wait": "El panel **{name}** se está conectando a Home Assistant. Tarda unos segundos.",
+      "link_finish": "Ahora toca Confirm en el panel **{name}**."
+    },
+    "error": {
+      "topic_already_configured": "Ya hay un panel configurado con este tema MQTT.",
+      "cannot_connect": "No se pudo contactar con el panel. Comprueba que sigue en la red e inténtalo de nuevo.",
+      "mqtt_host_required": "Introduce un host o una dirección IP de MQTT.",
+      "invalid_port": "Introduce un puerto MQTT válido entre 1 y 65535.",
+      "invalid_panel_password": "El panel ha rechazado la contraseña de Web Admin.",
+      "panel_password_required": "El Web Admin del panel está protegido con contraseña. Introduce la contraseña de Web Admin.",
+      "panel_locked": "Demasiadas contraseñas incorrectas. Espera unos minutos e inténtalo de nuevo.",
+      "panel_identity_failed": "El dispositivo no ha podido demostrar que es el panel con esta contraseña. No se ha enviado ninguna credencial.",
+      "link_unsupported": "El firmware del panel todavía no puede conectarse directamente. Actualiza primero el panel.",
+      "link_window_closed": "El panel ya no acepta la conexión. Pulsa de nuevo Pair en el panel y añádelo en menos de dos minutos."
+    },
+    "abort": {
+      "missing_device_id": "El dispositivo descubierto no ha enviado un identificador válido.",
+      "mqtt_not_configured": "No hay ninguna integración MQTT configurada en Home Assistant. Configura primero la integración MQTT.",
+      "unsupported_broker": "El broker MQTT configurado requiere TLS o un certificado de cliente, que el panel no admite. Introduce las credenciales del broker manualmente en la interfaz web del panel.",
+      "mqtt_read_failed": "No se pudieron leer las credenciales MQTT.",
+      "already_configured": "Este panel ya está configurado.",
+      "panel_linked": "El panel se ha vinculado a la entrada existente.",
+      "adopt_target_changed": "La entrada pertenece ahora a otro panel o usa otro tema base.",
+      "pairing_done": "Cifrado. La pantalla envía ahora comandos cifrados.",
+      "pairing_confirmed": "Confirmado. Ahora confirma también en la pantalla.",
+      "pairing_rejected": "Rechazado. La pantalla sigue conectada sin cifrar.",
+      "pairing_expired": "Este intento ha terminado. Toca de nuevo Pair en la pantalla (Encrypt con firmware hasta v0.8.0).",
+      "link_unavailable": "El servicio de conexión de HomeTiles Bridge no se está ejecutando. El registro de Home Assistant tiene los detalles.",
+      "link_failed": "El panel no ha respondido o se ha cancelado el emparejamiento. Vuelve a emparejar en el panel en Settings > System > Security, o añádelo aquí otra vez.",
+      "link_rejected": "Rechazado. El panel no se ha añadido.",
+      "link_press_pair": "Pulsa Pair en el panel en Settings > System > Security; después aparecerá aquí.",
+      "link_switched": "Hecho. El panel está ahora conectado directamente y cifrado."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "panel": "Ajustes del panel",
+          "entities": "Configuración de entidades (todas las pantallas)",
+          "access_codes": "Códigos de cerraduras y paneles de alarma (todas las pantallas)",
+          "energy": "Panel de energía (todas las pantallas)",
+          "security": "Seguridad: {security}"
+        }
+      },
+      "panel": {
+        "title": "Ajustes del panel",
+        "data": {
+          "base_topic": "Tema base MQTT",
+          "ha_prefix": "Prefijo de entidades de HA",
+          "device_name": "Nombre del dispositivo (opcional)",
+          "manufacturer": "Fabricante (opcional)",
+          "model": "Modelo (opcional)"
+        }
+      },
+      "entities": {
+        "title": "Configuración de entidades",
+        "description": "Se aplica a todas las pantallas. Entidades conmutables: switch, input_boolean, automation, fan, humidifier, remote y siren. Las automatizaciones se activan o desactivan. Las escenas y los scripts se inician; los botones y los input buttons se pulsan una vez.",
+        "data": {
+          "sensors": "Sensores",
+          "binary_sensors": "Sensores binarios",
+          "weathers": "Tiempo",
+          "lights": "Luces",
+          "switches": "Interruptores / entidades conmutables",
+          "media_players": "Reproductores multimedia",
+          "climates": "Dispositivos de climatización",
+          "covers": "Persianas / cubiertas",
+          "cameras": "Cámaras",
+          "images": "Imágenes (salvapantallas)",
+          "scene_entities": "Escenas / scripts / botones",
+          "scene_map_text": "Alias de acciones",
+          "numbers": "Números / ayudantes de número",
+          "selects": "Selecciones / ayudantes desplegables",
+          "datetimes": "Fecha / hora / ayudantes",
+          "fans": "Ventiladores",
+          "locks": "Cerraduras",
+          "alarm_panels": "Paneles de alarma",
+          "open_without_code": "Permitir abrir sin código"
+        },
+        "data_description": {
+          "locks": "Solo se puede manejar desde una pantalla emparejada (cifrada) con contraseña de Web Admin. Home Assistant comprueba el código, o el Bridge si hay uno definido en «Códigos de cerraduras y paneles de alarma».",
+          "alarm_panels": "Solo se puede manejar desde una pantalla emparejada (cifrada) con contraseña de Web Admin. Home Assistant comprueba el código, o el Bridge si hay uno definido en «Códigos de cerraduras y paneles de alarma».",
+          "open_without_code": "Atención: cualquiera junto a la pantalla puede desbloquear, abrir o desarmar estas cerraduras y paneles de alarma sin código. Solo para dispositivos sin código propio o con un código predeterminado."
+        }
+      },
+      "access_codes": {
+        "title": "Códigos de cerraduras y paneles de alarma",
+        "description": "Opcional. Muchos dispositivos ignoran un código incorrecto sin informar de un error: Home Assistant informa entonces de éxito, y la pantalla no puede mostrar ni «código incorrecto» ni el bloqueo tras varios códigos incorrectos. Con un código aquí, el Bridge comprueba él mismo cada código de una pantalla y solo pasa a Home Assistant uno correcto. Separa varios códigos con comas. Déjalo vacío si Home Assistant ya informa de un código incorrecto. Si el código del dispositivo cambia, cámbialo también aquí."
+      },
+      "energy": {
+        "title": "Panel de energía",
+        "description": "Envía a los dispositivos los datos del panel de energía de Home Assistant.",
+        "data": {
+          "energy_electricity": "Electricidad",
+          "energy_gas": "Gas",
+          "energy_water": "Agua"
+        }
+      },
+      "security": {
+        "title": "Cifrado",
+        "description": "Esta pantalla está cifrada (id. de clave {key_id}).",
+        "data": {
+          "remove_pairing": "Desactivar el cifrado"
+        }
+      }
+    },
+    "error": {
+      "invalid_scene_map": "Los alias deben seguir el patrón alias=entity_id (uno por línea).",
+      "invalid_editable_entities": "Elige entidades compatibles de número, selección o fecha/hora.",
+      "pairing_nothing_selected": "No ha cambiado nada. Marca la casilla para desactivar el cifrado.",
+      "invalid_access_codes": "Hasta 10 códigos separados por comas, cada uno de 32 caracteres como máximo."
+    },
+    "abort": {
+      "pairing_removed": "Cifrado desactivado. La pantalla también lo desactiva cuando se conecta.",
+      "pairing_not_paired": "Sin cifrar. Para configurarlo, elige en la pantalla Settings → System → Security → Pair (Encrypt con firmware hasta v0.8.0).",
+      "pairing_removing": "El cifrado se está desactivando. La pantalla lo desactiva cuando se conecta.",
+      "no_access_entities": "Primero elige cerraduras o paneles de alarma en «Configuración de entidades»."
+    }
+  },
+  "entity": {
+    "camera": {
+      "local_camera": {
+        "name": "Cámara"
+      }
+    },
+    "select": {
+      "view": {
+        "name": "Vista"
+      },
+      "sleep_mains": {
+        "name": "Reposo automático (red eléctrica)",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Nunca"
+        }
+      },
+      "sleep_battery": {
+        "name": "Reposo automático (batería)",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Nunca"
+        }
+      }
+    },
+    "switch": {
+      "local_camera": {
+        "name": "Cámara"
+      }
+    },
+    "binary_sensor": {
+      "encryption": {
+        "name": "Cifrado"
+      },
+      "mqtt_connection": {
+        "name": "Conexión MQTT"
+      }
+    },
+    "light": {
+      "display_brightness": {
+        "name": "Brillo de la pantalla"
+      },
+      "screensaver_brightness": {
+        "name": "Brillo del salvapantallas"
+      }
+    },
+    "number": {
+      "display_brightness": {
+        "name": "Brillo de la pantalla"
+      }
+    },
+    "sensor": {
+      "battery_soc": {
+        "name": "Carga de la batería"
+      },
+      "external_temperature": {
+        "name": "Temperatura externa"
+      }
+    }
+  },
+  "exceptions": {
+    "view_unavailable": {
+      "message": "La pantalla está desconectada o su catálogo de vistas no está listo."
+    },
+    "invalid_view": {
+      "message": "La vista seleccionada ya no existe."
+    }
+  }
+}

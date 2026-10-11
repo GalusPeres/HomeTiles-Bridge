@@ -1,0 +1,266 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Lägg till panel",
+        "description": "Konfigurera en ny HomeTiles-panel.",
+        "data": {
+          "base_topic": "MQTT-basämne",
+          "ha_prefix": "HA-entitetsprefix",
+          "device_name": "Enhetsnamn (valfritt)",
+          "manufacturer": "Tillverkare (valfritt)",
+          "model": "Modell (valfritt)"
+        }
+      },
+      "zeroconf_confirm": {
+        "title": "Panel upptäckt",
+        "description": "**{name}** ({model}) hittades i nätverket på {host}. HomeTiles Bridge skickar MQTT-uppgifterna nedan till panelen; därefter startar den om. Värd och port fylls i automatiskt. Ange användarnamn och lösenord om din MQTT-broker kräver inloggning.",
+        "data": {
+          "mqtt_host": "MQTT-värd / IP",
+          "mqtt_port": "MQTT-port",
+          "mqtt_username": "MQTT-användarnamn",
+          "mqtt_password": "MQTT-lösenord",
+          "base_topic": "MQTT-basämne",
+          "ha_prefix": "HA-entitetsprefix",
+          "panel_password": "Panelens Web Admin-lösenord (bara om det är satt)"
+        },
+        "data_description": {
+          "panel_password": "Lämna tomt om panelen inte har något Web Admin-lösenord. Det används bara för den här konfigurationen och sparas inte."
+        }
+      },
+      "discovery_confirm": {
+        "title": "Panel upptäckt",
+        "description": "**{name}** anmälde sig via MQTT med basämnet {base_topic}. Lägg bara till den om det är din panel."
+      },
+      "adopt_confirm": {
+        "title": "Koppla panel",
+        "description": "**{name}** anmälde sig via MQTT med basämnet {base_topic}, som posten **{entry}** använder. Koppla den bara om det är din panel."
+      },
+      "pairing_confirm": {
+        "title": "Konfigurera kryptering",
+        "description": "Krypterar den befintliga skärmen **{name}**. Ingen ny enhet läggs till.\n\n# {number}\n\nBekräfta bara om skärmen visar detta nummer.",
+        "menu_options": {
+          "pairing_accept": "Numren stämmer: kryptera",
+          "pairing_reject": "Avvisa (förblir okrypterad)"
+        }
+      },
+      "link_confirm": {
+        "title": "Panel hittad",
+        "description": "Pair trycktes på panelen **{name}** ({model}, {host}). Den ansluter direkt till Home Assistant; ingen MQTT-broker behövs.\n\nNär du har lagt till den visar panelen och den här dialogen samma sexsiffriga nummer."
+      },
+      "link_number": {
+        "title": "Jämför numret",
+        "description": "Panelen **{name}** visar nu ett nummer.\n\n# {number}\n\nBekräfta bara om panelen visar exakt detta nummer. Bekräfta sedan även på panelen.",
+        "menu_options": {
+          "link_accept": "Numren stämmer: anslut",
+          "link_reject": "Avvisa"
+        }
+      },
+      "link_switch": {
+        "title": "Anslut panelen",
+        "description": "Pair trycktes på panelen **{name}** ({host}). Den är redan konfigurerad här och ansluter nu direkt till Home Assistant, utan MQTT. Dess post, område, namn och entiteter finns kvar.\n\nNär du har bekräftat visar panelen och den här dialogen samma sexsiffriga nummer."
+      }
+    },
+    "progress": {
+      "link_wait": "Panelen **{name}** ansluter till Home Assistant. Det tar några sekunder.",
+      "link_finish": "Tryck nu på Confirm på panelen **{name}**."
+    },
+    "error": {
+      "topic_already_configured": "En panel med detta MQTT-ämne är redan konfigurerad.",
+      "cannot_connect": "Panelen gick inte att nå. Kontrollera att den fortfarande är i nätverket och försök igen.",
+      "mqtt_host_required": "Ange en MQTT-värd eller IP-adress.",
+      "invalid_port": "Ange en giltig MQTT-port mellan 1 och 65535.",
+      "invalid_panel_password": "Panelen avvisade Web Admin-lösenordet.",
+      "panel_password_required": "Panelens Web Admin är skyddad med lösenord. Ange Web Admin-lösenordet.",
+      "panel_locked": "För många felaktiga lösenord. Vänta några minuter och försök igen.",
+      "panel_identity_failed": "Enheten kunde inte bevisa att den är panelen med detta lösenord. Inga uppgifter skickades.",
+      "link_unsupported": "Panelens firmware kan ännu inte ansluta direkt. Uppdatera panelen först.",
+      "link_window_closed": "Panelen tar inte längre emot anslutningen. Tryck på Pair på panelen igen och lägg till den inom två minuter."
+    },
+    "abort": {
+      "missing_device_id": "Den upptäckta enheten skickade ingen giltig identifierare.",
+      "mqtt_not_configured": "Ingen MQTT-integration är konfigurerad i Home Assistant. Konfigurera MQTT-integrationen först.",
+      "unsupported_broker": "Den konfigurerade MQTT-brokern kräver TLS eller ett klientcertifikat, vilket panelen inte stöder. Ange brokeruppgifterna manuellt i panelens webbgränssnitt.",
+      "mqtt_read_failed": "MQTT-uppgifterna kunde inte läsas.",
+      "already_configured": "Den här panelen är redan konfigurerad.",
+      "panel_linked": "Panelen kopplades till den befintliga posten.",
+      "adopt_target_changed": "Posten tillhör nu en annan panel eller använder ett annat basämne.",
+      "pairing_done": "Krypterad. Skärmen skickar nu krypterade kommandon.",
+      "pairing_confirmed": "Bekräftat. Bekräfta nu även på skärmen.",
+      "pairing_rejected": "Avvisat. Skärmen förblir ansluten utan kryptering.",
+      "pairing_expired": "Det här försöket är avslutat. Tryck på Pair på skärmen igen (Encrypt med firmware till och med v0.8.0).",
+      "link_unavailable": "HomeTiles Bridges anslutningstjänst körs inte. Home Assistants logg har detaljerna.",
+      "link_failed": "Panelen svarade inte eller parkopplingen avbröts. Parkoppla igen på panelen under Settings > System > Security, eller lägg till den här en gång till.",
+      "link_rejected": "Avvisat. Panelen lades inte till.",
+      "link_press_pair": "Tryck på Pair på panelen under Settings > System > Security; sedan visas den här.",
+      "link_switched": "Klart. Panelen är nu ansluten direkt och krypterad."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "panel": "Panelinställningar",
+          "entities": "Entitetskonfiguration (alla skärmar)",
+          "access_codes": "Koder för lås och larmpaneler (alla skärmar)",
+          "energy": "Energipanel (alla skärmar)",
+          "security": "Säkerhet: {security}"
+        }
+      },
+      "panel": {
+        "title": "Panelinställningar",
+        "data": {
+          "base_topic": "MQTT-basämne",
+          "ha_prefix": "HA-entitetsprefix",
+          "device_name": "Enhetsnamn (valfritt)",
+          "manufacturer": "Tillverkare (valfritt)",
+          "model": "Modell (valfritt)"
+        }
+      },
+      "entities": {
+        "title": "Entitetskonfiguration",
+        "description": "Gäller alla skärmar. Omkopplingsbara entiteter: switch, input_boolean, automation, fan, humidifier, remote och siren. Automationer aktiveras eller inaktiveras. Scener och skript startas; knappar och input buttons trycks en gång.",
+        "data": {
+          "sensors": "Sensorer",
+          "binary_sensors": "Binära sensorer",
+          "weathers": "Väder",
+          "lights": "Lampor",
+          "switches": "Brytare / omkopplingsbara entiteter",
+          "media_players": "Mediaspelare",
+          "climates": "Klimatenheter",
+          "covers": "Persienner / markiser",
+          "cameras": "Kameror",
+          "images": "Bilder (skärmsläckare)",
+          "scene_entities": "Scener / skript / knappar",
+          "scene_map_text": "Åtgärdsalias",
+          "numbers": "Tal / talhjälpare",
+          "selects": "Val / rullgardinshjälpare",
+          "datetimes": "Datum / tid / hjälpare",
+          "fans": "Fläktar",
+          "locks": "Lås",
+          "alarm_panels": "Larmpaneler",
+          "open_without_code": "Tillåt öppning utan kod"
+        },
+        "data_description": {
+          "locks": "Kan bara manövreras från en parkopplad (krypterad) skärm med Web Admin-lösenord. Home Assistant kontrollerar koden, eller Bridge när en kod är angiven under ”Koder för lås och larmpaneler”.",
+          "alarm_panels": "Kan bara manövreras från en parkopplad (krypterad) skärm med Web Admin-lösenord. Home Assistant kontrollerar koden, eller Bridge när en kod är angiven under ”Koder för lås och larmpaneler”.",
+          "open_without_code": "Varning: vem som helst vid skärmen kan låsa upp, öppna eller avlarma dessa lås och larmpaneler utan kod. Bara för enheter utan egen kod eller med en standardkod."
+        }
+      },
+      "access_codes": {
+        "title": "Koder för lås och larmpaneler",
+        "description": "Valfritt. Många enheter ignorerar en felaktig kod utan att rapportera något fel: Home Assistant rapporterar då att det lyckades, och skärmen kan varken visa ”fel kod” eller spärren efter flera felaktiga koder. Med en kod här kontrollerar Bridge själv varje kod från en skärm och skickar bara en korrekt kod vidare till Home Assistant. Skilj flera koder åt med kommatecken. Lämna tomt när Home Assistant redan rapporterar en felaktig kod. Om koden i enheten ändras, ändra den även här."
+      },
+      "energy": {
+        "title": "Energipanel",
+        "description": "Skickar data från Home Assistants energipanel till enheterna.",
+        "data": {
+          "energy_electricity": "El",
+          "energy_gas": "Gas",
+          "energy_water": "Vatten"
+        }
+      },
+      "security": {
+        "title": "Kryptering",
+        "description": "Den här skärmen är krypterad (nyckel-id {key_id}).",
+        "data": {
+          "remove_pairing": "Stäng av krypteringen"
+        }
+      }
+    },
+    "error": {
+      "invalid_scene_map": "Alias måste följa mönstret alias=entity_id (ett per rad).",
+      "invalid_editable_entities": "Välj kompatibla entiteter av typen tal, val eller datum/tid.",
+      "pairing_nothing_selected": "Inget ändrades. Markera rutan för att stänga av krypteringen.",
+      "invalid_access_codes": "Upp till 10 koder åtskilda med kommatecken, var och en högst 32 tecken."
+    },
+    "abort": {
+      "pairing_removed": "Krypteringen är avstängd. Skärmen stänger också av den när den ansluter.",
+      "pairing_not_paired": "Inte krypterad. För att konfigurera det, välj på skärmen Settings → System → Security → Pair (Encrypt med firmware till och med v0.8.0).",
+      "pairing_removing": "Krypteringen stängs av. Skärmen stänger av den när den ansluter.",
+      "no_access_entities": "Välj först lås eller larmpaneler under ”Entitetskonfiguration”."
+    }
+  },
+  "entity": {
+    "camera": {
+      "local_camera": {
+        "name": "Kamera"
+      }
+    },
+    "select": {
+      "view": {
+        "name": "Vy"
+      },
+      "sleep_mains": {
+        "name": "Automatiskt viloläge (nätström)",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Aldrig"
+        }
+      },
+      "sleep_battery": {
+        "name": "Automatiskt viloläge (batteri)",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Aldrig"
+        }
+      }
+    },
+    "switch": {
+      "local_camera": {
+        "name": "Kamera"
+      }
+    },
+    "binary_sensor": {
+      "encryption": {
+        "name": "Kryptering"
+      },
+      "mqtt_connection": {
+        "name": "MQTT-anslutning"
+      }
+    },
+    "light": {
+      "display_brightness": {
+        "name": "Skärmens ljusstyrka"
+      },
+      "screensaver_brightness": {
+        "name": "Skärmsläckarens ljusstyrka"
+      }
+    },
+    "number": {
+      "display_brightness": {
+        "name": "Skärmens ljusstyrka"
+      }
+    },
+    "sensor": {
+      "battery_soc": {
+        "name": "Batterinivå"
+      },
+      "external_temperature": {
+        "name": "Extern temperatur"
+      }
+    }
+  },
+  "exceptions": {
+    "view_unavailable": {
+      "message": "Skärmen är offline eller dess vykatalog är inte klar."
+    },
+    "invalid_view": {
+      "message": "Den valda vyn finns inte längre."
+    }
+  }
+}

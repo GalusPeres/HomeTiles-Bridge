@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import logging
 import string
 import types
@@ -782,9 +783,11 @@ class FlowTextsTest(unittest.TestCase):
             data = json.loads(path.read_text(encoding="utf-8"))
             options = data["options"]
             self.assertIn("security", options["step"]["init"]["menu_options"], path)
-            # Entities and energy are copied to every panel entry; the menu says so.
-            for shared in ("entities", "energy"):
-                self.assertRegex(options["step"]["init"]["menu_options"][shared], r"\((all displays|alle Displays|tous les écrans|wszystkie wyświetlacze)\)$", path)
+            # Entities, energy and codes are copied to every panel entry; the
+            # menu says so with the same note in brackets in every language.
+            menu = options["step"]["init"]["menu_options"]
+            notes = {re.search(r"\(([^()]+)\)$", menu[shared]).group(1) for shared in ("entities", "energy", "access_codes")}
+            self.assertEqual(len(notes), 1, path)
             step = options["step"]["security"]
             self.assertEqual(set(step["data"]), {"remove_pairing"}, path)
             self.assertIn("{key_id}", step["description"], path)

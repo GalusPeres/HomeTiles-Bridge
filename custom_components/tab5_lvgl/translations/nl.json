@@ -1,0 +1,266 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Paneel toevoegen",
+        "description": "Een nieuw HomeTiles-paneel instellen.",
+        "data": {
+          "base_topic": "MQTT-basistopic",
+          "ha_prefix": "HA-entiteitsprefix",
+          "device_name": "Apparaatnaam (optioneel)",
+          "manufacturer": "Fabrikant (optioneel)",
+          "model": "Model (optioneel)"
+        }
+      },
+      "zeroconf_confirm": {
+        "title": "Paneel ontdekt",
+        "description": "**{name}** ({model}) is op het netwerk gevonden op {host}. HomeTiles Bridge stuurt de onderstaande MQTT-inloggegevens naar het paneel; daarna herstart het. Host en poort worden automatisch ingevuld. Vul gebruikersnaam en wachtwoord in als je MQTT-broker inloggegevens vereist.",
+        "data": {
+          "mqtt_host": "MQTT-host / IP",
+          "mqtt_port": "MQTT-poort",
+          "mqtt_username": "MQTT-gebruikersnaam",
+          "mqtt_password": "MQTT-wachtwoord",
+          "base_topic": "MQTT-basistopic",
+          "ha_prefix": "HA-entiteitsprefix",
+          "panel_password": "Web Admin-wachtwoord van het paneel (alleen indien ingesteld)"
+        },
+        "data_description": {
+          "panel_password": "Laat leeg als het paneel geen Web Admin-wachtwoord heeft. Het wordt alleen voor deze installatie gebruikt en niet opgeslagen."
+        }
+      },
+      "discovery_confirm": {
+        "title": "Paneel ontdekt",
+        "description": "**{name}** heeft zich via MQTT gemeld met basistopic {base_topic}. Voeg het alleen toe als het jouw paneel is."
+      },
+      "adopt_confirm": {
+        "title": "Paneel koppelen",
+        "description": "**{name}** heeft zich via MQTT gemeld met basistopic {base_topic}, dat door de vermelding **{entry}** wordt gebruikt. Koppel het alleen als het jouw paneel is."
+      },
+      "pairing_confirm": {
+        "title": "Versleuteling instellen",
+        "description": "Versleutelt het bestaande scherm **{name}**. Er wordt geen nieuw apparaat toegevoegd.\n\n# {number}\n\nBevestig alleen als het scherm dit getal toont.",
+        "menu_options": {
+          "pairing_accept": "Getallen komen overeen: versleutelen",
+          "pairing_reject": "Weigeren (blijft onversleuteld)"
+        }
+      },
+      "link_confirm": {
+        "title": "Paneel gevonden",
+        "description": "Op het paneel **{name}** ({model}, {host}) is op Pair gedrukt. Het verbindt rechtstreeks met Home Assistant; er is geen MQTT-broker nodig.\n\nNa het toevoegen tonen het paneel en dit venster hetzelfde getal van zes cijfers."
+      },
+      "link_number": {
+        "title": "Vergelijk het getal",
+        "description": "Het paneel **{name}** toont nu een getal.\n\n# {number}\n\nBevestig alleen als het paneel precies dit getal toont. Bevestig daarna ook op het paneel.",
+        "menu_options": {
+          "link_accept": "Getallen komen overeen: verbinden",
+          "link_reject": "Weigeren"
+        }
+      },
+      "link_switch": {
+        "title": "Paneel verbinden",
+        "description": "Op het paneel **{name}** ({host}) is op Pair gedrukt. Het is hier al ingesteld en verbindt nu rechtstreeks met Home Assistant, zonder MQTT. De vermelding, ruimte, namen en entiteiten blijven behouden.\n\nNa je bevestiging tonen het paneel en dit venster hetzelfde getal van zes cijfers."
+      }
+    },
+    "progress": {
+      "link_wait": "Het paneel **{name}** maakt verbinding met Home Assistant. Dit duurt een paar seconden.",
+      "link_finish": "Tik nu op Confirm op het paneel **{name}**."
+    },
+    "error": {
+      "topic_already_configured": "Er is al een paneel met dit MQTT-topic ingesteld.",
+      "cannot_connect": "Het paneel is niet bereikbaar. Controleer of het nog op het netwerk is en probeer het opnieuw.",
+      "mqtt_host_required": "Voer een MQTT-host of IP-adres in.",
+      "invalid_port": "Voer een geldige MQTT-poort in tussen 1 en 65535.",
+      "invalid_panel_password": "Het paneel heeft het Web Admin-wachtwoord geweigerd.",
+      "panel_password_required": "De Web Admin van het paneel is met een wachtwoord beveiligd. Voer het Web Admin-wachtwoord in.",
+      "panel_locked": "Te veel verkeerde wachtwoorden. Wacht een paar minuten en probeer het opnieuw.",
+      "panel_identity_failed": "Het apparaat kon niet aantonen dat het het paneel met dit wachtwoord is. Er zijn geen inloggegevens verzonden.",
+      "link_unsupported": "De firmware van het paneel kan nog niet rechtstreeks verbinden. Werk eerst het paneel bij.",
+      "link_window_closed": "Het paneel accepteert de verbinding niet meer. Druk opnieuw op Pair op het paneel en voeg het binnen twee minuten toe."
+    },
+    "abort": {
+      "missing_device_id": "Het gevonden apparaat heeft geen geldige identificatie gestuurd.",
+      "mqtt_not_configured": "Er is geen MQTT-integratie ingesteld in Home Assistant. Stel eerst de MQTT-integratie in.",
+      "unsupported_broker": "De ingestelde MQTT-broker vereist TLS of een clientcertificaat; dat ondersteunt het paneel niet. Voer de brokergegevens handmatig in via de webinterface van het paneel.",
+      "mqtt_read_failed": "De MQTT-inloggegevens konden niet worden gelezen.",
+      "already_configured": "Dit paneel is al ingesteld.",
+      "panel_linked": "Het paneel is aan de bestaande vermelding gekoppeld.",
+      "adopt_target_changed": "De vermelding hoort nu bij een ander paneel of gebruikt een ander basistopic.",
+      "pairing_done": "Versleuteld. Het scherm stuurt nu versleutelde opdrachten.",
+      "pairing_confirmed": "Bevestigd. Bevestig nu ook op het scherm.",
+      "pairing_rejected": "Geweigerd. Het scherm blijft onversleuteld verbonden.",
+      "pairing_expired": "Deze poging is beëindigd. Tik opnieuw op Pair op het scherm (Encrypt bij firmware tot v0.8.0).",
+      "link_unavailable": "De verbindingsdienst van HomeTiles Bridge draait niet. Het logboek van Home Assistant bevat de details.",
+      "link_failed": "Het paneel antwoordde niet of het koppelen is afgebroken. Koppel opnieuw op het paneel onder Settings > System > Security, of voeg het hier nog een keer toe.",
+      "link_rejected": "Geweigerd. Het paneel is niet toegevoegd.",
+      "link_press_pair": "Druk op het paneel onder Settings > System > Security op Pair; daarna verschijnt het hier.",
+      "link_switched": "Klaar. Het paneel is nu rechtstreeks en versleuteld verbonden."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "panel": "Paneelinstellingen",
+          "entities": "Entiteitsconfiguratie (alle schermen)",
+          "access_codes": "Codes voor sloten en alarmpanelen (alle schermen)",
+          "energy": "Energiedashboard (alle schermen)",
+          "security": "Beveiliging: {security}"
+        }
+      },
+      "panel": {
+        "title": "Paneelinstellingen",
+        "data": {
+          "base_topic": "MQTT-basistopic",
+          "ha_prefix": "HA-entiteitsprefix",
+          "device_name": "Apparaatnaam (optioneel)",
+          "manufacturer": "Fabrikant (optioneel)",
+          "model": "Model (optioneel)"
+        }
+      },
+      "entities": {
+        "title": "Entiteitsconfiguratie",
+        "description": "Geldt voor alle schermen. Schakelbare entiteiten: switch, input_boolean, automation, fan, humidifier, remote en siren. Automatiseringen worden in- of uitgeschakeld. Scènes en scripts worden gestart; knoppen en input buttons worden één keer ingedrukt.",
+        "data": {
+          "sensors": "Sensoren",
+          "binary_sensors": "Binaire sensoren",
+          "weathers": "Weer",
+          "lights": "Lampen",
+          "switches": "Schakelaars / schakelbare entiteiten",
+          "media_players": "Mediaspelers",
+          "climates": "Klimaatapparaten",
+          "covers": "Zonwering / rolluiken",
+          "cameras": "Camera's",
+          "images": "Afbeeldingen (schermbeveiliging)",
+          "scene_entities": "Scènes / scripts / knoppen",
+          "scene_map_text": "Actie-aliassen",
+          "numbers": "Getallen / getalhelpers",
+          "selects": "Keuzelijsten / keuzehelpers",
+          "datetimes": "Datum / tijd / helpers",
+          "fans": "Ventilatoren",
+          "locks": "Sloten",
+          "alarm_panels": "Alarmpanelen",
+          "open_without_code": "Openen zonder code toestaan"
+        },
+        "data_description": {
+          "locks": "Alleen te bedienen vanaf een gekoppeld (versleuteld) scherm met een Web Admin-wachtwoord. Home Assistant controleert de code, of de Bridge als er een is ingesteld onder “Codes voor sloten en alarmpanelen”.",
+          "alarm_panels": "Alleen te bedienen vanaf een gekoppeld (versleuteld) scherm met een Web Admin-wachtwoord. Home Assistant controleert de code, of de Bridge als er een is ingesteld onder “Codes voor sloten en alarmpanelen”.",
+          "open_without_code": "Let op: iedereen bij het scherm kan deze sloten en alarmpanelen zonder code ontgrendelen, openen of uitschakelen. Alleen voor apparaten zonder eigen code of met een standaardcode."
+        }
+      },
+      "access_codes": {
+        "title": "Codes voor sloten en alarmpanelen",
+        "description": "Optioneel. Veel apparaten negeren een verkeerde code zonder een fout te melden: Home Assistant meldt dan succes, en het scherm kan noch “verkeerde code” noch de blokkering na meerdere verkeerde codes tonen. Met een code hier controleert de Bridge zelf elke code van een scherm en geeft alleen een juiste door aan Home Assistant. Scheid meerdere codes met komma's. Laat leeg als Home Assistant al een verkeerde code meldt. Als de code op het apparaat verandert, pas hem dan ook hier aan."
+      },
+      "energy": {
+        "title": "Energiedashboard",
+        "description": "Stuurt gegevens uit het energiedashboard van Home Assistant naar de apparaten.",
+        "data": {
+          "energy_electricity": "Elektriciteit",
+          "energy_gas": "Gas",
+          "energy_water": "Water"
+        }
+      },
+      "security": {
+        "title": "Versleuteling",
+        "description": "Dit scherm is versleuteld (sleutel-id {key_id}).",
+        "data": {
+          "remove_pairing": "Versleuteling uitschakelen"
+        }
+      }
+    },
+    "error": {
+      "invalid_scene_map": "Aliassen moeten het patroon alias=entity_id volgen (één per regel).",
+      "invalid_editable_entities": "Kies passende entiteiten van het type getal, keuzelijst of datum/tijd.",
+      "pairing_nothing_selected": "Niets gewijzigd. Vink het vakje aan om de versleuteling uit te schakelen.",
+      "invalid_access_codes": "Maximaal 10 codes, gescheiden door komma's, elk hooguit 32 tekens."
+    },
+    "abort": {
+      "pairing_removed": "Versleuteling uitgeschakeld. Het scherm schakelt haar ook uit zodra het verbinding maakt.",
+      "pairing_not_paired": "Niet versleuteld. Kies om dit in te stellen op het scherm Settings → System → Security → Pair (Encrypt bij firmware tot v0.8.0).",
+      "pairing_removing": "Versleuteling wordt uitgeschakeld. Het scherm schakelt haar uit zodra het verbinding maakt.",
+      "no_access_entities": "Kies eerst sloten of alarmpanelen onder “Entiteitsconfiguratie”."
+    }
+  },
+  "entity": {
+    "camera": {
+      "local_camera": {
+        "name": "Camera"
+      }
+    },
+    "select": {
+      "view": {
+        "name": "Weergave"
+      },
+      "sleep_mains": {
+        "name": "Automatische slaap (netvoeding)",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Nooit"
+        }
+      },
+      "sleep_battery": {
+        "name": "Automatische slaap (accu)",
+        "state": {
+          "5s": "5 s",
+          "15s": "15 s",
+          "30s": "30 s",
+          "60s": "60 s",
+          "5min": "5 min",
+          "15min": "15 min",
+          "30min": "30 min",
+          "60min": "60 min",
+          "never": "Nooit"
+        }
+      }
+    },
+    "switch": {
+      "local_camera": {
+        "name": "Camera"
+      }
+    },
+    "binary_sensor": {
+      "encryption": {
+        "name": "Versleuteling"
+      },
+      "mqtt_connection": {
+        "name": "MQTT-verbinding"
+      }
+    },
+    "light": {
+      "display_brightness": {
+        "name": "Schermhelderheid"
+      },
+      "screensaver_brightness": {
+        "name": "Helderheid schermbeveiliging"
+      }
+    },
+    "number": {
+      "display_brightness": {
+        "name": "Schermhelderheid"
+      }
+    },
+    "sensor": {
+      "battery_soc": {
+        "name": "Accuniveau"
+      },
+      "external_temperature": {
+        "name": "Externe temperatuur"
+      }
+    }
+  },
+  "exceptions": {
+    "view_unavailable": {
+      "message": "Het scherm is offline of de weergavelijst is nog niet klaar."
+    },
+    "invalid_view": {
+      "message": "De gekozen weergave bestaat niet meer."
+    }
+  }
+}
