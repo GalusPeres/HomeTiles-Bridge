@@ -254,6 +254,16 @@
         "name": "Temp\u00e9rature externe"
       }
     },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
     "media_player": {
       "speaker": {
         "name": "Haut-parleur"
@@ -261,6 +271,12 @@
     }
   },
   "exceptions": {
+    "assist_unavailable": {
+      "message": "Le microphone de l\u2019\u00e9cran n\u2019est pas disponible : l\u2019\u00e9cran est hors ligne ou ne l\u2019a pas annonc\u00e9."
+    },
+    "assist_not_connected": {
+      "message": "Le microphone de l\u2019\u00e9cran est injoignable : la connexion chiffr\u00e9e n\u2019est pas encore pr\u00eate."
+    },
     "view_unavailable": {
       "message": "L'\u00e9cran est hors ligne ou son catalogue de vues n'est pas pr\u00eat."
     },

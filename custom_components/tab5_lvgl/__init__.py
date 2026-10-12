@@ -221,9 +221,11 @@ from .capabilities import (
   CAPABILITIES,
   merged_capabilities_data,
   normalise_capabilities,
+  stale_assist,
   stale_internal_sensor,
   stale_local_camera,
   stale_speaker,
+  supports,
 )
 from .command_channel import (
   BridgeChannel,
@@ -248,6 +250,7 @@ from .local_camera import is_local_camera_self_loop, local_camera_command_topic
 from . import entity_icons
 from . import entity_search
 from .speaker import audio_command_topic
+from .assist import assist_command_topic
 from .numeric_history import fetch_numeric_history_values
 from .request_limits import (
   ENERGY_MAX_ACTIVE,
@@ -283,7 +286,11 @@ from .sensor_selection import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor", "camera", "media_player"]
+PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor", "camera", "media_player",
+             "button"]
+# Forwarded only for panels that announce a microphone, so Home Assistant
+# loads Assist (STT, TTS, conversation) only where it can be used.
+ASSIST_PLATFORMS = ["assist_satellite"]
 
 MEDIA_COVER_MAX_BYTES = 14000
 # Home Assistant sends SUBSCRIBE packets batched, a moment after async_subscribe
@@ -779,7 +786,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   await bridge.async_setup()
   hass.data[DOMAIN]["entries"][entry.entry_id] = bridge
   entry.async_on_unload(entry.add_update_listener(_async_update_listener))
-  await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+  platforms = entry_platforms(entry)
+  # Unload must name exactly the platforms that were set up, even when the
+  # announced capabilities changed in between.
+  hass.data[DOMAIN].setdefault("platforms", {})[entry.entry_id] = platforms
+  await hass.config_entries.async_forward_entry_setups(entry, platforms)
   await bridge.async_publish_config_to_device()
   return True
 
@@ -970,6 +981,14 @@ def _cleanup_persisted_runtime_sensor_entities(
   )
 
 
+def entry_platforms(entry: ConfigEntry) -> List[str]:
+  """Platforms to forward for this panel's announced capabilities."""
+  platforms = list(PLATFORMS)
+  if supports(merged_capabilities_data(entry), "audio_input"):
+    platforms.extend(ASSIST_PLATFORMS)
+  return platforms
+
+
 def _remove_stale_local_io_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
   """Remove registry entries for channels no longer announced by firmware."""
   device_id = entry_device_id(entry)
@@ -1003,6 +1022,10 @@ def _remove_stale_local_io_entities(hass: HomeAssistant, entry: ConfigEntry) -> 
     elif entity.domain == "media_player" and stale_speaker(unique_id, merged):
       # The panel no longer announces its speaker (codec missing or older
       # firmware).
+      stale.append(entity.entity_id)
+    elif (entity.domain in ("assist_satellite", "button")
+          and stale_assist(unique_id, entity.domain, merged)):
+      # The panel no longer announces its microphone.
       stale.append(entity.entity_id)
     elif local_io_announced and (
       unique_id == legacy_temperature_id
@@ -1314,7 +1337,10 @@ def _firmware_entity_slug(value: Any) -> str:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   """Unload a config entry."""
   bridge: Tab5Bridge | None = hass.data[DOMAIN]["entries"].get(entry.entry_id)
-  unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+  platforms = hass.data[DOMAIN].get("platforms", {}).get(entry.entry_id, PLATFORMS)
+  unload_ok = await hass.config_entries.async_unload_platforms(entry, platforms)
+  if unload_ok:
+    hass.data[DOMAIN].get("platforms", {}).pop(entry.entry_id, None)
   if unload_ok and bridge is not None:
     await bridge.async_unload()
     hass.data[DOMAIN]["entries"].pop(entry.entry_id, None)
@@ -3341,6 +3367,16 @@ class Tab5Bridge:
       return
     await mqtt.async_publish(
       self.hass, audio_command_topic(self.base_topic), text, qos=0, retain=False,
+    )
+
+  async def async_publish_assist_command(self, text: str) -> None:
+    """Start and stop commands for the panel's own microphone."""
+    channel = self._command_channel
+    if channel is not None and not channel.removing:
+      await self._async_publish_sealed_data("assist", text)
+      return
+    await mqtt.async_publish(
+      self.hass, assist_command_topic(self.base_topic), text, qos=0, retain=False,
     )
 
   async def _async_handle_connected(self, msg: ReceiveMessage) -> None:

@@ -254,6 +254,16 @@
         "name": "Externe temperatuur"
       }
     },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
     "media_player": {
       "speaker": {
         "name": "Luidspreker"
@@ -261,6 +271,12 @@
     }
   },
   "exceptions": {
+    "assist_unavailable": {
+      "message": "De microfoon van het scherm is niet beschikbaar: het scherm is offline of heeft hem niet gemeld."
+    },
+    "assist_not_connected": {
+      "message": "De microfoon van het scherm is niet bereikbaar: de versleutelde verbinding is nog niet klaar."
+    },
     "view_unavailable": {
       "message": "Het scherm is offline of de weergavelijst is nog niet klaar."
     },

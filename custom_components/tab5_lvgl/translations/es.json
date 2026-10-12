@@ -254,6 +254,16 @@
         "name": "Temperatura externa"
       }
     },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
     "media_player": {
       "speaker": {
         "name": "Altavoz"
@@ -261,6 +271,12 @@
     }
   },
   "exceptions": {
+    "assist_unavailable": {
+      "message": "El micrófono de la pantalla no está disponible: la pantalla está desconectada o no lo ha anunciado."
+    },
+    "assist_not_connected": {
+      "message": "No se puede acceder al micrófono de la pantalla: la conexión cifrada aún no está lista."
+    },
     "view_unavailable": {
       "message": "La pantalla está desconectada o su catálogo de vistas no está listo."
     },

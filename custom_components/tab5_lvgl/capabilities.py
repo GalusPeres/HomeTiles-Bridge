@@ -12,7 +12,7 @@ def normalise_capabilities(value: Any) -> dict[str, bool]:
     if not isinstance(value, dict):
         raise ValueError("invalid_capabilities")
     result = {}
-    for key in ("audio_output", "battery_soc", "legacy_external_temperature", "local_camera",
+    for key in ("audio_input", "audio_output", "battery_soc", "legacy_external_temperature", "local_camera",
                 "local_camera_stream", "view_navigation"):
         if key in value:
             if type(value[key]) is not bool:
@@ -33,7 +33,8 @@ def supports(data: Mapping[str, Any], capability: str) -> bool:
     explicit = data.get(CAPABILITIES, {})
     if capability in explicit:
         return explicit[capability] is True
-    if capability in ("view_navigation", "local_camera", "local_camera_stream", "audio_output"):
+    if capability in ("view_navigation", "local_camera", "local_camera_stream", "audio_output",
+                      "audio_input"):
         # Never inferred: only firmware that announces it can answer requests.
         return False
     # No fixed external channel exists once firmware announces local I/O,
@@ -61,3 +62,11 @@ def stale_local_camera(unique_id: str, data: Mapping[str, Any]) -> bool:
 
 def stale_speaker(unique_id: str, data: Mapping[str, Any]) -> bool:
     return unique_id.endswith("_speaker") and not supports(data, "audio_output")
+
+
+def stale_assist(unique_id: str, domain: str, data: Mapping[str, Any]) -> bool:
+    """The microphone's satellite or tap-to-talk button without audio_input."""
+    if supports(data, "audio_input"):
+        return False
+    return ((domain == "assist_satellite" and unique_id.endswith("_assist_satellite"))
+            or (domain == "button" and unique_id.endswith("_assist")))

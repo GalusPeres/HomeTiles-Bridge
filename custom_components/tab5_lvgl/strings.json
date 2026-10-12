@@ -254,6 +254,16 @@
         "name": "External Temperature"
       }
     },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
     "media_player": {
       "speaker": {
         "name": "Speaker"
@@ -261,6 +271,12 @@
     }
   },
   "exceptions": {
+    "assist_unavailable": {
+      "message": "The display's microphone is not available: the display is offline or did not announce it."
+    },
+    "assist_not_connected": {
+      "message": "The display's microphone cannot be reached: the encrypted connection is not ready."
+    },
     "view_unavailable": {
       "message": "The display is offline or its view catalog is not ready."
     },

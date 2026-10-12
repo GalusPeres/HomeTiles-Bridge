@@ -59,8 +59,8 @@ SEALED_COMMANDS = frozenset({
 # tiles' entities (entity_search.py) never have a plain topic.
 SEALED_ONLY_COMMANDS = frozenset({"lock", "alarm", "entities", "tiles"})
 # Bridge-to-panel messages that travel sealed: stream tokens, the entity
-# search answers and the speaker commands.
-SEALED_DATA = frozenset({"camera", "local_camera", "entities", "tiles", "audio"})
+# search answers, the speaker and microphone commands.
+SEALED_DATA = frozenset({"camera", "local_camera", "entities", "tiles", "audio", "assist"})
 
 TYPE_HELLO = "hello"
 TYPE_SESSION = "session"

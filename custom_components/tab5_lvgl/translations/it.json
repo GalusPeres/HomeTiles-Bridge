@@ -254,6 +254,16 @@
         "name": "Temperatura esterna"
       }
     },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
     "media_player": {
       "speaker": {
         "name": "Altoparlante"
@@ -261,6 +271,12 @@
     }
   },
   "exceptions": {
+    "assist_unavailable": {
+      "message": "Il microfono del display non è disponibile: il display è offline o non lo ha annunciato."
+    },
+    "assist_not_connected": {
+      "message": "Il microfono del display non è raggiungibile: la connessione cifrata non è ancora pronta."
+    },
     "view_unavailable": {
       "message": "Il display è offline o il suo catalogo delle viste non è pronto."
     },

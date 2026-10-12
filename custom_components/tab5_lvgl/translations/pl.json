@@ -254,6 +254,16 @@
         "name": "Temperatura zewn\u0119trzna"
       }
     },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
     "media_player": {
       "speaker": {
         "name": "G\u0142o\u015bnik"
@@ -261,6 +271,12 @@
     }
   },
   "exceptions": {
+    "assist_unavailable": {
+      "message": "Mikrofon wy\u015bwietlacza jest niedost\u0119pny: wy\u015bwietlacz jest offline lub go nie zg\u0142osi\u0142."
+    },
+    "assist_not_connected": {
+      "message": "Mikrofon wy\u015bwietlacza jest nieosi\u0105galny: szyfrowane po\u0142\u0105czenie nie jest jeszcze gotowe."
+    },
     "view_unavailable": {
       "message": "Wy\u015bwietlacz jest offline lub jego katalog widok\u00f3w nie jest gotowy."
     },

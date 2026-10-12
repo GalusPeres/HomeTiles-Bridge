@@ -1,0 +1,701 @@
+"""Assist contract (assist.py), the assist_satellite and button platforms against HA stubs."""
+
+from __future__ import annotations
+
+import ast
+import asyncio
+from dataclasses import dataclass
+import enum
+import importlib
+import json
+import sys
+import types
+import unittest
+from unittest import mock
+
+from test_view_navigation import ROOT, load_module
+
+ASSIST = load_module("assist")
+CAPABILITIES = load_module("capabilities")
+BASE = "hometiles/panel"
+ID = "0123456789abcdef0123456789abcdef"
+OTHER_ID = "fedcba9876543210"
+
+
+def frame(session_id=ID, sequence=0, pcm=b"\x01\x00" * 4, last=False):
+    return ASSIST.build_audio_frame(session_id, sequence, pcm, last)
+
+
+class AssistContractTest(unittest.TestCase):
+    def test_topics_and_unique_ids(self):
+        self.assertEqual(ASSIST.assist_command_topic(BASE), f"{BASE}/cmnd/assist")
+        self.assertEqual(ASSIST.assist_status_topic(BASE), f"{BASE}/stat/assist")
+        self.assertEqual(ASSIST.assist_audio_topic(BASE), f"{BASE}/stat/assist_audio")
+        self.assertEqual(ASSIST.assist_satellite_unique_id("mac"), "mac_assist_satellite")
+        self.assertEqual(ASSIST.assist_button_unique_id("mac"), "mac_assist")
+
+    def test_commands(self):
+        self.assertEqual(json.loads(ASSIST.build_start_command(ID)),
+                         {"v": 1, "op": "start", "id": ID, "max_ms": 15000})
+        self.assertEqual(json.loads(ASSIST.build_start_command(ID, 99999))["max_ms"], 30000)
+        self.assertEqual(json.loads(ASSIST.build_start_command(ID, 10))["max_ms"], 1000)
+        self.assertEqual(json.loads(ASSIST.build_start_command(ID, True))["max_ms"], 15000)
+        self.assertEqual(json.loads(ASSIST.build_stop_command(ID)),
+                         {"v": 1, "op": "stop", "id": ID})
+        for bad in ("ABCDEF0123456789", "0123", "g" * 16, "a" * 33, None):
+            with self.assertRaises(ValueError):
+                ASSIST.build_start_command(bad)
+            with self.assertRaises(ValueError):
+                ASSIST.build_stop_command(bad)
+        session_id = ASSIST.new_session_id()
+        self.assertTrue(ASSIST.valid_session_id(session_id))
+        self.assertNotEqual(session_id, ASSIST.new_session_id())
+
+    def test_frame_header(self):
+        pcm = bytes(range(10))
+        parsed = ASSIST.parse_audio_frame(frame(sequence=0x01020304, pcm=pcm))
+        self.assertEqual(parsed, (ID, False, 0x01020304, pcm))
+        raw = b"HTA1" + bytes([16]) + OTHER_ID.encode() + b"\x01" + b"\x07\x00\x00\x00"
+        self.assertEqual(ASSIST.parse_audio_frame(bytearray(raw)), (OTHER_ID, True, 7, b""))
+        self.assertEqual(ASSIST.parse_audio_frame(memoryview(raw)), (OTHER_ID, True, 7, b""))
+
+    def test_frame_header_rejects_malformed(self):
+        good = frame()
+        cases = {
+            "wrong magic": b"HTA2" + good[4:],
+            "id too short": b"HTA1" + bytes([15]) + b"0" * 15 + good[21:],
+            "id too long": b"HTA1" + bytes([33]) + b"0" * 33 + b"\x00" * 5,
+            "uppercase id": b"HTA1" + bytes([16]) + b"ABCDEF0123456789" + b"\x00" * 5,
+            "non-ascii id": b"HTA1" + bytes([16]) + b"\xff" * 16 + b"\x00" * 5,
+            "short header": good[:5 + 32 + 3],
+            "only magic": b"HTA1",
+            "empty": b"",
+            "odd pcm": frame(pcm=b"\x00\x01\x02"),
+            "oversized": frame(pcm=b"\x00" * (ASSIST.FRAME_MAX_PCM_BYTES + 2)),
+        }
+        for name, payload in cases.items():
+            self.assertIsNone(ASSIST.parse_audio_frame(payload), name)
+        self.assertIsNone(ASSIST.parse_audio_frame("HTA1"))
+        self.assertIsNone(ASSIST.parse_audio_frame(None))
+
+    def test_status(self):
+        self.assertEqual(ASSIST.parse_status(json.dumps({"v": 1, "state": "listening", "id": ID})),
+                         {"state": "listening", "id": ID, "error": None})
+        self.assertEqual(
+            ASSIST.parse_status(json.dumps({"v": 1, "state": "idle", "id": ID,
+                                            "error": "timeout"}).encode()),
+            {"state": "idle", "id": ID, "error": "timeout"})
+        self.assertEqual(ASSIST.parse_status(json.dumps({"v": 1, "state": "idle",
+                                                         "error": "new_code"}))["error"],
+                         "unknown")
+        self.assertIsNone(ASSIST.parse_status(json.dumps({"v": 1, "state": "idle",
+                                                          "id": "bad"}))["id"])
+        for bad in ({"v": 2, "state": "idle"}, {"v": 1, "state": "speaking"}, {"v": 1}, []):
+            self.assertIsNone(ASSIST.parse_status(json.dumps(bad)), bad)
+        self.assertIsNone(ASSIST.parse_status("not json"))
+        self.assertIsNone(ASSIST.parse_status(b"\xff"))
+        self.assertIsNone(ASSIST.parse_status("{" + " " * 600 + "}"))
+
+    def test_capability_is_never_inferred(self):
+        self.assertEqual(CAPABILITIES.normalise_capabilities({"audio_input": True}),
+                         {"audio_input": True})
+        with self.assertRaises(ValueError):
+            CAPABILITIES.normalise_capabilities({"audio_input": 1})
+        self.assertFalse(CAPABILITIES.supports({"model": "tab5"}, "audio_input"))
+        announced = {"capabilities": {"audio_input": True}}
+        self.assertTrue(CAPABILITIES.supports(announced, "audio_input"))
+        stale = CAPABILITIES.stale_assist
+        self.assertTrue(stale("mac_assist_satellite", "assist_satellite", {}))
+        self.assertTrue(stale("mac_assist", "button", {}))
+        self.assertFalse(stale("mac_assist_satellite", "assist_satellite", announced))
+        self.assertFalse(stale("mac_assist", "button", announced))
+        self.assertFalse(stale("mac_other", "button", {}))
+        self.assertFalse(stale("mac_assist", "switch", {}))
+
+    def test_assist_is_sealed_data(self):
+        self.assertIn("assist", load_module("command_channel").SEALED_DATA)
+
+    def test_platform_registration(self):
+        tree = ast.parse((ROOT / "__init__.py").read_text(encoding="utf-8"))
+        values = {target.id: node.value for node in tree.body if isinstance(node, ast.Assign)
+                  for target in node.targets if isinstance(target, ast.Name)}
+        self.assertIn("button", ast.literal_eval(values["PLATFORMS"]))
+        self.assertNotIn("assist_satellite", ast.literal_eval(values["PLATFORMS"]))
+        self.assertEqual(ast.literal_eval(values["ASSIST_PLATFORMS"]), ["assist_satellite"])
+        manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+        self.assertIn("assist_satellite", manifest["after_dependencies"])
+        self.assertIn("assist_pipeline", manifest["after_dependencies"])
+
+    def test_translations(self):
+        for name in ("strings.json", "translations/en.json", "translations/de.json"):
+            data = json.loads((ROOT / name).read_text(encoding="utf-8"))
+            self.assertIn("name", data["entity"]["assist_satellite"]["assist"], name)
+            self.assertIn("name", data["entity"]["button"]["assist"], name)
+            for key in ("assist_unavailable", "assist_not_connected"):
+                self.assertIn("message", data["exceptions"][key], name)
+
+
+class PublishHelperTest(unittest.IsolatedAsyncioTestCase):
+    async def test_sealed_plain_and_paired_without_bridge(self):
+        published = []
+
+        async def publish(hass, topic, payload, qos=0, retain=False):
+            published.append((topic, payload, qos, retain))
+
+        class Bridge:
+            sent = []
+
+            async def async_publish_assist_command(self, text):
+                self.sent.append(text)
+
+        bridge = Bridge()
+        self.assertTrue(await ASSIST.async_publish_assist_command(None, bridge, True, BASE, "x", publish))
+        self.assertEqual((bridge.sent, published), (["x"], []))
+        self.assertFalse(await ASSIST.async_publish_assist_command(None, None, True, BASE, "x", publish))
+        self.assertEqual(published, [])
+        self.assertTrue(await ASSIST.async_publish_assist_command(None, None, False, BASE, "y", publish))
+        self.assertEqual(published, [(f"{BASE}/cmnd/assist", "y", 0, False)])
+
+
+async def collect(session):
+    return [chunk async for chunk in session.stream()]
+
+
+class AudioSessionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_ends_on_last_flag(self):
+        session = ASSIST.AudioSession(ID)
+        self.assertTrue(session.feed(ASSIST.parse_audio_frame(frame(sequence=0, pcm=b"\x01\x00"))))
+        # Other sessions, duplicates and old frames are dropped.
+        self.assertFalse(session.feed(ASSIST.parse_audio_frame(frame(OTHER_ID, 1, b"\x09\x00"))))
+        self.assertFalse(session.feed(ASSIST.parse_audio_frame(frame(sequence=0, pcm=b"\x08\x00"))))
+        self.assertTrue(session.feed(ASSIST.parse_audio_frame(frame(sequence=2, pcm=b"\x02\x00"))))
+        self.assertFalse(session.feed(ASSIST.parse_audio_frame(frame(sequence=1, pcm=b"\x07\x00"))))
+        self.assertTrue(session.feed(ASSIST.parse_audio_frame(frame(sequence=3, pcm=b"", last=True))))
+        self.assertTrue(session.finished)
+        self.assertFalse(session.feed(ASSIST.parse_audio_frame(frame(sequence=4))))
+        self.assertEqual(await collect(session), [b"\x01\x00", b"\x02\x00"])
+        self.assertEqual(session.dropped, 2)
+
+    async def test_stream_ends_on_finish(self):
+        session = ASSIST.AudioSession(ID)
+        session.feed(ASSIST.parse_audio_frame(frame(sequence=0, pcm=b"\x01\x00")))
+        task = asyncio.ensure_future(collect(session))
+        await asyncio.sleep(0)
+        session.finish()
+        session.finish()
+        self.assertEqual(await asyncio.wait_for(task, 1), [b"\x01\x00"])
+
+    async def test_stream_ends_after_timeout_without_frames(self):
+        session = ASSIST.AudioSession(ID, frame_timeout_s=0.05)
+        session.feed(ASSIST.parse_audio_frame(frame(sequence=0, pcm=b"\x01\x00")))
+        self.assertEqual(await asyncio.wait_for(collect(session), 1), [b"\x01\x00"])
+        self.assertTrue(session.finished)
+        self.assertEqual(ASSIST.FRAME_TIMEOUT_S, 2.0)
+
+    async def test_queue_is_bounded(self):
+        session = ASSIST.AudioSession(ID, max_frames=2)
+        for sequence in range(4):
+            session.feed(ASSIST.parse_audio_frame(frame(sequence=sequence)))
+        session.finish()
+        self.assertEqual(len(await collect(session)), 2)
+        self.assertEqual(session.dropped, 2)
+
+
+# Home Assistant stubs ---------------------------------------------------------
+
+
+class FakeMqtt(types.ModuleType):
+    def __init__(self):
+        super().__init__("homeassistant.components.mqtt")
+        self.subscriptions = {}
+        self.encodings = {}
+        self.published = []
+        self.unsubscribed = 0
+        self.ReceiveMessage = types.SimpleNamespace
+
+    async def async_subscribe(self, hass, topic, handler, qos=0, encoding="utf-8"):
+        self.subscriptions[topic] = handler
+        self.encodings[topic] = encoding
+
+        def unsubscribe():
+            self.unsubscribed += 1
+        return unsubscribe
+
+    async def async_publish(self, hass, topic, payload, qos=0, retain=False):
+        self.published.append((topic, json.loads(payload), qos, retain))
+
+
+class EventType(enum.StrEnum):
+    RUN_START = "run-start"
+    RUN_END = "run-end"
+    STT_START = "stt-start"
+    STT_VAD_START = "stt-vad-start"
+    STT_VAD_END = "stt-vad-end"
+    STT_END = "stt-end"
+    INTENT_START = "intent-start"
+    INTENT_END = "intent-end"
+    TTS_START = "tts-start"
+    TTS_END = "tts-end"
+    ERROR = "error"
+
+
+class Stage(enum.StrEnum):
+    WAKE_WORD = "wake_word"
+    STT = "stt"
+    INTENT = "intent"
+    TTS = "tts"
+
+
+@dataclass(frozen=True)
+class Event:
+    type: EventType
+    data: dict | None = None
+
+
+@dataclass
+class Configuration:
+    available_wake_words: list
+    active_wake_words: list
+    max_active_wake_words: int
+
+
+class FakeSatelliteEntity:
+    """The parts of AssistSatelliteEntity the platform relies on."""
+
+    hass = None
+    written = 0
+    tts_finished = 0
+    pipeline = None
+    _attr_tts_options = None
+
+    @property
+    def available(self):
+        return self._attr_available
+
+    @property
+    def tts_options(self):
+        return self._attr_tts_options
+
+    def async_write_ha_state(self):
+        self.written += 1
+
+    async def async_added_to_hass(self):
+        pass
+
+    async def async_will_remove_from_hass(self):
+        pass
+
+    def tts_response_finished(self):
+        self.tts_finished += 1
+
+    async def async_accept_pipeline_from_satellite(self, audio_stream, start_stage=Stage.STT,
+                                                   end_stage=Stage.TTS, wake_word_phrase=None):
+        self.stages = (start_stage, end_stage)
+        await self.pipeline(self, audio_stream)
+
+
+class FakeButtonEntity:
+    hass = None
+
+
+class FakeHomeAssistantError(Exception):
+    def __init__(self, *args, translation_domain=None, translation_key=None, **kwargs):
+        super().__init__(*args)
+        self.translation_domain = translation_domain
+        self.translation_key = translation_key
+
+
+def fake_process_url(hass, media_id):
+    if media_id.startswith("/"):
+        return f"{hass.internal}{media_id}?authSig=x"
+    return media_id
+
+
+def load_platforms(fake_mqtt):
+    package_name = "_hometiles_assist_testpkg"
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(ROOT)]
+    ha = types.ModuleType("homeassistant")
+    components = types.ModuleType("homeassistant.components")
+    components.mqtt = fake_mqtt
+    pipeline = types.ModuleType("homeassistant.components.assist_pipeline")
+    pipeline.PipelineEvent = Event
+    pipeline.PipelineEventType = EventType
+    pipeline.PipelineStage = Stage
+    satellite = types.ModuleType("homeassistant.components.assist_satellite")
+    satellite.AssistSatelliteEntity = FakeSatelliteEntity
+    satellite.AssistSatelliteConfiguration = Configuration
+    button = types.ModuleType("homeassistant.components.button")
+    button.ButtonEntity = FakeButtonEntity
+    media_player = types.ModuleType("homeassistant.components.media_player")
+    media_player.async_process_play_media_url = fake_process_url
+    config_entries = types.ModuleType("homeassistant.config_entries")
+    config_entries.ConfigEntry = object
+    core = types.ModuleType("homeassistant.core")
+    core.HomeAssistant = object
+    core.callback = lambda func: func
+    exceptions = types.ModuleType("homeassistant.exceptions")
+    exceptions.HomeAssistantError = FakeHomeAssistantError
+    helpers = types.ModuleType("homeassistant.helpers")
+    device_registry = types.ModuleType("homeassistant.helpers.device_registry")
+    device_registry.DeviceInfo = dict
+    stubs = {
+        package_name: package,
+        "homeassistant": ha,
+        "homeassistant.components": components,
+        "homeassistant.components.mqtt": fake_mqtt,
+        "homeassistant.components.assist_pipeline": pipeline,
+        "homeassistant.components.assist_satellite": satellite,
+        "homeassistant.components.button": button,
+        "homeassistant.components.media_player": media_player,
+        "homeassistant.config_entries": config_entries,
+        "homeassistant.core": core,
+        "homeassistant.exceptions": exceptions,
+        "homeassistant.helpers": helpers,
+        "homeassistant.helpers.device_registry": device_registry,
+    }
+    with mock.patch.dict(sys.modules, stubs):
+        return (importlib.import_module(f"{package_name}.assist_satellite"),
+                importlib.import_module(f"{package_name}.button"))
+
+
+def entry(capabilities=None, **data):
+    values = {"device_id": "mac", "base_topic": BASE, "model": "waveshare_touch_lcd_7b"}
+    values.update(data)
+    if capabilities is not None:
+        values["capabilities"] = capabilities
+    return types.SimpleNamespace(entry_id="e1", data=values, options={})
+
+
+def message(topic, payload, retain=False):
+    return types.SimpleNamespace(topic=topic, payload=payload, retain=retain)
+
+
+class FakeHass:
+    def __init__(self, bridge=None):
+        self.internal = "http://192.168.1.2:8123"
+        self.data = {"tab5_lvgl": {"entries": {"e1": bridge} if bridge else {}}}
+        self.tasks = []
+
+    def async_create_task(self, coro, name=None, eager_start=True):
+        task = asyncio.ensure_future(coro)
+        self.tasks.append(task)
+        return task
+
+    def async_create_background_task(self, coro, name, eager_start=True):
+        return self.async_create_task(coro, name)
+
+
+class SealingBridge:
+    def __init__(self):
+        self.assist = []
+        self.audio = []
+
+    async def async_publish_assist_command(self, text):
+        self.assist.append(json.loads(text))
+
+    async def async_publish_audio_command(self, text):
+        self.audio.append(json.loads(text))
+
+
+async def settle():
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+class AssistSatellitePlatformTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.mqtt = FakeMqtt()
+        self.satellite_module, self.button_module = load_platforms(self.mqtt)
+        self.chunks = []
+        self.events = []
+        self.pipeline_done = asyncio.Event()
+
+    async def created(self, module, config_entry):
+        result = []
+        await module.async_setup_entry(None, config_entry, result.extend)
+        return result
+
+    async def start(self, bridge=None, pipeline=None):
+        [satellite] = await self.created(self.satellite_module, entry({"audio_input": True}))
+        satellite.hass = FakeHass(bridge)
+        satellite.entity_id = "assist_satellite.panel_assist"
+        satellite.pipeline = pipeline or self.vad_pipeline
+        await satellite.async_added_to_hass()
+        return satellite
+
+    async def deliver(self, topic, payload):
+        await self.mqtt.subscriptions[topic](message(topic, payload))
+
+    async def send_frames(self, session_id, count, start=0):
+        for sequence in range(start, start + count):
+            await self.deliver(f"{BASE}/stat/assist_audio",
+                               frame(session_id, sequence, bytes([sequence, 0])))
+
+    def emit(self, satellite, event_type, data=None):
+        self.events.append(event_type)
+        satellite.on_pipeline_event(Event(event_type, data))
+
+    async def vad_pipeline(self, satellite, stream):
+        """Read two chunks, detect the end of speech, answer with TTS."""
+        self.emit(satellite, EventType.RUN_START)
+        self.emit(satellite, EventType.STT_START)
+        async for chunk in stream:
+            self.chunks.append(chunk)
+            if len(self.chunks) == 2:
+                break
+        self.emit(satellite, EventType.STT_VAD_END)
+        self.emit(satellite, EventType.STT_VAD_END)
+        self.emit(satellite, EventType.STT_END, {"stt_output": {"text": "hi"}})
+        self.emit(satellite, EventType.TTS_START, {"tts_input": "Hello"})
+        self.emit(satellite, EventType.TTS_END, {"tts_output": {
+            "media_id": "media-source://tts/x", "token": "abc.mp3",
+            "url": "/api/tts_proxy/abc.mp3", "mime_type": "audio/mpeg"}})
+        self.emit(satellite, EventType.RUN_END)
+        self.pipeline_done.set()
+
+    def assist_commands(self):
+        return [payload for topic, payload, _, _ in self.mqtt.published
+                if topic == f"{BASE}/cmnd/assist"]
+
+    def audio_commands(self):
+        return [payload for topic, payload, _, _ in self.mqtt.published
+                if topic == f"{BASE}/cmnd/audio"]
+
+    async def test_entities_only_for_announced_capability(self):
+        for module in (self.satellite_module, self.button_module):
+            self.assertEqual(await self.created(module, entry()), [])
+            self.assertEqual(await self.created(module, entry({"audio_input": False})), [])
+            self.assertEqual(await self.created(module, entry({"audio_output": True})), [])
+            stale = entry({"audio_input": False})
+            stale.options = {"capabilities": {"audio_input": True}}
+            self.assertEqual(await self.created(module, stale), [])
+        [satellite] = await self.created(self.satellite_module, entry({"audio_input": True}))
+        self.assertEqual(satellite._attr_unique_id, "mac_assist_satellite")
+        self.assertEqual(satellite._attr_translation_key, "assist")
+        self.assertTrue(satellite._attr_has_entity_name)
+        self.assertEqual(satellite.tts_options, {"preferred_format": "mp3"})
+        self.assertFalse(hasattr(satellite, "_attr_supported_features"))
+        [button] = await self.created(self.button_module, entry({"audio_input": True}))
+        self.assertEqual(button._attr_unique_id, "mac_assist")
+        self.assertEqual(button._attr_translation_key, "assist")
+
+    async def test_configuration_has_no_wake_words(self):
+        satellite = await self.start()
+        config = satellite.async_get_configuration()
+        self.assertEqual((config.available_wake_words, config.active_wake_words), ([], []))
+        await satellite.async_set_configuration(Configuration([], ["okay_nabu"], 1))
+        self.assertEqual(self.mqtt.published, [])
+
+    async def test_subscriptions(self):
+        satellite = await self.start()
+        self.assertEqual(set(self.mqtt.subscriptions), {
+            f"{BASE}/stat/assist_audio", f"{BASE}/stat/assist",
+            f"{BASE}/stat/connected", f"{BASE}/stat/audio"})
+        # Microphone frames are binary.
+        self.assertIsNone(self.mqtt.encodings[f"{BASE}/stat/assist_audio"])
+        self.assertEqual(self.mqtt.encodings[f"{BASE}/stat/assist"], "utf-8")
+        await satellite.async_will_remove_from_hass()
+        self.assertEqual(self.mqtt.unsubscribed, 4)
+
+    async def test_tap_to_talk_run(self):
+        satellite = await self.start()
+        await satellite.async_start_tap_to_talk()
+        [start] = self.assist_commands()
+        session_id = start["id"]
+        self.assertEqual(start, {"v": 1, "op": "start", "id": session_id, "max_ms": 15000})
+        self.assertTrue(ASSIST.valid_session_id(session_id))
+        # Frames of another session are ignored.
+        await self.send_frames(OTHER_ID, 1, start=0)
+        await self.send_frames(session_id, 3)
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        await settle()
+        self.assertEqual(satellite.stages, (Stage.STT, Stage.TTS))
+        self.assertEqual(self.chunks, [b"\x00\x00", b"\x01\x00"])
+        # Stop goes out exactly once although VAD end, STT end and run end all ask.
+        self.assertEqual(self.assist_commands(),
+                         [start, {"v": 1, "op": "stop", "id": session_id}])
+        # The answer plays on the speaker with an absolute, signed URL.
+        [play] = self.audio_commands()
+        self.assertEqual(play["op"], "play")
+        self.assertEqual(play["url"], "http://192.168.1.2:8123/api/tts_proxy/abc.mp3?authSig=x")
+        self.assertTrue(ASSIST.valid_session_id(play["id"]))
+        self.assertEqual(satellite.tts_finished, 0)
+        # Another clip finishing does not end the answer; this one does.
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(
+            {"v": 1, "state": "idle", "volume": 0.5, "id": "a" * 16}))
+        self.assertEqual(satellite.tts_finished, 0)
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(
+            {"v": 1, "state": "playing", "volume": 0.5, "id": play["id"]}))
+        self.assertEqual(satellite.tts_finished, 0)
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(
+            {"v": 1, "state": "idle", "volume": 0.5, "id": play["id"]}))
+        self.assertEqual(satellite.tts_finished, 1)
+        self.assertIsNone(satellite._tts_timer)
+        self.assertIsNone(satellite._session)
+        # Late frames of the finished session go nowhere.
+        await self.send_frames(session_id, 1, start=5)
+
+    async def test_paired_panel_uses_the_sealed_channel(self):
+        bridge = SealingBridge()
+        satellite = await self.start(bridge=bridge)
+        await satellite.async_start_tap_to_talk()
+        session_id = bridge.assist[0]["id"]
+        await self.send_frames(session_id, 2)
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        await settle()
+        self.assertEqual(self.mqtt.published, [])
+        self.assertEqual([c["op"] for c in bridge.assist], ["start", "stop"])
+        self.assertEqual(bridge.audio[0]["url"],
+                         "http://192.168.1.2:8123/api/tts_proxy/abc.mp3?authSig=x")
+
+    async def test_paired_panel_without_bridge_never_gets_plaintext(self):
+        satellite = await self.start()
+        satellite._paired = True
+        with self.assertRaises(FakeHomeAssistantError) as raised:
+            await satellite.async_start_tap_to_talk()
+        self.assertEqual(raised.exception.translation_key, "assist_not_connected")
+        self.assertEqual(self.mqtt.published, [])
+        self.assertIsNone(satellite._session)
+
+    async def test_stream_ends_after_last_frame(self):
+        async def pipeline(satellite, stream):
+            self.chunks.extend([chunk async for chunk in stream])
+            self.emit(satellite, EventType.ERROR, {"code": "stt-no-text-recognized"})
+            self.emit(satellite, EventType.RUN_END)
+            self.pipeline_done.set()
+
+        satellite = await self.start(pipeline=pipeline)
+        await satellite.async_start_tap_to_talk()
+        session_id = self.assist_commands()[0]["id"]
+        await self.send_frames(session_id, 2)
+        await self.deliver(f"{BASE}/stat/assist_audio", frame(session_id, 2, b"", last=True))
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        await settle()
+        self.assertEqual(self.chunks, [b"\x00\x00", b"\x01\x00"])
+        self.assertEqual([c["op"] for c in self.assist_commands()], ["start", "stop"])
+        self.assertEqual(self.audio_commands(), [])
+        # No answer was produced: nothing to finish.
+        self.assertEqual(satellite.tts_finished, 0)
+
+    async def test_stream_ends_when_panel_reports_idle(self):
+        async def pipeline(satellite, stream):
+            self.chunks.extend([chunk async for chunk in stream])
+            self.emit(satellite, EventType.RUN_END)
+            self.pipeline_done.set()
+
+        satellite = await self.start(pipeline=pipeline)
+        await satellite.async_start_tap_to_talk()
+        session_id = self.assist_commands()[0]["id"]
+        await self.send_frames(session_id, 1)
+        await self.deliver(f"{BASE}/stat/assist",
+                           json.dumps({"v": 1, "state": "idle", "id": OTHER_ID}))
+        await settle()
+        self.assertFalse(self.pipeline_done.is_set())
+        await self.deliver(f"{BASE}/stat/assist", json.dumps(
+            {"v": 1, "state": "idle", "id": session_id, "error": "timeout"}))
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        self.assertEqual(self.chunks, [b"\x00\x00"])
+
+    async def test_stream_ends_after_two_seconds_without_frames(self):
+        async def pipeline(satellite, stream):
+            self.chunks.extend([chunk async for chunk in stream])
+            self.pipeline_done.set()
+
+        satellite = await self.start(pipeline=pipeline)
+        await satellite.async_start_tap_to_talk()
+        # FRAME_TIMEOUT_S (2 s) is asserted in AudioSessionTest; shortened here.
+        satellite._session.frame_timeout_s = 0.05
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        await settle()
+        self.assertEqual(self.chunks, [])
+        self.assertEqual([c["op"] for c in self.assist_commands()], ["start", "stop"])
+
+    async def test_tts_without_url_returns_to_idle(self):
+        async def pipeline(satellite, stream):
+            async for _ in stream:
+                break
+            self.emit(satellite, EventType.STT_VAD_END)
+            self.emit(satellite, EventType.TTS_START, {"tts_input": "Hello"})
+            self.emit(satellite, EventType.ERROR, {"code": "tts-failed"})
+            self.emit(satellite, EventType.RUN_END)
+            self.pipeline_done.set()
+
+        satellite = await self.start(pipeline=pipeline)
+        await satellite.async_start_tap_to_talk()
+        await self.send_frames(self.assist_commands()[0]["id"], 1)
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        await settle()
+        self.assertEqual(self.audio_commands(), [])
+        self.assertEqual(satellite.tts_finished, 1)
+
+    async def test_offline_panel_is_unavailable_and_ends_the_run(self):
+        async def pipeline(satellite, stream):
+            self.chunks.extend([chunk async for chunk in stream])
+            self.pipeline_done.set()
+
+        satellite = await self.start(pipeline=pipeline)
+        await satellite.async_start_tap_to_talk()
+        await self.deliver(f"{BASE}/stat/connected", "0")
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        self.assertFalse(satellite.available)
+        with self.assertRaises(FakeHomeAssistantError) as raised:
+            await satellite.async_start_tap_to_talk()
+        self.assertEqual(raised.exception.translation_key, "assist_unavailable")
+        await self.deliver(f"{BASE}/stat/connected", "1")
+        self.assertTrue(satellite.available)
+        # A cleared retained status withdraws the microphone.
+        await self.deliver(f"{BASE}/stat/assist", "")
+        self.assertFalse(satellite.available)
+        await self.deliver(f"{BASE}/stat/assist", json.dumps({"v": 1, "state": "idle"}))
+        self.assertTrue(satellite.available)
+
+    async def test_removal_stops_the_microphone(self):
+        blocked = asyncio.Event()
+
+        async def pipeline(satellite, stream):
+            blocked.set()
+            await asyncio.Event().wait()
+
+        satellite = await self.start(pipeline=pipeline)
+        await satellite.async_start_tap_to_talk()
+        await asyncio.wait_for(blocked.wait(), 1)
+        session_id = self.assist_commands()[0]["id"]
+        await satellite.async_will_remove_from_hass()
+        self.assertEqual(self.assist_commands()[1:], [{"v": 1, "op": "stop", "id": session_id}])
+        self.assertEqual(satellite.hass.data["tab5_lvgl"]["assist_satellites"], {})
+
+    async def test_new_press_stops_the_previous_session_first(self):
+        blocked = asyncio.Event()
+
+        async def pipeline(satellite, stream):
+            blocked.set()
+            await asyncio.Event().wait()
+
+        satellite = await self.start(pipeline=pipeline)
+        await satellite.async_start_tap_to_talk()
+        await asyncio.wait_for(blocked.wait(), 1)
+        await satellite.async_start_tap_to_talk()
+        first, stop, second = self.assist_commands()
+        self.assertEqual(stop, {"v": 1, "op": "stop", "id": first["id"]})
+        self.assertEqual(second["op"], "start")
+        self.assertNotEqual(second["id"], first["id"])
+        await satellite.async_will_remove_from_hass()
+
+    async def test_button_starts_the_satellite(self):
+        satellite = await self.start()
+        [button] = await self.created(self.button_module, entry({"audio_input": True}))
+        button.hass = satellite.hass
+        await button.async_press()
+        self.assertEqual(self.assist_commands()[0]["op"], "start")
+        session_id = self.assist_commands()[0]["id"]
+        await self.send_frames(session_id, 2)
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        await satellite.async_will_remove_from_hass()
+        with self.assertRaises(FakeHomeAssistantError) as raised:
+            await button.async_press()
+        self.assertEqual(raised.exception.translation_key, "assist_unavailable")
+
+
+if __name__ == "__main__":
+    unittest.main()

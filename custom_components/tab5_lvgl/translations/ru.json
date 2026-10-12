@@ -254,6 +254,16 @@
         "name": "Внешняя температура"
       }
     },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
     "media_player": {
       "speaker": {
         "name": "Динамик"
@@ -261,6 +271,12 @@
     }
   },
   "exceptions": {
+    "assist_unavailable": {
+      "message": "Микрофон дисплея недоступен: дисплей не в сети или не сообщил о нём."
+    },
+    "assist_not_connected": {
+      "message": "Микрофон дисплея недоступен: зашифрованное соединение ещё не готово."
+    },
     "view_unavailable": {
       "message": "Дисплей не в сети или его каталог видов ещё не готов."
     },

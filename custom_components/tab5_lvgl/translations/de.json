@@ -254,6 +254,16 @@
         "name": "Externe Temperatur"
       }
     },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
     "media_player": {
       "speaker": {
         "name": "Lautsprecher"
@@ -261,6 +271,12 @@
     }
   },
   "exceptions": {
+    "assist_unavailable": {
+      "message": "Das Mikrofon des Displays ist nicht verf\u00fcgbar: Das Display ist offline oder hat es nicht gemeldet."
+    },
+    "assist_not_connected": {
+      "message": "Das Mikrofon des Displays ist nicht erreichbar: Die verschl\u00fcsselte Verbindung ist noch nicht bereit."
+    },
     "view_unavailable": {
       "message": "Das Display ist offline oder seine Ansichtsliste ist noch nicht bereit."
     },

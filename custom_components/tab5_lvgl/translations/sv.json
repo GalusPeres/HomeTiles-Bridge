@@ -254,6 +254,16 @@
         "name": "Extern temperatur"
       }
     },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
     "media_player": {
       "speaker": {
         "name": "Högtalare"
@@ -261,6 +271,12 @@
     }
   },
   "exceptions": {
+    "assist_unavailable": {
+      "message": "Skärmens mikrofon är inte tillgänglig: skärmen är offline eller har inte meddelat den."
+    },
+    "assist_not_connected": {
+      "message": "Skärmens mikrofon kan inte nås: den krypterade anslutningen är inte klar ännu."
+    },
     "view_unavailable": {
       "message": "Skärmen är offline eller dess vykatalog är inte klar."
     },
