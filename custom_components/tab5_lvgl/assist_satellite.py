@@ -5,7 +5,13 @@ Tap to talk: the Bridge picks a session id, asks the panel to capture
 pipeline from the speech-to-text stage, asks the panel to stop once voice
 activity ended, and plays the spoken answer on the panel's own speaker with
 the existing speaker play command (speaker.py). Only panels that announce the
-``audio_input`` capability get the entity. Wake words are not supported.
+``audio_input`` capability get the entity.
+
+Wake word: the panel detects microWakeWord models itself and reports them on
+``{base}/stat/assist_wake``; the Bridge then runs the same flow as a button
+press and passes the word's phrase to the pipeline. The words come from the
+panel's retained status; Home Assistant's wake word settings send the
+``wake_words`` command.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from homeassistant.components.assist_pipeline import (
 from homeassistant.components.assist_satellite import (
     AssistSatelliteConfiguration,
     AssistSatelliteEntity,
+    AssistSatelliteWakeWord,
 )
 from homeassistant.components.media_player import async_process_play_media_url
 from homeassistant.config_entries import ConfigEntry
@@ -33,16 +40,22 @@ from homeassistant.exceptions import HomeAssistantError
 from . import link_mqtt as mqtt
 from .assist import (
     ASSIST_SATELLITES_KEY,
+    MAX_ACTIVE_WAKE_WORDS,
     AudioSession,
     assist_audio_topic,
     assist_satellite_unique_id,
     assist_status_topic,
+    assist_wake_topic,
     async_publish_assist_command,
     build_start_command,
     build_stop_command,
+    build_wake_words_command,
     new_session_id,
     parse_audio_frame,
     parse_status,
+    parse_wake_event,
+    wake_word_info,
+    wake_word_phrase,
 )
 from .capabilities import merged_capabilities_data, supports
 from .command_channel import entry_pairing_key
@@ -107,6 +120,9 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
         self._warnings = RateLimitedWarnings(_WARNING_INTERVAL_S)
         self._subscriptions = []
         self._attr_available = True
+        # Wake words from the panel's retained status (ids).
+        self._available_wake_words: list[str] = []
+        self._active_wake_words: list[str] = []
 
     # Lifecycle -----------------------------------------------------------
 
@@ -142,6 +158,12 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
                                         self._base)
                     return
                 self._mic_withdrawn = False
+                if status["wake_words"] is not None:
+                    self._available_wake_words = status["wake_words"]
+                if status["active_wake_words"] is not None:
+                    self._active_wake_words = [
+                        word for word in status["active_wake_words"]
+                        if word in self._available_wake_words]
                 session = self._session
                 if (session is not None and status["id"] == session.session_id
                         and status["state"] == "idle"):
@@ -153,6 +175,24 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
                     session.finish()
             self._refresh_available()
             self.async_write_ha_state()
+
+        async def handle_wake(msg: mqtt.ReceiveMessage) -> None:
+            event = parse_wake_event(msg.payload, self._available_wake_words)
+            if event is None:
+                if self._warnings.allow("invalid_wake", monotonic()):
+                    _LOGGER.warning("HomeTiles Assist wake event ignored for %s: invalid or "
+                                    "unknown wake word", self._base)
+                return
+            if self._run_active():
+                _LOGGER.debug("HomeTiles Assist wake event %s on %s ignored: run active",
+                              event.sequence, self._base)
+                return
+            try:
+                await self._async_start_run(wake_word_phrase(event.word))
+            except HomeAssistantError as err:
+                if self._warnings.allow("wake_start_failed", monotonic()):
+                    _LOGGER.warning("HomeTiles Assist wake word on %s not started: %s",
+                                    self._base, err.translation_key or err)
 
         async def handle_connected(msg: mqtt.ReceiveMessage) -> None:
             online = parse_connected(msg.payload)
@@ -182,6 +222,8 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
         self._subscriptions.append(await mqtt.async_subscribe(
             self.hass, assist_status_topic(self._base), handle_status, qos=0))
         self._subscriptions.append(await mqtt.async_subscribe(
+            self.hass, assist_wake_topic(self._base), handle_wake, qos=0))
+        self._subscriptions.append(await mqtt.async_subscribe(
             self.hass, state_topic(self._base, "connected"), handle_connected, qos=0))
         self._subscriptions.append(await mqtt.async_subscribe(
             self.hass, speaker.audio_status_topic(self._base), handle_speaker_status, qos=0))
@@ -203,14 +245,31 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
 
     @callback
     def async_get_configuration(self) -> AssistSatelliteConfiguration:
-        # Tap to talk only: the panel has no wake word engine.
+        available = []
+        for word_id in self._available_wake_words:
+            phrase, languages = wake_word_info(word_id)
+            available.append(AssistSatelliteWakeWord(
+                id=word_id, wake_word=phrase, trained_languages=languages))
         return AssistSatelliteConfiguration(
-            available_wake_words=[], active_wake_words=[], max_active_wake_words=0)
+            available_wake_words=available,
+            active_wake_words=list(self._active_wake_words),
+            max_active_wake_words=MAX_ACTIVE_WAKE_WORDS)
 
     async def async_set_configuration(self, config: AssistSatelliteConfiguration) -> None:
-        if config.active_wake_words:
-            _LOGGER.debug("HomeTiles Assist on %s ignores wake words: none are supported",
-                          self._base)
+        active = [word for word in config.active_wake_words
+                  if word in self._available_wake_words][:MAX_ACTIVE_WAKE_WORDS]
+        try:
+            sent = await self._async_send_assist(build_wake_words_command(active))
+        except Exception:  # noqa: BLE001 - reported as not connected below
+            _LOGGER.debug("HomeTiles Assist wake words for %s failed", self._base,
+                          exc_info=True)
+            sent = False
+        if not sent:
+            raise HomeAssistantError(translation_domain=DOMAIN,
+                                     translation_key="assist_not_connected")
+        # The panel's retained status confirms it; until then show the request.
+        self._active_wake_words = active
+        self.async_write_ha_state()
 
     # Commands ------------------------------------------------------------
 
@@ -252,8 +311,16 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
+    def _run_active(self) -> bool:
+        task = self._run_task
+        return task is not None and not task.done()
+
     async def async_start_tap_to_talk(self) -> None:
         """Start one Assist run with the panel microphone."""
+        await self._async_start_run(None)
+
+    async def _async_start_run(self, phrase: str | None) -> None:
+        """Start one Assist run; a wake word passes its phrase to the pipeline."""
         if not self.available:
             raise HomeAssistantError(translation_domain=DOMAIN,
                                      translation_key="assist_unavailable")
@@ -276,15 +343,16 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
             raise HomeAssistantError(translation_domain=DOMAIN,
                                      translation_key="assist_not_connected")
         self._run_task = self.hass.async_create_background_task(
-            self._async_run(session), f"{DOMAIN}_assist_{self._entry_id}")
+            self._async_run(session, phrase), f"{DOMAIN}_assist_{self._entry_id}")
 
-    async def _async_run(self, session: AudioSession) -> None:
+    async def _async_run(self, session: AudioSession, phrase: str | None = None) -> None:
         self._tts_started = False
         try:
             await self.async_accept_pipeline_from_satellite(
                 session.stream(),
                 start_stage=PipelineStage.STT,
                 end_stage=PipelineStage.TTS,
+                wake_word_phrase=phrase,
             )
         except asyncio.CancelledError:
             raise

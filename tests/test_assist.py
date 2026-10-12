@@ -31,6 +31,7 @@ class AssistContractTest(unittest.TestCase):
         self.assertEqual(ASSIST.assist_command_topic(BASE), f"{BASE}/cmnd/assist")
         self.assertEqual(ASSIST.assist_status_topic(BASE), f"{BASE}/stat/assist")
         self.assertEqual(ASSIST.assist_audio_topic(BASE), f"{BASE}/stat/assist_audio")
+        self.assertEqual(ASSIST.assist_wake_topic(BASE), f"{BASE}/stat/assist_wake")
         self.assertEqual(ASSIST.assist_satellite_unique_id("mac"), "mac_assist_satellite")
         self.assertEqual(ASSIST.assist_button_unique_id("mac"), "mac_assist")
 
@@ -80,11 +81,13 @@ class AssistContractTest(unittest.TestCase):
 
     def test_status(self):
         self.assertEqual(ASSIST.parse_status(json.dumps({"v": 1, "state": "listening", "id": ID})),
-                         {"state": "listening", "id": ID, "error": None})
+                         {"state": "listening", "id": ID, "error": None,
+                          "wake_words": None, "active_wake_words": None})
         self.assertEqual(
             ASSIST.parse_status(json.dumps({"v": 1, "state": "idle", "id": ID,
                                             "error": "timeout"}).encode()),
-            {"state": "idle", "id": ID, "error": "timeout"})
+            {"state": "idle", "id": ID, "error": "timeout",
+             "wake_words": None, "active_wake_words": None})
         self.assertEqual(ASSIST.parse_status(json.dumps({"v": 1, "state": "idle",
                                                          "error": "new_code"}))["error"],
                          "unknown")
@@ -95,6 +98,79 @@ class AssistContractTest(unittest.TestCase):
         self.assertIsNone(ASSIST.parse_status("not json"))
         self.assertIsNone(ASSIST.parse_status(b"\xff"))
         self.assertIsNone(ASSIST.parse_status("{" + " " * 600 + "}"))
+
+    def test_status_wake_word_fields(self):
+        status = ASSIST.parse_status(json.dumps({
+            "v": 1, "state": "wake", "wake_words": ["okay_nabu", "hey_jarvis"],
+            "active_wake_words": ["okay_nabu"]}))
+        self.assertEqual(status["state"], "wake")
+        self.assertEqual(status["wake_words"], ["okay_nabu", "hey_jarvis"])
+        self.assertEqual(status["active_wake_words"], ["okay_nabu"])
+        # Reported but empty differs from not reported.
+        status = ASSIST.parse_status(json.dumps({
+            "v": 1, "state": "idle", "wake_words": [], "active_wake_words": []}))
+        self.assertEqual((status["wake_words"], status["active_wake_words"]), ([], []))
+        # Invalid and duplicate ids are dropped; active words must be available.
+        status = ASSIST.parse_status(json.dumps({
+            "v": 1, "state": "idle",
+            "wake_words": ["okay_nabu", "Okay Nabu", 7, "okay_nabu", "x" * 33, "alexa"],
+            "active_wake_words": ["alexa", "hey_jarvis"]}))
+        self.assertEqual(status["wake_words"], ["okay_nabu", "alexa"])
+        self.assertEqual(status["active_wake_words"], ["alexa"])
+        status = ASSIST.parse_status(json.dumps({
+            "v": 1, "state": "idle", "wake_words": "okay_nabu", "active_wake_words": {}}))
+        self.assertEqual((status["wake_words"], status["active_wake_words"]), (None, None))
+        many = ASSIST.parse_status(json.dumps({
+            "v": 1, "state": "idle", "wake_words": [f"w{i}" for i in range(40)]}))
+        self.assertEqual(len(many["wake_words"]), ASSIST.WAKE_WORDS_MAX)
+
+    def test_wake_words_command(self):
+        self.assertEqual(json.loads(ASSIST.build_wake_words_command(["okay_nabu"])),
+                         {"v": 1, "op": "wake_words", "active": ["okay_nabu"]})
+        self.assertEqual(json.loads(ASSIST.build_wake_words_command([])),
+                         {"v": 1, "op": "wake_words", "active": []})
+        self.assertEqual(json.loads(ASSIST.build_wake_words_command(("alexa", "alexa"))),
+                         {"v": 1, "op": "wake_words", "active": ["alexa"]})
+        for bad in (None, "okay_nabu", ["Okay Nabu"], [""], [1], ["okay_nabu", "alexa"]):
+            with self.assertRaises(ValueError):
+                ASSIST.build_wake_words_command(bad)
+
+    def test_wake_word_names(self):
+        self.assertEqual(ASSIST.wake_word_info("okay_nabu"), ("Okay Nabu", ["en"]))
+        self.assertEqual(ASSIST.wake_word_info("hey_jarvis"), ("Hey Jarvis", ["en"]))
+        self.assertEqual(ASSIST.wake_word_info("choo_choo_homie"), ("Choo Choo Homie", []))
+        self.assertEqual(ASSIST.wake_word_phrase("okay_nabu"), "Okay Nabu")
+
+    def test_wake_event(self):
+        available = ["okay_nabu"]
+        event = ASSIST.parse_wake_event(
+            json.dumps({"v": 1, "word": "okay_nabu", "seq": 7}).encode(), available)
+        self.assertEqual(event, ("okay_nabu", 7))
+        self.assertEqual(ASSIST.parse_wake_event(
+            json.dumps({"v": 1, "word": "okay_nabu", "seq": 0xFFFFFFFF}), available).sequence,
+            0xFFFFFFFF)
+        bad_cases = [
+            {"v": 2, "word": "okay_nabu", "seq": 1},
+            {"v": 1, "word": "hey_jarvis", "seq": 1},
+            {"v": 1, "word": "Okay Nabu", "seq": 1},
+            {"v": 1, "seq": 1},
+            {"v": 1, "word": "okay_nabu"},
+            {"v": 1, "word": "okay_nabu", "seq": "1"},
+            {"v": 1, "word": "okay_nabu", "seq": True},
+            {"v": 1, "word": "okay_nabu", "seq": 1.0},
+            {"v": 1, "word": "okay_nabu", "seq": -1},
+            {"v": 1, "word": "okay_nabu", "seq": 0x100000000},
+            ["okay_nabu"],
+        ]
+        for bad in bad_cases:
+            self.assertIsNone(ASSIST.parse_wake_event(json.dumps(bad), available), bad)
+        good = json.dumps({"v": 1, "word": "okay_nabu", "seq": 1})
+        self.assertIsNone(ASSIST.parse_wake_event(good, []))
+        self.assertIsNone(ASSIST.parse_wake_event(good, None))
+        self.assertIsNone(ASSIST.parse_wake_event("not json", available))
+        self.assertIsNone(ASSIST.parse_wake_event(b"\xff", available))
+        self.assertIsNone(ASSIST.parse_wake_event(None, available))
+        self.assertIsNone(ASSIST.parse_wake_event("{" + " " * 300 + "}", available))
 
     def test_capability_is_never_inferred(self):
         self.assertEqual(CAPABILITIES.normalise_capabilities({"audio_input": True}),
@@ -252,6 +328,13 @@ class Event:
     data: dict | None = None
 
 
+@dataclass(frozen=True)
+class WakeWord:
+    id: str
+    wake_word: str
+    trained_languages: list
+
+
 @dataclass
 class Configuration:
     available_wake_words: list
@@ -291,6 +374,7 @@ class FakeSatelliteEntity:
     async def async_accept_pipeline_from_satellite(self, audio_stream, start_stage=Stage.STT,
                                                    end_stage=Stage.TTS, wake_word_phrase=None):
         self.stages = (start_stage, end_stage)
+        self.wake_word_phrase = wake_word_phrase
         await self.pipeline(self, audio_stream)
 
 
@@ -325,6 +409,7 @@ def load_platforms(fake_mqtt):
     satellite = types.ModuleType("homeassistant.components.assist_satellite")
     satellite.AssistSatelliteEntity = FakeSatelliteEntity
     satellite.AssistSatelliteConfiguration = Configuration
+    satellite.AssistSatelliteWakeWord = WakeWord
     button = types.ModuleType("homeassistant.components.button")
     button.ButtonEntity = FakeButtonEntity
     media_player = types.ModuleType("homeassistant.components.media_player")
@@ -480,23 +565,159 @@ class AssistSatellitePlatformTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(button._attr_unique_id, "mac_assist")
         self.assertEqual(button._attr_translation_key, "assist")
 
-    async def test_configuration_has_no_wake_words(self):
+    async def announce_wake_words(self, available=("okay_nabu",), active=()):
+        await self.deliver(f"{BASE}/stat/assist", json.dumps({
+            "v": 1, "state": "idle", "wake_words": list(available),
+            "active_wake_words": list(active)}))
+
+    async def wake(self, word="okay_nabu", seq=1):
+        await self.deliver(f"{BASE}/stat/assist_wake",
+                           json.dumps({"v": 1, "word": word, "seq": seq}))
+
+    async def test_configuration_without_announced_wake_words(self):
         satellite = await self.start()
         config = satellite.async_get_configuration()
-        self.assertEqual((config.available_wake_words, config.active_wake_words), ([], []))
+        self.assertEqual((config.available_wake_words, config.active_wake_words,
+                          config.max_active_wake_words), ([], [], 1))
+        # Nothing is available, so the request turns detection off.
         await satellite.async_set_configuration(Configuration([], ["okay_nabu"], 1))
+        self.assertEqual(self.assist_commands(), [{"v": 1, "op": "wake_words", "active": []}])
+
+    async def test_configuration_maps_the_panel_wake_words(self):
+        satellite = await self.start()
+        await self.announce_wake_words(("okay_nabu", "choo_choo_homie"), ("okay_nabu",))
+        config = satellite.async_get_configuration()
+        self.assertEqual(config.available_wake_words, [
+            WakeWord(id="okay_nabu", wake_word="Okay Nabu", trained_languages=["en"]),
+            WakeWord(id="choo_choo_homie", wake_word="Choo Choo Homie", trained_languages=[]),
+        ])
+        self.assertEqual(config.active_wake_words, ["okay_nabu"])
+        self.assertEqual(config.max_active_wake_words, 1)
+        # A later status without the fields keeps the words (older payload shape).
+        await self.deliver(f"{BASE}/stat/assist", json.dumps({"v": 1, "state": "listening"}))
+        self.assertEqual(satellite.async_get_configuration().active_wake_words, ["okay_nabu"])
+        # Turned off on the panel.
+        await self.announce_wake_words(("okay_nabu", "choo_choo_homie"), ())
+        self.assertEqual(satellite.async_get_configuration().active_wake_words, [])
+
+    async def test_set_configuration_sends_the_wake_words_command(self):
+        satellite = await self.start()
+        await self.announce_wake_words(("okay_nabu", "hey_jarvis"))
+        written = satellite.written
+        await satellite.async_set_configuration(
+            Configuration([], ["hey_jarvis", "unknown", "okay_nabu"], 1))
+        self.assertEqual(self.assist_commands(),
+                         [{"v": 1, "op": "wake_words", "active": ["hey_jarvis"]}])
+        self.assertEqual(self.mqtt.published[0][2:], (0, False))
+        self.assertEqual(satellite.async_get_configuration().active_wake_words, ["hey_jarvis"])
+        self.assertEqual(satellite.written, written + 1)
+        await satellite.async_set_configuration(Configuration([], [], 1))
+        self.assertEqual(self.assist_commands()[-1], {"v": 1, "op": "wake_words", "active": []})
+        self.assertEqual(satellite.async_get_configuration().active_wake_words, [])
+
+    async def test_set_configuration_is_sealed_when_paired(self):
+        bridge = SealingBridge()
+        satellite = await self.start(bridge=bridge)
+        satellite._paired = True
+        await self.announce_wake_words()
+        await satellite.async_set_configuration(Configuration([], ["okay_nabu"], 1))
+        self.assertEqual(bridge.assist, [{"v": 1, "op": "wake_words", "active": ["okay_nabu"]}])
         self.assertEqual(self.mqtt.published, [])
+
+    async def test_set_configuration_paired_without_bridge_fails(self):
+        satellite = await self.start()
+        satellite._paired = True
+        await self.announce_wake_words()
+        with self.assertRaises(FakeHomeAssistantError) as raised:
+            await satellite.async_set_configuration(Configuration([], ["okay_nabu"], 1))
+        self.assertEqual(raised.exception.translation_key, "assist_not_connected")
+        self.assertEqual(self.mqtt.published, [])
+        self.assertEqual(satellite.async_get_configuration().active_wake_words, [])
+
+    async def test_wake_word_starts_a_run_with_its_phrase(self):
+        satellite = await self.start()
+        await self.announce_wake_words(active=("okay_nabu",))
+        await self.wake()
+        [start] = self.assist_commands()
+        self.assertEqual(start["op"], "start")
+        self.assertEqual(start["max_ms"], 15000)
+        await self.send_frames(start["id"], 2)
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        await settle()
+        self.assertEqual(satellite.stages, (Stage.STT, Stage.TTS))
+        self.assertEqual(satellite.wake_word_phrase, "Okay Nabu")
+        self.assertEqual(self.assist_commands()[1], {"v": 1, "op": "stop", "id": start["id"]})
+        self.assertEqual(len(self.audio_commands()), 1)
+
+    async def test_button_run_has_no_wake_word_phrase(self):
+        satellite = await self.start()
+        await satellite.async_start_tap_to_talk()
+        await self.send_frames(self.assist_commands()[0]["id"], 2)
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        self.assertIsNone(satellite.wake_word_phrase)
+
+    async def test_wake_word_paired_uses_the_sealed_channel(self):
+        bridge = SealingBridge()
+        satellite = await self.start(bridge=bridge)
+        satellite._paired = True
+        await self.announce_wake_words()
+        await self.wake()
+        self.assertEqual([c["op"] for c in bridge.assist], ["start"])
+        self.assertEqual(self.mqtt.published, [])
+        await satellite.async_will_remove_from_hass()
+
+    async def test_invalid_or_unknown_wake_events_are_ignored(self):
+        satellite = await self.start()
+        # Before the status announced any word, nothing is available.
+        await self.wake()
+        await self.announce_wake_words()
+        await self.wake(word="hey_jarvis")
+        for payload in ("not json", json.dumps({"v": 2, "word": "okay_nabu", "seq": 1}),
+                        json.dumps({"v": 1, "word": "okay_nabu", "seq": "1"}), ""):
+            await self.deliver(f"{BASE}/stat/assist_wake", payload)
+        await settle()
+        self.assertEqual(self.assist_commands(), [])
+        self.assertIsNone(satellite._session)
+
+    async def test_wake_events_during_a_run_are_ignored(self):
+        blocked = asyncio.Event()
+
+        async def pipeline(satellite, stream):
+            blocked.set()
+            await asyncio.Event().wait()
+
+        satellite = await self.start(pipeline=pipeline)
+        await self.announce_wake_words()
+        await self.wake(seq=1)
+        await asyncio.wait_for(blocked.wait(), 1)
+        session = satellite._session
+        await self.wake(seq=2)
+        await settle()
+        self.assertEqual([c["op"] for c in self.assist_commands()], ["start"])
+        self.assertIs(satellite._session, session)
+        # A button press still replaces the run.
+        await satellite.async_start_tap_to_talk()
+        self.assertEqual([c["op"] for c in self.assist_commands()], ["start", "stop", "start"])
+        await satellite.async_will_remove_from_hass()
+
+    async def test_wake_event_on_unavailable_panel_is_dropped(self):
+        satellite = await self.start()
+        await self.announce_wake_words()
+        await self.deliver(f"{BASE}/stat/connected", "0")
+        await self.wake()
+        self.assertEqual(self.assist_commands(), [])
+        self.assertIsNone(satellite._session)
 
     async def test_subscriptions(self):
         satellite = await self.start()
         self.assertEqual(set(self.mqtt.subscriptions), {
-            f"{BASE}/stat/assist_audio", f"{BASE}/stat/assist",
+            f"{BASE}/stat/assist_audio", f"{BASE}/stat/assist", f"{BASE}/stat/assist_wake",
             f"{BASE}/stat/connected", f"{BASE}/stat/audio"})
         # Microphone frames are binary.
         self.assertIsNone(self.mqtt.encodings[f"{BASE}/stat/assist_audio"])
         self.assertEqual(self.mqtt.encodings[f"{BASE}/stat/assist"], "utf-8")
         await satellite.async_will_remove_from_hass()
-        self.assertEqual(self.mqtt.unsubscribed, 4)
+        self.assertEqual(self.mqtt.unsubscribed, 5)
 
     async def test_tap_to_talk_run(self):
         satellite = await self.start()
