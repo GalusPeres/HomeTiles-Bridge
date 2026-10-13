@@ -248,6 +248,9 @@
     "switch": {
       "local_camera": {
         "name": "Kamera"
+      },
+      "microphone": {
+        "name": "Mikrofon"
       }
     },
     "binary_sensor": {
@@ -296,6 +299,9 @@
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "W\u0142\u0105cz mikrofon na wy\u015bwietlaczu (Ustawienia > D\u017awi\u0119k) lub najpierw zaszyfruj po\u0142\u0105czenie: Home Assistant mo\u017ce go w\u0142\u0105czy\u0107 tylko przez szyfrowane po\u0142\u0105czenie."
+    },
     "assist_unavailable": {
       "message": "Mikrofon wy\u015bwietlacza jest niedost\u0119pny: wy\u015bwietlacz jest offline lub go nie zg\u0142osi\u0142."
     },

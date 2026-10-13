@@ -60,7 +60,8 @@ FRAME_TIMEOUT_S = 2.0
 AUDIO_QUEUE_MAX_FRAMES = 320
 
 ASSIST_STATES = frozenset({"idle", "listening", "wake"})
-ASSIST_ERRORS = frozenset({"mic_unavailable", "busy", "out_of_memory", "timeout", "invalid"})
+ASSIST_ERRORS = frozenset({"mic_unavailable", "busy", "out_of_memory", "timeout", "invalid",
+                           "mic_off"})
 ASSIST_UNKNOWN_ERROR = "unknown"
 ASSIST_STATUS_MAX_PAYLOAD = 1024
 
@@ -127,6 +128,10 @@ def assist_vad_select_unique_id(device_id: str) -> str:
 
 def assist_wake_word_select_unique_id(device_id: str) -> str:
     return f"{device_id}_assist_wake_word"
+
+
+def assist_microphone_switch_unique_id(device_id: str) -> str:
+    return f"{device_id}_assist_microphone"
 
 
 def assist_button_unique_id(device_id: str) -> str:
@@ -211,6 +216,16 @@ def build_wake_words_command(active: Any) -> str:
     return _encode({"v": ASSIST_PROTOCOL_VERSION, "op": "wake_words", "active": words})
 
 
+def build_mic_command(enabled: Any) -> str:
+    """The panel's microphone privacy switch.
+
+    The panel accepts "on" only on the encrypted command channel.
+    """
+    if not isinstance(enabled, bool):
+        raise ValueError("invalid_mic_state")
+    return _encode({"v": ASSIST_PROTOCOL_VERSION, "op": "mic", "enabled": enabled})
+
+
 class AudioFrame(NamedTuple):
     session_id: str
     last: bool
@@ -287,8 +302,13 @@ def parse_status(payload: Any) -> dict[str, Any] | None:
     active = _wake_word_list(data.get("active_wake_words"))
     if active is not None and available is not None:
         active = [word for word in active if word in available]
+    # None = firmware without the privacy switch.
+    mic_enabled = data.get("mic_enabled")
+    if not isinstance(mic_enabled, bool):
+        mic_enabled = None
     return {"state": state, "id": session_id, "error": error,
-            "wake_words": available, "active_wake_words": active}
+            "wake_words": available, "active_wake_words": active,
+            "mic_enabled": mic_enabled}
 
 
 class WakeEvent(NamedTuple):

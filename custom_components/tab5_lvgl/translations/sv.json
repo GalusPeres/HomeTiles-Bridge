@@ -248,6 +248,9 @@
     "switch": {
       "local_camera": {
         "name": "Kamera"
+      },
+      "microphone": {
+        "name": "Mikrofon"
       }
     },
     "binary_sensor": {
@@ -296,6 +299,9 @@
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Slå på mikrofonen på skärmen (Inställningar > Ljud) eller kryptera anslutningen först: Home Assistant får bara slå på den via den krypterade anslutningen."
+    },
     "assist_unavailable": {
       "message": "Skärmens mikrofon är inte tillgänglig: skärmen är offline eller har inte meddelat den."
     },

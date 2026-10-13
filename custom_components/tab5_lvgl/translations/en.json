@@ -248,6 +248,9 @@
     "switch": {
       "local_camera": {
         "name": "Camera"
+      },
+      "microphone": {
+        "name": "Microphone"
       }
     },
     "binary_sensor": {
@@ -296,6 +299,9 @@
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Turn the microphone on at the display (Settings > Audio), or encrypt the connection first: Home Assistant may only switch it on over the encrypted connection."
+    },
     "assist_unavailable": {
       "message": "The display's microphone is not available: the display is offline or did not announce it."
     },

@@ -248,6 +248,9 @@
     "switch": {
       "local_camera": {
         "name": "Cámara"
+      },
+      "microphone": {
+        "name": "Micrófono"
       }
     },
     "binary_sensor": {
@@ -296,6 +299,9 @@
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Activa el micrófono en la pantalla (Ajustes > Audio) o cifra primero la conexión: Home Assistant solo puede activarlo a través de la conexión cifrada."
+    },
     "assist_unavailable": {
       "message": "El micrófono de la pantalla no está disponible: la pantalla está desconectada o no lo ha anunciado."
     },

@@ -87,12 +87,14 @@ class AssistContractTest(unittest.TestCase):
     def test_status(self):
         self.assertEqual(ASSIST.parse_status(json.dumps({"v": 1, "state": "listening", "id": ID})),
                          {"state": "listening", "id": ID, "error": None,
-                          "wake_words": None, "active_wake_words": None})
+                          "wake_words": None, "active_wake_words": None,
+                          "mic_enabled": None})
         self.assertEqual(
             ASSIST.parse_status(json.dumps({"v": 1, "state": "idle", "id": ID,
                                             "error": "timeout"}).encode()),
             {"state": "idle", "id": ID, "error": "timeout",
-             "wake_words": None, "active_wake_words": None})
+             "wake_words": None, "active_wake_words": None,
+                          "mic_enabled": None})
         self.assertEqual(ASSIST.parse_status(json.dumps({"v": 1, "state": "idle",
                                                          "error": "new_code"}))["error"],
                          "unknown")
@@ -128,6 +130,21 @@ class AssistContractTest(unittest.TestCase):
         many = ASSIST.parse_status(json.dumps({
             "v": 1, "state": "idle", "wake_words": [f"w{i}" for i in range(40)]}))
         self.assertEqual(len(many["wake_words"]), ASSIST.WAKE_WORDS_MAX)
+
+    def test_mic_command_and_status(self):
+        self.assertEqual(json.loads(ASSIST.build_mic_command(False)),
+                         {"v": 1, "op": "mic", "enabled": False})
+        self.assertEqual(json.loads(ASSIST.build_mic_command(True)),
+                         {"v": 1, "op": "mic", "enabled": True})
+        for bad in (None, 1, "false"):
+            with self.assertRaises(ValueError):
+                ASSIST.build_mic_command(bad)
+        status = ASSIST.parse_status(json.dumps({"v": 1, "state": "idle", "error": "mic_off",
+                                                 "mic_enabled": False}))
+        self.assertEqual((status["error"], status["mic_enabled"]), ("mic_off", False))
+        self.assertIsNone(ASSIST.parse_status(json.dumps(
+            {"v": 1, "state": "idle", "mic_enabled": "no"}))["mic_enabled"])
+        self.assertEqual(ASSIST.assist_microphone_switch_unique_id("mac"), "mac_assist_microphone")
 
     def test_wake_words_command(self):
         self.assertEqual(json.loads(ASSIST.build_wake_words_command(["okay_nabu"])),
@@ -192,6 +209,8 @@ class AssistContractTest(unittest.TestCase):
         self.assertFalse(stale("mac_assist", "button", announced))
         self.assertFalse(stale("mac_other", "button", {}))
         self.assertFalse(stale("mac_assist", "switch", {}))
+        self.assertTrue(stale("mac_assist_microphone", "switch", {}))
+        self.assertFalse(stale("mac_assist_microphone", "switch", announced))
         self.assertTrue(stale("mac_assist-pipeline", "select", {}))
         self.assertTrue(stale("mac_assist-vad_sensitivity", "select", {}))
         self.assertFalse(stale("mac_assist-pipeline", "select", announced))
@@ -223,7 +242,8 @@ class AssistContractTest(unittest.TestCase):
             self.assertEqual(set(selects["pipeline"]["state"]), {"preferred"}, name)
             self.assertEqual(set(selects["vad_sensitivity"]["state"]),
                              {"default", "aggressive", "relaxed"}, name)
-            for key in ("assist_unavailable", "assist_not_connected"):
+            self.assertIn("name", data["entity"]["switch"]["microphone"], name)
+            for key in ("assist_unavailable", "assist_not_connected", "microphone_needs_pairing"):
                 self.assertIn("message", data["exceptions"][key], name)
 
 
@@ -1084,3 +1104,77 @@ class AssistSatellitePlatformTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MicrophoneSwitchTest(unittest.IsolatedAsyncioTestCase):
+    """The Microphone switch mirrors the panel status and switches via the satellite."""
+
+    def make(self):
+        class Entity:
+            async def async_added_to_hass(self):
+                pass
+
+        class Category:
+            CONFIG = "config"
+
+        written = []
+        scope = {"SwitchEntity": Entity, "EntityCategory": Category,
+                 "HomeAssistantError": FakeHomeAssistantError, "DOMAIN": "tab5_lvgl",
+                 "ASSIST_SATELLITES_KEY": ASSIST.ASSIST_SATELLITES_KEY,
+                 "assist_status_topic": ASSIST.assist_status_topic,
+                 "assist_microphone_switch_unique_id": ASSIST.assist_microphone_switch_unique_id,
+                 "parse_assist_status": ASSIST.parse_status,
+                 "entry_device_info": lambda entry: {}, "entry_device_id": lambda entry: "mac",
+                 "ConfigEntry": object}
+        tree = ast.parse((ROOT / "switch.py").read_text(encoding="utf-8"))
+        body = [node for node in tree.body
+                if getattr(node, "name", None) == "HomeTilesMicrophoneSwitch"]
+        exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])),
+                     "switch.py", "exec"), scope)
+        switch = scope["HomeTilesMicrophoneSwitch"](types.SimpleNamespace(entry_id="e1"), BASE)
+        switch.async_write_ha_state = lambda: written.append(switch._attr_is_on)
+        return switch, written
+
+    def test_mirrors_the_panel_status(self):
+        switch, _ = self.make()
+        self.assertEqual(switch._attr_unique_id, "mac_assist_microphone")
+        self.assertFalse(switch._attr_available)
+        # Firmware without the privacy switch leaves it unavailable.
+        self.assertTrue(switch.apply_status(json.dumps({"v": 1, "state": "idle"})))
+        self.assertFalse(switch._attr_available)
+        self.assertTrue(switch.apply_status(json.dumps(
+            {"v": 1, "state": "idle", "mic_enabled": True})))
+        self.assertTrue(switch._attr_available)
+        self.assertTrue(switch._attr_is_on)
+        self.assertEqual(switch.icon, "mdi:microphone")
+        self.assertTrue(switch.apply_status(json.dumps(
+            {"v": 1, "state": "idle", "mic_enabled": False})))
+        self.assertFalse(switch._attr_is_on)
+        self.assertEqual(switch.icon, "mdi:microphone-off")
+        self.assertFalse(switch.apply_status("not json"))
+        self.assertTrue(switch.apply_status(""))
+        self.assertFalse(switch._attr_available)
+
+    async def test_switches_through_the_satellite(self):
+        switch, written = self.make()
+        sent = []
+
+        class Satellite:
+            async def async_set_microphone(self, enabled):
+                sent.append(enabled)
+
+        switch.hass = types.SimpleNamespace(data={"tab5_lvgl": {
+            ASSIST.ASSIST_SATELLITES_KEY: {"e1": Satellite()}}})
+        await switch.async_turn_off()
+        await switch.async_turn_on()
+        self.assertEqual(sent, [False, True])
+        self.assertEqual(written, [False, True])
+        switch.hass = types.SimpleNamespace(data={})
+        with self.assertRaises(FakeHomeAssistantError):
+            await switch.async_turn_off()
+
+    def test_satellite_needs_pairing_to_turn_on(self):
+        source = (ROOT / "assist_satellite.py").read_text(encoding="utf-8")
+        self.assertIn('if enabled and not self._paired:', source)
+        self.assertIn('translation_key="microphone_needs_pairing"', source)
+        self.assertIn("build_mic_command(enabled)", source)

@@ -248,6 +248,9 @@
     "switch": {
       "local_camera": {
         "name": "Cam\u00e9ra"
+      },
+      "microphone": {
+        "name": "Microphone"
       }
     },
     "binary_sensor": {
@@ -296,6 +299,9 @@
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Activez le microphone sur l\u2019\u00e9cran (Param\u00e8tres > Audio) ou chiffrez d\u2019abord la connexion : Home Assistant ne peut l\u2019activer que via la connexion chiffr\u00e9e."
+    },
     "assist_unavailable": {
       "message": "Le microphone de l\u2019\u00e9cran n\u2019est pas disponible : l\u2019\u00e9cran est hors ligne ou ne l\u2019a pas annonc\u00e9."
     },

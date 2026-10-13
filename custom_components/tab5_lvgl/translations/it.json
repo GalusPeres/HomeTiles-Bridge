@@ -248,6 +248,9 @@
     "switch": {
       "local_camera": {
         "name": "Telecamera"
+      },
+      "microphone": {
+        "name": "Microfono"
       }
     },
     "binary_sensor": {
@@ -296,6 +299,9 @@
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Attiva il microfono sul display (Impostazioni > Audio) oppure cifra prima la connessione: Home Assistant può attivarlo solo tramite la connessione cifrata."
+    },
     "assist_unavailable": {
       "message": "Il microfono del display non è disponibile: il display è offline o non lo ha annunciato."
     },

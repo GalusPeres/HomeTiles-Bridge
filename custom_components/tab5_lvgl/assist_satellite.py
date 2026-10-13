@@ -51,6 +51,7 @@ from .assist import (
     async_publish_assist_command,
     build_start_command,
     build_stop_command,
+    build_mic_command,
     build_wake_words_command,
     new_session_id,
     parse_audio_frame,
@@ -296,6 +297,25 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
         # The panel's retained status confirms it; until then show the request.
         self._active_wake_words = active
         self.async_write_ha_state()
+
+    async def async_set_microphone(self, enabled: bool) -> None:
+        """Turn the panel's microphone privacy switch on or off.
+
+        The panel accepts "on" only over the encrypted channel, so an
+        unpaired panel can only be switched on at the panel itself.
+        """
+        if enabled and not self._paired:
+            raise HomeAssistantError(translation_domain=DOMAIN,
+                                     translation_key="microphone_needs_pairing")
+        try:
+            sent = await self._async_send_assist(build_mic_command(enabled))
+        except Exception:  # noqa: BLE001 - reported as not connected below
+            _LOGGER.debug("HomeTiles microphone switch for %s failed", self._base,
+                          exc_info=True)
+            sent = False
+        if not sent:
+            raise HomeAssistantError(translation_domain=DOMAIN,
+                                     translation_key="assist_not_connected")
 
     # Commands ------------------------------------------------------------
 

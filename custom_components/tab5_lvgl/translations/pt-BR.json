@@ -248,6 +248,9 @@
     "switch": {
       "local_camera": {
         "name": "Câmera"
+      },
+      "microphone": {
+        "name": "Microfone"
       }
     },
     "binary_sensor": {
@@ -296,6 +299,9 @@
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Ligue o microfone na tela (Configurações > Áudio) ou criptografe a conexão primeiro: o Home Assistant só pode ligá-lo pela conexão criptografada."
+    },
     "assist_unavailable": {
       "message": "O microfone da tela não está disponível: a tela está offline ou não o anunciou."
     },

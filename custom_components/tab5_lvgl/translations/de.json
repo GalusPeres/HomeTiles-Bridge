@@ -248,6 +248,9 @@
     "switch": {
       "local_camera": {
         "name": "Kamera"
+      },
+      "microphone": {
+        "name": "Mikrofon"
       }
     },
     "binary_sensor": {
@@ -296,6 +299,9 @@
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Schalte das Mikrofon am Display ein (Einstellungen > Audio) oder verschl\u00fcssle zuerst die Verbindung: Home Assistant darf es nur \u00fcber die verschl\u00fcsselte Verbindung einschalten."
+    },
     "assist_unavailable": {
       "message": "Das Mikrofon des Displays ist nicht verf\u00fcgbar: Das Display ist offline oder hat es nicht gemeldet."
     },

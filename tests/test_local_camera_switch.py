@@ -62,6 +62,8 @@ def load_switch_module(fake_mqtt):
     config_entries.ConfigEntry = object
     core = types.ModuleType("homeassistant.core")
     core.HomeAssistant = object
+    exceptions = types.ModuleType("homeassistant.exceptions")
+    exceptions.HomeAssistantError = Exception
     helpers = types.ModuleType("homeassistant.helpers")
     entity = types.ModuleType("homeassistant.helpers.entity")
     entity.EntityCategory = types.SimpleNamespace(CONFIG="config")
@@ -75,6 +77,7 @@ def load_switch_module(fake_mqtt):
         "homeassistant.components.switch": switch,
         "homeassistant.config_entries": config_entries,
         "homeassistant.core": core,
+        "homeassistant.exceptions": exceptions,
         "homeassistant.helpers": helpers,
         "homeassistant.helpers.entity": entity,
         "homeassistant.helpers.device_registry": device_registry,

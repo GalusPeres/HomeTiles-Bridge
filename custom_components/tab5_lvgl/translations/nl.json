@@ -248,6 +248,9 @@
     "switch": {
       "local_camera": {
         "name": "Camera"
+      },
+      "microphone": {
+        "name": "Microfoon"
       }
     },
     "binary_sensor": {
@@ -296,6 +299,9 @@
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Zet de microfoon aan op het scherm (Instellingen > Audio) of versleutel eerst de verbinding: Home Assistant mag hem alleen via de versleutelde verbinding aanzetten."
+    },
     "assist_unavailable": {
       "message": "De microfoon van het scherm is niet beschikbaar: het scherm is offline of heeft hem niet gemeld."
     },
