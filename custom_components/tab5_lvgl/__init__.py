@@ -1023,7 +1023,7 @@ def _remove_stale_local_io_entities(hass: HomeAssistant, entry: ConfigEntry) -> 
       # The panel no longer announces its speaker (codec missing or older
       # firmware).
       stale.append(entity.entity_id)
-    elif (entity.domain in ("assist_satellite", "button")
+    elif (entity.domain in ("assist_satellite", "button", "select")
           and stale_assist(unique_id, entity.domain, merged)):
       # The panel no longer announces its microphone.
       stale.append(entity.entity_id)

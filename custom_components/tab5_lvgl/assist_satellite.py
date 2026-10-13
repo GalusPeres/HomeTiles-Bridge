@@ -43,8 +43,10 @@ from .assist import (
     MAX_ACTIVE_WAKE_WORDS,
     AudioSession,
     assist_audio_topic,
+    assist_pipeline_select_unique_id,
     assist_satellite_unique_id,
     assist_status_topic,
+    assist_vad_select_unique_id,
     assist_wake_topic,
     async_publish_assist_command,
     build_start_command,
@@ -108,7 +110,8 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
         self._entry_id = entry.entry_id
         self._paired = entry_pairing_key(entry) is not None
         self._attr_device_info = entry_device_info(entry)
-        self._attr_unique_id = assist_satellite_unique_id(entry_device_id(entry))
+        self._device_id = entry_device_id(entry)
+        self._attr_unique_id = assist_satellite_unique_id(self._device_id)
         self._base = base_topic
         self._session: AudioSession | None = None
         self._run_task: asyncio.Task | None = None
@@ -123,6 +126,25 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
         # Wake words from the panel's retained status (ids).
         self._available_wake_words: list[str] = []
         self._active_wake_words: list[str] = []
+
+    # Assist selects ------------------------------------------------------
+
+    # The select platform may load after this one, so the ids are looked up
+    # per run. Without the selects Home Assistant uses its preferred pipeline
+    # and default sensitivity.
+
+    def _select_entity_id(self, unique_id: str) -> str | None:
+        from homeassistant.helpers import entity_registry as er
+
+        return er.async_get(self.hass).async_get_entity_id("select", DOMAIN, unique_id)
+
+    @property
+    def pipeline_entity_id(self) -> str | None:
+        return self._select_entity_id(assist_pipeline_select_unique_id(self._device_id))
+
+    @property
+    def vad_sensitivity_entity_id(self) -> str | None:
+        return self._select_entity_id(assist_vad_select_unique_id(self._device_id))
 
     # Lifecycle -----------------------------------------------------------
 

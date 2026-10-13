@@ -218,6 +218,20 @@
           "60min": "60 min",
           "never": "Nooit"
         }
+      },
+      "pipeline": {
+        "name": "Assistent",
+        "state": {
+          "preferred": "Voorkeur"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Detectie einde spraak",
+        "state": {
+          "default": "Standaard",
+          "aggressive": "Agressief",
+          "relaxed": "Ontspannen"
+        }
       }
     },
     "switch": {

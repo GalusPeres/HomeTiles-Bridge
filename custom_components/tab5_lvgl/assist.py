@@ -107,6 +107,24 @@ def assist_satellite_unique_id(device_id: str) -> str:
     return f"{device_id}{ASSIST_SATELLITE_UNIQUE_ID_SUFFIX}"
 
 
+def assist_select_prefix(device_id: str) -> str:
+    """Unique id prefix of the Assistant and Finished speaking selects.
+
+    Home Assistant's AssistPipelineSelect and VadSensitivitySelect append
+    ``-pipeline`` and ``-vad_sensitivity``; the pipeline select is what lists
+    the panel under Settings > Voice assistants > Assist devices.
+    """
+    return f"{device_id}_assist"
+
+
+def assist_pipeline_select_unique_id(device_id: str) -> str:
+    return f"{assist_select_prefix(device_id)}-pipeline"
+
+
+def assist_vad_select_unique_id(device_id: str) -> str:
+    return f"{assist_select_prefix(device_id)}-vad_sensitivity"
+
+
 def assist_button_unique_id(device_id: str) -> str:
     return f"{device_id}{ASSIST_BUTTON_UNIQUE_ID_SUFFIX}"
 

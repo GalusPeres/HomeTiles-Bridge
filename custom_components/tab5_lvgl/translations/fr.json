@@ -218,6 +218,20 @@
           "60min": "60 min",
           "never": "Jamais"
         }
+      },
+      "pipeline": {
+        "name": "Assistant",
+        "state": {
+          "preferred": "Pr\u00e9f\u00e9r\u00e9"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "D\u00e9tection de fin de parole",
+        "state": {
+          "default": "Par d\u00e9faut",
+          "aggressive": "Agressive",
+          "relaxed": "D\u00e9tendue"
+        }
       }
     },
     "switch": {

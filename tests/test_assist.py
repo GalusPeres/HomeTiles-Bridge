@@ -34,6 +34,11 @@ class AssistContractTest(unittest.TestCase):
         self.assertEqual(ASSIST.assist_wake_topic(BASE), f"{BASE}/stat/assist_wake")
         self.assertEqual(ASSIST.assist_satellite_unique_id("mac"), "mac_assist_satellite")
         self.assertEqual(ASSIST.assist_button_unique_id("mac"), "mac_assist")
+        # AssistPipelineSelect / VadSensitivitySelect append these suffixes.
+        self.assertEqual(ASSIST.assist_select_prefix("mac"), "mac_assist")
+        self.assertEqual(ASSIST.assist_pipeline_select_unique_id("mac"), "mac_assist-pipeline")
+        self.assertEqual(ASSIST.assist_vad_select_unique_id("mac"),
+                         "mac_assist-vad_sensitivity")
 
     def test_commands(self):
         self.assertEqual(json.loads(ASSIST.build_start_command(ID)),
@@ -187,6 +192,10 @@ class AssistContractTest(unittest.TestCase):
         self.assertFalse(stale("mac_assist", "button", announced))
         self.assertFalse(stale("mac_other", "button", {}))
         self.assertFalse(stale("mac_assist", "switch", {}))
+        self.assertTrue(stale("mac_assist-pipeline", "select", {}))
+        self.assertTrue(stale("mac_assist-vad_sensitivity", "select", {}))
+        self.assertFalse(stale("mac_assist-pipeline", "select", announced))
+        self.assertFalse(stale("mac_view", "select", {}))
 
     def test_assist_is_sealed_data(self):
         self.assertIn("assist", load_module("command_channel").SEALED_DATA)
@@ -207,8 +216,80 @@ class AssistContractTest(unittest.TestCase):
             data = json.loads((ROOT / name).read_text(encoding="utf-8"))
             self.assertIn("name", data["entity"]["assist_satellite"]["assist"], name)
             self.assertIn("name", data["entity"]["button"]["assist"], name)
+            selects = data["entity"]["select"]
+            self.assertEqual(set(selects["pipeline"]["state"]), {"preferred"}, name)
+            self.assertEqual(set(selects["vad_sensitivity"]["state"]),
+                             {"default", "aggressive", "relaxed"}, name)
             for key in ("assist_unavailable", "assist_not_connected"):
                 self.assertIn("message", data["exceptions"][key], name)
+
+
+class AssistSelectsTest(unittest.IsolatedAsyncioTestCase):
+    """The Assistant select is what lists the panel under Assist devices."""
+
+    async def created(self, capabilities, components=("assist_pipeline",)):
+        class Select:
+            def __init__(self, *args):
+                self.args = args
+
+        class PipelineSelect(Select):
+            pass
+
+        class VadSelect(Select):
+            pass
+
+        pipeline = types.ModuleType("homeassistant.components.assist_pipeline")
+        pipeline.AssistPipelineSelect = PipelineSelect
+        pipeline.VadSensitivitySelect = VadSelect
+        scope = {
+            "DOMAIN": "tab5_lvgl", "entry_base_topic": lambda entry: BASE,
+            "entry_device_id": lambda entry: "mac",
+            "entry_device_info": lambda entry: {"identifiers": {("tab5_lvgl", "mac")}},
+            "assist_select_prefix": ASSIST.assist_select_prefix,
+            "merged_capabilities_data": CAPABILITIES.merged_capabilities_data,
+            "supports": CAPABILITIES.supports,
+            "Tab5SleepSelect": lambda *args: "sleep",
+            "HomeTilesViewSelect": lambda *args: "view",
+            "TOPIC_SLEEP_MAINS": "sleep_mains", "TOPIC_SLEEP_BATTERY": "sleep_battery",
+        }
+        tree = ast.parse((ROOT / "select.py").read_text(encoding="utf-8"))
+        names = {"async_setup_entry", "_assist_selects"}
+        tree = ast.Module(body=[node for node in tree.body if getattr(node, "name", None) in names],
+                          type_ignores=[])
+        exec(compile(ast.fix_missing_locations(tree), "select.py", "exec"), scope)
+        hass = types.SimpleNamespace(config=types.SimpleNamespace(components=set(components)))
+        created = []
+        entry = types.SimpleNamespace(data={"capabilities": capabilities}, options={})
+        with mock.patch.dict(sys.modules, {
+                "homeassistant.components.assist_pipeline": pipeline}):
+            await scope["async_setup_entry"](hass, entry, created.extend)
+        return hass, created, PipelineSelect, VadSelect
+
+    def test_select_module_names_resolve(self):
+        tree = ast.parse((ROOT / "select.py").read_text(encoding="utf-8"))
+        imported = {alias.asname or alias.name for node in tree.body
+                    if isinstance(node, ast.ImportFrom) for alias in node.names}
+        self.assertTrue({"DOMAIN", "assist_select_prefix", "entry_device_id",
+                         "entry_device_info"} <= imported)
+
+    async def test_selects_only_with_microphone(self):
+        _, created, _, _ = await self.created({})
+        self.assertEqual(created, ["sleep", "sleep"])
+
+    async def test_no_selects_without_assist_pipeline(self):
+        _, created, _, _ = await self.created({"audio_input": True}, components=())
+        self.assertEqual(created, ["sleep", "sleep"])
+
+    async def test_selects_join_the_panel_device(self):
+        hass, created, PipelineSelect, VadSelect = await self.created({"audio_input": True})
+        pipeline, vad = created[2:]
+        self.assertIsInstance(pipeline, PipelineSelect)
+        self.assertEqual(pipeline.args, (hass, "tab5_lvgl", "mac_assist"))
+        self.assertIsInstance(vad, VadSelect)
+        self.assertEqual(vad.args, (hass, "mac_assist"))
+        for select in (pipeline, vad):
+            self.assertTrue(select._attr_has_entity_name)
+            self.assertEqual(select._attr_device_info, {"identifiers": {("tab5_lvgl", "mac")}})
 
 
 class PublishHelperTest(unittest.IsolatedAsyncioTestCase):

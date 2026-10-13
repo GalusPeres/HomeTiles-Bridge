@@ -218,6 +218,20 @@
           "60min": "60 min",
           "never": "Mai"
         }
+      },
+      "pipeline": {
+        "name": "Assistente",
+        "state": {
+          "preferred": "Preferito"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Rilevamento fine del parlato",
+        "state": {
+          "default": "Predefinito",
+          "aggressive": "Aggressivo",
+          "relaxed": "Rilassato"
+        }
       }
     },
     "switch": {

@@ -218,6 +218,20 @@
           "60min": "60 min",
           "never": "Nie"
         }
+      },
+      "pipeline": {
+        "name": "Assistent",
+        "state": {
+          "preferred": "Bevorzugt"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Ende der Sprache",
+        "state": {
+          "default": "Standard",
+          "aggressive": "Aggressiv",
+          "relaxed": "Entspannt"
+        }
       }
     },
     "switch": {

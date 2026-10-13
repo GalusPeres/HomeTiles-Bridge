@@ -218,6 +218,20 @@
           "60min": "60 min",
           "never": "Nigdy"
         }
+      },
+      "pipeline": {
+        "name": "Asystent",
+        "state": {
+          "preferred": "Preferowany"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Wykrywanie ko\u0144ca mowy",
+        "state": {
+          "default": "Domy\u015blne",
+          "aggressive": "Agresywne",
+          "relaxed": "Swobodne"
+        }
       }
     },
     "switch": {

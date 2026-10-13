@@ -16,9 +16,10 @@ from homeassistant.helpers.entity import EntityCategory
 
 # MQTT calls also reach panels on the direct link (link_mqtt.py).
 from . import link_mqtt as mqtt
+from .assist import assist_select_prefix
 from .capabilities import merged_capabilities_data, supports
 from .view_navigation import ViewNavigation
-from .const import SLEEP_OPTION_LABELS, SLEEP_OPTIONS, TOPIC_SLEEP_BATTERY, TOPIC_SLEEP_MAINS
+from .const import DOMAIN, SLEEP_OPTION_LABELS, SLEEP_OPTIONS, TOPIC_SLEEP_BATTERY, TOPIC_SLEEP_MAINS
 from .device_helpers import (
     command_topic,
     entry_base_topic,
@@ -50,8 +51,11 @@ async def async_setup_entry(
             "mdi:battery",
         ),
     ]
-    if supports(merged_capabilities_data(entry), "view_navigation"):
+    capabilities = merged_capabilities_data(entry)
+    if supports(capabilities, "view_navigation"):
         entities.append(HomeTilesViewSelect(entry, base_topic))
+    if supports(capabilities, "audio_input"):
+        entities.extend(_assist_selects(hass, entry))
     async_add_entities(entities)
 
 
@@ -64,6 +68,29 @@ def sleep_option_from_payload(payload) -> str | None:
         if raw in (label.lower(), option):
             return option
     return None
+
+
+def _assist_selects(hass: HomeAssistant, entry: ConfigEntry) -> list:
+    """Assistant and Finished speaking selects for the panel's microphone.
+
+    The pipeline select registers the panel as an Assist device, which is
+    where Home Assistant shows its assistant and wake word settings.
+    """
+    # Lazy import: assist_pipeline is only an after-dependency, and its
+    # selects need it loaded.
+    if "assist_pipeline" not in hass.config.components:
+        return []
+    from homeassistant.components.assist_pipeline import (
+        AssistPipelineSelect,
+        VadSensitivitySelect,
+    )
+    prefix = assist_select_prefix(entry_device_id(entry))
+    device_info = entry_device_info(entry)
+    selects = [AssistPipelineSelect(hass, DOMAIN, prefix), VadSensitivitySelect(hass, prefix)]
+    for select in selects:
+        select._attr_has_entity_name = True
+        select._attr_device_info = device_info
+    return selects
 
 
 class Tab5SleepSelect(SelectEntity):

@@ -218,6 +218,20 @@
           "60min": "60 мин",
           "never": "Никогда"
         }
+      },
+      "pipeline": {
+        "name": "Ассистент",
+        "state": {
+          "preferred": "Предпочтительный"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Определение конца речи",
+        "state": {
+          "default": "По умолчанию",
+          "aggressive": "Агрессивное",
+          "relaxed": "Спокойное"
+        }
       }
     },
     "switch": {

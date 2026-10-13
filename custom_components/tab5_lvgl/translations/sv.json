@@ -218,6 +218,20 @@
           "60min": "60 min",
           "never": "Aldrig"
         }
+      },
+      "pipeline": {
+        "name": "Assistent",
+        "state": {
+          "preferred": "Föredragen"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Detektering av talslut",
+        "state": {
+          "default": "Standard",
+          "aggressive": "Aggressiv",
+          "relaxed": "Avslappnad"
+        }
       }
     },
     "switch": {
