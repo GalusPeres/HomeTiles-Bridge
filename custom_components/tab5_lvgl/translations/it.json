@@ -219,6 +219,17 @@
           "never": "Mai"
         }
       },
+      "wake_word": {
+        "name": "Parola di attivazione",
+        "state": {
+          "off": "Disattivata",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
       "pipeline": {
         "name": "Assistente",
         "state": {

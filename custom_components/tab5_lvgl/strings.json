@@ -219,6 +219,17 @@
           "never": "Never"
         }
       },
+      "wake_word": {
+        "name": "Wake word",
+        "state": {
+          "off": "Off",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
       "pipeline": {
         "name": "Assistant",
         "state": {

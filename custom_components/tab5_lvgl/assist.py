@@ -125,6 +125,10 @@ def assist_vad_select_unique_id(device_id: str) -> str:
     return f"{assist_select_prefix(device_id)}-vad_sensitivity"
 
 
+def assist_wake_word_select_unique_id(device_id: str) -> str:
+    return f"{device_id}_assist_wake_word"
+
+
 def assist_button_unique_id(device_id: str) -> str:
     return f"{device_id}{ASSIST_BUTTON_UNIQUE_ID_SUFFIX}"
 

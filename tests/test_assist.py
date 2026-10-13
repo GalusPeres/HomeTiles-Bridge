@@ -195,6 +195,7 @@ class AssistContractTest(unittest.TestCase):
         self.assertTrue(stale("mac_assist-pipeline", "select", {}))
         self.assertTrue(stale("mac_assist-vad_sensitivity", "select", {}))
         self.assertFalse(stale("mac_assist-pipeline", "select", announced))
+        self.assertTrue(stale("mac_assist_wake_word", "select", {}))
         self.assertFalse(stale("mac_view", "select", {}))
 
     def test_assist_is_sealed_data(self):
@@ -217,6 +218,8 @@ class AssistContractTest(unittest.TestCase):
             self.assertIn("name", data["entity"]["assist_satellite"]["assist"], name)
             self.assertIn("name", data["entity"]["button"]["assist"], name)
             selects = data["entity"]["select"]
+            self.assertTrue({"off", *ASSIST.KNOWN_WAKE_WORDS} <= set(selects["wake_word"]["state"]),
+                            name)
             self.assertEqual(set(selects["pipeline"]["state"]), {"preferred"}, name)
             self.assertEqual(set(selects["vad_sensitivity"]["state"]),
                              {"default", "aggressive", "relaxed"}, name)
@@ -250,6 +253,7 @@ class AssistSelectsTest(unittest.IsolatedAsyncioTestCase):
             "supports": CAPABILITIES.supports,
             "Tab5SleepSelect": lambda *args: "sleep",
             "HomeTilesViewSelect": lambda *args: "view",
+            "HomeTilesWakeWordSelect": lambda *args: "wake_word",
             "TOPIC_SLEEP_MAINS": "sleep_mains", "TOPIC_SLEEP_BATTERY": "sleep_battery",
         }
         tree = ast.parse((ROOT / "select.py").read_text(encoding="utf-8"))
@@ -278,11 +282,12 @@ class AssistSelectsTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_selects_without_assist_pipeline(self):
         _, created, _, _ = await self.created({"audio_input": True}, components=())
-        self.assertEqual(created, ["sleep", "sleep"])
+        self.assertEqual(created, ["sleep", "sleep", "wake_word"])
 
     async def test_selects_join_the_panel_device(self):
         hass, created, PipelineSelect, VadSelect = await self.created({"audio_input": True})
-        pipeline, vad = created[2:]
+        self.assertEqual(created[2], "wake_word")
+        pipeline, vad = created[3:]
         self.assertIsInstance(pipeline, PipelineSelect)
         self.assertEqual(pipeline.args, (hass, "tab5_lvgl", "mac_assist"))
         self.assertIsInstance(vad, VadSelect)
@@ -290,6 +295,84 @@ class AssistSelectsTest(unittest.IsolatedAsyncioTestCase):
         for select in (pipeline, vad):
             self.assertTrue(select._attr_has_entity_name)
             self.assertEqual(select._attr_device_info, {"identifiers": {("tab5_lvgl", "mac")}})
+
+
+class WakeWordSelectTest(unittest.IsolatedAsyncioTestCase):
+    """The Wake word select mirrors the panel status and sets it via the satellite."""
+
+    def make(self):
+        class Entity:
+            async def async_added_to_hass(self):
+                pass
+
+        class Category:
+            CONFIG = "config"
+
+        written = []
+        scope = {"SelectEntity": Entity, "EntityCategory": Category,
+                 "HomeAssistantError": FakeHomeAssistantError, "DOMAIN": "tab5_lvgl",
+                 "ASSIST_SATELLITES_KEY": ASSIST.ASSIST_SATELLITES_KEY,
+                 "assist_status_topic": ASSIST.assist_status_topic,
+                 "assist_wake_word_select_unique_id": ASSIST.assist_wake_word_select_unique_id,
+                 "parse_status": ASSIST.parse_status,
+                 "entry_device_info": lambda entry: {}, "entry_device_id": lambda entry: "mac",
+                 "ConfigEntry": object}
+        tree = ast.parse((ROOT / "select.py").read_text(encoding="utf-8"))
+        body = [node for node in tree.body
+                if getattr(node, "name", None) == "HomeTilesWakeWordSelect"
+                or (isinstance(node, ast.Assign) and any(
+                    getattr(t, "id", None) == "WAKE_WORD_OFF" for t in node.targets))]
+        exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])),
+                     "select.py", "exec"), scope)
+        select = scope["HomeTilesWakeWordSelect"](types.SimpleNamespace(entry_id="e1"), BASE)
+        select.async_write_ha_state = lambda: written.append(select.current_option)
+        return select, written
+
+    def status(self, **fields):
+        payload = {"v": 1, "state": "idle", "wake_words": ["okay_nabu"],
+                   "active_wake_words": []}
+        payload.update(fields)
+        return json.dumps(payload)
+
+    def test_unavailable_until_the_panel_reports(self):
+        select, _ = self.make()
+        self.assertEqual(select._attr_unique_id, "mac_assist_wake_word")
+        self.assertFalse(select.available)
+        self.assertIsNone(select.current_option)
+        self.assertTrue(select.apply_status(self.status()))
+        self.assertTrue(select.available)
+        self.assertEqual(select.options, ["okay_nabu", "off"])
+        self.assertEqual(select.current_option, "off")
+        self.assertTrue(select.apply_status(self.status(active_wake_words=["okay_nabu"])))
+        self.assertEqual(select.current_option, "okay_nabu")
+        self.assertFalse(select.apply_status("not json"))
+        self.assertTrue(select.apply_status(""))
+        self.assertFalse(select.available)
+
+    async def test_select_sends_through_the_satellite(self):
+        select, written = self.make()
+        select.apply_status(self.status())
+        sent = []
+
+        class Satellite:
+            async def async_set_active_wake_words(self, words):
+                sent.append(words)
+
+        select.hass = types.SimpleNamespace(data={"tab5_lvgl": {
+            ASSIST.ASSIST_SATELLITES_KEY: {"e1": Satellite()}}})
+        await select.async_select_option("okay_nabu")
+        await select.async_select_option("off")
+        self.assertEqual(sent, [["okay_nabu"], []])
+        self.assertEqual(written, ["okay_nabu", "off"])
+        with self.assertRaises(FakeHomeAssistantError):
+            await select.async_select_option("alexa")
+
+    async def test_select_without_satellite_fails(self):
+        select, _ = self.make()
+        select.apply_status(self.status())
+        select.hass = types.SimpleNamespace(data={})
+        with self.assertRaises(FakeHomeAssistantError):
+            await select.async_select_option("okay_nabu")
 
 
 class PublishHelperTest(unittest.IsolatedAsyncioTestCase):

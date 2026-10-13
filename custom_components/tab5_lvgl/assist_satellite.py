@@ -278,7 +278,11 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
             max_active_wake_words=MAX_ACTIVE_WAKE_WORDS)
 
     async def async_set_configuration(self, config: AssistSatelliteConfiguration) -> None:
-        active = [word for word in config.active_wake_words
+        await self.async_set_active_wake_words(config.active_wake_words)
+
+    async def async_set_active_wake_words(self, words: list[str]) -> None:
+        """Send the panel its active wake words (also used by the Wake word select)."""
+        active = [word for word in words
                   if word in self._available_wake_words][:MAX_ACTIVE_WAKE_WORDS]
         try:
             sent = await self._async_send_assist(build_wake_words_command(active))
