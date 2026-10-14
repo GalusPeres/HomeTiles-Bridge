@@ -2,7 +2,7 @@
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=GalusPeres&repository=HomeTiles-Bridge&category=integration)
 
-Home Assistant custom integration for the [HomeTiles](https://github.com/GalusPeres/HomeTiles) project. Bridges Home Assistant entities, sensors, weather, energy data and more to ESP32-based LVGL displays via MQTT.
+Home Assistant custom integration for the [HomeTiles](https://github.com/GalusPeres/HomeTiles) project. Bridges Home Assistant entities, sensors, weather, energy data and more to ESP32-based LVGL displays, over a direct link (HomeTiles v0.9.0 or newer) or MQTT.
 
 ## About
 
@@ -101,7 +101,7 @@ Fan tiles control on/off, speed, preset, oscillation and direction, each only wh
 
 ## MQTT Topics
 
-The integration communicates with the display firmware via MQTT:
+The integration and the display exchange these topics over MQTT, or, for a display on the direct link (HomeTiles v0.9.0 or newer), with the same topics over the display's own connection to the Bridge (TCP port 8140, or up to 8147 when it is taken):
 
 | Topic | Direction | Description |
 |---|---|---|
@@ -249,7 +249,7 @@ numeric suffix such as `_2`; migrations preserve that suffix deterministically.
 ## Requirements
 
 - Home Assistant 2025.11 or newer
-- MQTT broker configured in Home Assistant
+- An MQTT broker configured in Home Assistant only for displays on MQTT (firmware before v0.9.0, or a display not switched to the direct link)
 - [HomeTiles](https://github.com/GalusPeres/HomeTiles) firmware
 
 Binary sensors require a HomeTiles firmware build with the dedicated Binary
