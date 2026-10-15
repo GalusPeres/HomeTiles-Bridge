@@ -2934,7 +2934,8 @@ class Tab5Bridge:
   async def _energy_search_entries(self, full: bool) -> List[Dict[str, str]]:
     """The Energy dashboard's sources for the picker's energy list: every one
     with a Web Admin password, else the released categories. Names carry their
-    unit, like the panel's own energy list."""
+    unit, like the panel's own energy list; icons are the ones the panel's
+    Energy tiles show."""
     categories = None if full else self._energy_categories()
     if categories is not None and not categories:
       return []
@@ -2944,7 +2945,7 @@ class Tab5Bridge:
       unit = str(entry.get("unit") or "").strip()
       if unit and not name.lower().endswith(f"({unit.lower()})"):
         name = f"{name} ({unit})"
-      found.append({"v": entry["id"], "t": name, "a": "", "d": ""})
+      found.append({"v": entry["id"], "t": name, "i": _energy_source_icon(entry), "a": "", "d": ""})
     return found
 
   def _search_entries(self, entity_ids: Iterable[str]) -> List[Dict[str, str]]:
@@ -3002,9 +3003,10 @@ class Tab5Bridge:
       entries = self._search_entries(entity_ids)
     results, more = entity_search.search(entries, request["q"], offset=request["o"])
     # Icons only for what the panel gets: icon translations load per
-    # integration. The Bridge's energy totals are no entities.
-    await entity_icons.async_load_entity_icons(self.hass, [item["v"] for item in results if "." in item["v"]])
-    for item in results:
+    # integration. Energy sources bring their own.
+    missing = [item for item in results if not item.get("i")]
+    await entity_icons.async_load_entity_icons(self.hass, [item["v"] for item in missing])
+    for item in missing:
       item["i"] = self._search_icon(item["v"])
     for part in entity_search.pack_answer(request["id"], results, full, more):
       if not await self._async_publish_sealed_data("entities", part):
@@ -6191,6 +6193,26 @@ def _normalize_mdi_icon_value(icon: Any) -> Optional[str]:
   if icon.startswith("mdi-"):
     return "mdi:" + icon[4:]
   return icon
+
+
+_ENERGY_CATEGORY_ICONS = {
+  "solar": "mdi:solar-power",
+  "grid": "mdi:transmission-tower",
+  "battery": "mdi:battery-charging",
+  "gas": "mdi:fire",
+  "water": "mdi:water",
+  "device_water": "mdi:water",
+}
+
+
+def _energy_source_icon(entry: Dict[str, Any]) -> str:
+  """The icon the panel's Energy tiles give a source (energySourceIcon in the
+  firmware): its category's, costs the currency's."""
+  entity = str(entry.get("id") or "").lower()
+  unit = str(entry.get("unit") or "").strip().lower()
+  if entity.endswith("_cost") or unit in ("eur", "euro"):
+    return "mdi:currency-eur"
+  return _ENERGY_CATEGORY_ICONS.get(str(entry.get("category") or "").strip().lower(), "mdi:lightning-bolt")
 
 
 def _extract_mdi_icon(state: State, hass: Optional[HomeAssistant] = None) -> Optional[str]:

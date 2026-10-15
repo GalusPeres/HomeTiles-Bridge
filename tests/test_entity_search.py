@@ -147,8 +147,13 @@ def bridge_type():
              "_async_load_panel_entities", "_async_save_panel_entities"}
     functions = [node for node in bridge.body if getattr(node, "name", None) in names]
     opened = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "_OpenedCommand")
+    # The Energy sources' icons (the panel's rule).
+    energy_icons = [node for node in tree.body
+                    if getattr(node, "name", None) == "_energy_source_icon"
+                    or (isinstance(node, ast.Assign) and any(getattr(target, "id", None) == "_ENERGY_CATEGORY_ICONS"
+                                                             for target in node.targets))]
     module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
-                              opened, *functions], type_ignores=[])
+                              opened, *energy_icons, *functions], type_ignores=[])
     return module, names
 
 
@@ -309,7 +314,10 @@ class WiringTests(BridgeHarness):
                           ("sensor.pv", "PV Dach (kWh)"), ("solar_total", "PV gesamt (kWh)")],
                          "With the password every source of the dashboard, names with their unit")
         self.assertEqual(self.energy_categories, [None])
-        self.assertEqual(self.loaded_icons, [["sensor.gas", "sensor.pv"]], "Icons only for real entities")
+        self.assertEqual([item["i"] for item in answer["r"]],
+                         ["mdi:fire", "mdi:lightning-bolt", "mdi:solar-power", "mdi:solar-power"],
+                         "The icons the panel's Energy tiles show: by category, totals alike")
+        self.assertEqual(self.loaded_icons, [[]], "No entity icons to load for Energy sources")
         self.sent.clear()
         await bridge._async_handle_entities_command(self.command({"id": 8, "q": "", "list": "energy", "web_auth": False}))
         [(_, answer)] = self.sent
