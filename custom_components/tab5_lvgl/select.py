@@ -16,9 +16,22 @@ from homeassistant.helpers.entity import EntityCategory
 
 # MQTT calls also reach panels on the direct link (link_mqtt.py).
 from . import link_mqtt as mqtt
+from .assist import (
+    ASSIST_SATELLITES_KEY,
+    assist_select_prefix,
+    assist_status_topic,
+    assist_wake_word_select_unique_id,
+    parse_status,
+)
 from .capabilities import merged_capabilities_data, supports
 from .view_navigation import ViewNavigation
-from .const import SLEEP_OPTION_LABELS, SLEEP_OPTIONS, TOPIC_SLEEP_BATTERY, TOPIC_SLEEP_MAINS
+from .const import (
+    DOMAIN,
+    SLEEP_OPTION_LABELS,
+    SLEEP_OPTIONS,
+    TOPIC_SLEEP_BATTERY,
+    TOPIC_SLEEP_MAINS,
+)
 from .device_helpers import (
     command_topic,
     entry_base_topic,
@@ -50,8 +63,12 @@ async def async_setup_entry(
             "mdi:battery",
         ),
     ]
-    if supports(merged_capabilities_data(entry), "view_navigation"):
+    capabilities = merged_capabilities_data(entry)
+    if supports(capabilities, "view_navigation"):
         entities.append(HomeTilesViewSelect(entry, base_topic))
+    if supports(capabilities, "audio_input"):
+        entities.append(HomeTilesWakeWordSelect(entry, base_topic))
+        entities.extend(_assist_selects(hass, entry))
     async_add_entities(entities)
 
 
@@ -64,6 +81,29 @@ def sleep_option_from_payload(payload) -> str | None:
         if raw in (label.lower(), option):
             return option
     return None
+
+
+def _assist_selects(hass: HomeAssistant, entry: ConfigEntry) -> list:
+    """Assistant and Finished speaking selects for the panel's microphone.
+
+    The pipeline select registers the panel as an Assist device, which is
+    where Home Assistant shows its assistant and wake word settings.
+    """
+    # Lazy import: assist_pipeline is only an after-dependency, and its
+    # selects need it loaded.
+    if "assist_pipeline" not in hass.config.components:
+        return []
+    from homeassistant.components.assist_pipeline import (
+        AssistPipelineSelect,
+        VadSensitivitySelect,
+    )
+    prefix = assist_select_prefix(entry_device_id(entry))
+    device_info = entry_device_info(entry)
+    selects = [AssistPipelineSelect(hass, DOMAIN, prefix), VadSensitivitySelect(hass, prefix)]
+    for select in selects:
+        select._attr_has_entity_name = True
+        select._attr_device_info = device_info
+    return selects
 
 
 class Tab5SleepSelect(SelectEntity):
@@ -234,3 +274,90 @@ class HomeTilesViewSelect(SelectEntity):
                                      translation_key=str(err)) from err
         await mqtt.async_publish(self.hass, command_topic(self._base, "view"),
                                  json.dumps(payload), qos=0, retain=False)
+
+
+WAKE_WORD_OFF = "off"
+
+
+class HomeTilesWakeWordSelect(SelectEntity):
+    """Wake word the panel listens for, from the words the panel reports.
+
+    Home Assistant's own wake word picker only appears in some frontend
+    views, so the choice is also a plain device setting. It sends the same
+    command as the satellite's configuration (sealed when paired).
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "wake_word"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:account-voice"
+    _attr_should_poll = False
+
+    def __init__(self, entry: ConfigEntry, base_topic: str) -> None:
+        self._entry_id = entry.entry_id
+        self._attr_device_info = entry_device_info(entry)
+        self._attr_unique_id = assist_wake_word_select_unique_id(entry_device_id(entry))
+        self._base = base_topic
+        self._words: list[str] = []
+        self._active: list[str] = []
+        self._status_seen = False
+        self._unsubscribe = None
+
+    @property
+    def available(self) -> bool:
+        return self._status_seen
+
+    @property
+    def options(self) -> list[str]:
+        return [*self._words, WAKE_WORD_OFF]
+
+    @property
+    def current_option(self) -> str | None:
+        if not self._status_seen:
+            return None
+        return self._active[0] if self._active else WAKE_WORD_OFF
+
+    def apply_status(self, payload) -> bool:
+        """Mirror the panel's retained Assist status; False when ignored."""
+        if not payload:
+            # The panel withdrew its microphone.
+            self._status_seen = False
+            return True
+        status = parse_status(payload)
+        if status is None:
+            return False
+        if status["wake_words"] is not None:
+            self._words = status["wake_words"]
+        if status["active_wake_words"] is not None:
+            self._active = [word for word in status["active_wake_words"] if word in self._words]
+        self._status_seen = True
+        return True
+
+    async def async_select_option(self, option: str) -> None:
+        if option != WAKE_WORD_OFF and option not in self._words:
+            raise HomeAssistantError(f"Unknown wake word: {option}")
+        satellite = (self.hass.data.get(DOMAIN, {})
+                     .get(ASSIST_SATELLITES_KEY, {}).get(self._entry_id))
+        if satellite is None:
+            raise HomeAssistantError(translation_domain=DOMAIN,
+                                     translation_key="assist_unavailable")
+        words = [] if option == WAKE_WORD_OFF else [option]
+        await satellite.async_set_active_wake_words(words)
+        # The panel's retained status confirms it; until then show the request.
+        self._active = words
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        async def handle_status(msg: mqtt.ReceiveMessage) -> None:
+            if self.apply_status(msg.payload):
+                self.async_write_ha_state()
+
+        self._unsubscribe = await mqtt.async_subscribe(
+            self.hass, assist_status_topic(self._base), handle_status, qos=0)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None

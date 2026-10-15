@@ -218,11 +218,39 @@
           "60min": "60 min",
           "never": "Nie"
         }
+      },
+      "wake_word": {
+        "name": "Aktivierungswort",
+        "state": {
+          "off": "Aus",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
+      "pipeline": {
+        "name": "Assistent",
+        "state": {
+          "preferred": "Bevorzugt"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Ende der Sprache",
+        "state": {
+          "default": "Standard",
+          "aggressive": "Aggressiv",
+          "relaxed": "Entspannt"
+        }
       }
     },
     "switch": {
       "local_camera": {
         "name": "Kamera"
+      },
+      "microphone": {
+        "name": "Mikrofon"
       }
     },
     "binary_sensor": {
@@ -253,14 +281,47 @@
       "external_temperature": {
         "name": "Externe Temperatur"
       }
+    },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Lautsprecher"
+      }
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Schalte das Mikrofon am Display ein (Einstellungen > Audio) oder verschl\u00fcssle zuerst die Verbindung: Home Assistant darf es nur \u00fcber die verschl\u00fcsselte Verbindung einschalten."
+    },
+    "assist_unavailable": {
+      "message": "Das Mikrofon des Displays ist nicht verf\u00fcgbar: Das Display ist offline oder hat es nicht gemeldet."
+    },
+    "assist_not_connected": {
+      "message": "Das Mikrofon des Displays ist nicht erreichbar: Die verschl\u00fcsselte Verbindung ist noch nicht bereit."
+    },
     "view_unavailable": {
       "message": "Das Display ist offline oder seine Ansichtsliste ist noch nicht bereit."
     },
     "invalid_view": {
       "message": "Die gew\u00e4hlte Ansicht existiert nicht mehr."
+    },
+    "speaker_not_connected": {
+      "message": "Der Lautsprecher des Displays ist nicht erreichbar: Die verschl\u00fcsselte Verbindung ist noch nicht bereit."
+    },
+    "speaker_invalid_url": {
+      "message": "Das Display kann nur eine absolute http://-URL abspielen."
+    },
+    "speaker_https_unsupported": {
+      "message": "Das Display kann keine https://-URLs laden. Lege eine http://-URL f\u00fcr das lokale Netzwerk in Home Assistant fest (Einstellungen \u2192 System \u2192 Netzwerk)."
     }
   }
 }

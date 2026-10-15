@@ -218,11 +218,39 @@
           "60min": "60 min",
           "never": "Never"
         }
+      },
+      "wake_word": {
+        "name": "Wake word",
+        "state": {
+          "off": "Off",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
+      "pipeline": {
+        "name": "Assistant",
+        "state": {
+          "preferred": "Preferred"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Finished speaking detection",
+        "state": {
+          "default": "Default",
+          "aggressive": "Aggressive",
+          "relaxed": "Relaxed"
+        }
       }
     },
     "switch": {
       "local_camera": {
         "name": "Camera"
+      },
+      "microphone": {
+        "name": "Microphone"
       }
     },
     "binary_sensor": {
@@ -253,14 +281,47 @@
       "external_temperature": {
         "name": "External Temperature"
       }
+    },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Speaker"
+      }
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Turn the microphone on at the display (Settings > Audio), or encrypt the connection first: Home Assistant may only switch it on over the encrypted connection."
+    },
+    "assist_unavailable": {
+      "message": "The display's microphone is not available: the display is offline or did not announce it."
+    },
+    "assist_not_connected": {
+      "message": "The display's microphone cannot be reached: the encrypted connection is not ready."
+    },
     "view_unavailable": {
       "message": "The display is offline or its view catalog is not ready."
     },
     "invalid_view": {
       "message": "The selected view no longer exists."
+    },
+    "speaker_not_connected": {
+      "message": "The display's speaker cannot be reached: the encrypted connection is not ready."
+    },
+    "speaker_invalid_url": {
+      "message": "The display can only play an absolute http:// URL."
+    },
+    "speaker_https_unsupported": {
+      "message": "The display cannot download https:// URLs. Set an http:// local network URL for Home Assistant (Settings \u2192 System \u2192 Network)."
     }
   }
 }
