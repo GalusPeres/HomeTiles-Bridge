@@ -2056,20 +2056,15 @@ class Tab5Bridge:
           "scene_meta": self._build_scene_meta(),
           "scene_map": self.scene_map,
           # The picker searches through this Bridge, and the panel declares
-          # its tiles' entities (entity_search.py): 2 = declarations.
-          "entity_search": 2,
+          # its tiles' entities (entity_search.py): 2 = declarations, 3 = also
+          # the Energy dashboard's sources (entity_search.ENERGY_LIST).
+          "entity_search": 3,
           # This Bridge sends name, unit and icon changes by itself
           # (_handle_state_event), so a panel that reads this flag needs no
           # refresh every minute, only after a reconnect or a lost message.
           "push": 1,
       }
-      energy_cats = set()
-      if self.entry.data.get(CONF_ENERGY_ELECTRICITY):
-        energy_cats.update({"solar", "grid", "battery", "device"})
-      if self.entry.data.get(CONF_ENERGY_GAS):
-        energy_cats.add("gas")
-      if self.entry.data.get(CONF_ENERGY_WATER):
-        energy_cats.update({"water", "device_water"})
+      energy_cats = self._energy_categories()
       if energy_cats:
         energy_entries = await self._build_energy_meta(energy_cats)
         if energy_entries:
@@ -2923,6 +2918,35 @@ class Tab5Bridge:
     names = entity_search.LIST_ATTRS.get(key, (key,))
     return _unique_entities([item for name in names for item in self._released.get(name, getattr(self, name, []))])
 
+  def _energy_categories(self) -> set:
+    """The Energy dashboard categories the entry's Energy Dashboard options
+    release to the panels (sent in the configuration, searchable without a
+    Web Admin password)."""
+    categories = set()
+    if self.entry.data.get(CONF_ENERGY_ELECTRICITY):
+      categories.update({"solar", "grid", "battery", "device"})
+    if self.entry.data.get(CONF_ENERGY_GAS):
+      categories.add("gas")
+    if self.entry.data.get(CONF_ENERGY_WATER):
+      categories.update({"water", "device_water"})
+    return categories
+
+  async def _energy_search_entries(self, full: bool) -> List[Dict[str, str]]:
+    """The Energy dashboard's sources for the picker's energy list: every one
+    with a Web Admin password, else the released categories. Names carry their
+    unit, like the panel's own energy list."""
+    categories = None if full else self._energy_categories()
+    if categories is not None and not categories:
+      return []
+    found: List[Dict[str, str]] = []
+    for entry in await self._build_energy_meta(categories):
+      name = str(entry.get("name") or entry["id"])
+      unit = str(entry.get("unit") or "").strip()
+      if unit and not name.lower().endswith(f"({unit.lower()})"):
+        name = f"{name} ({unit})"
+      found.append({"v": entry["id"], "t": name, "a": "", "d": ""})
+    return found
+
   def _search_entries(self, entity_ids: Iterable[str]) -> List[Dict[str, str]]:
     """Name, area and device of entities, the picker's search fields."""
     entities = er.async_get(self.hass)
@@ -2968,13 +2992,18 @@ class Tab5Bridge:
         _LOGGER.warning("HomeTiles panel %s sent an invalid entity search", self.base_topic)
       return
     full = self._access_secured(msg, request)
-    if full:
-      entity_ids = [state.entity_id for state in self.hass.states.async_all(entity_search.LIST_DOMAINS[request["list"]])]
+    if request["list"] == entity_search.ENERGY_LIST:
+      entries = await self._energy_search_entries(full)
     else:
-      entity_ids = self._released_for_list(request["list"])
-    results, more = entity_search.search(self._search_entries(entity_ids), request["q"], offset=request["o"])
-    # Icons only for what the panel gets: icon translations load per integration.
-    await entity_icons.async_load_entity_icons(self.hass, [item["v"] for item in results])
+      if full:
+        entity_ids = [state.entity_id for state in self.hass.states.async_all(entity_search.LIST_DOMAINS[request["list"]])]
+      else:
+        entity_ids = self._released_for_list(request["list"])
+      entries = self._search_entries(entity_ids)
+    results, more = entity_search.search(entries, request["q"], offset=request["o"])
+    # Icons only for what the panel gets: icon translations load per
+    # integration. The Bridge's energy totals are no entities.
+    await entity_icons.async_load_entity_icons(self.hass, [item["v"] for item in results if "." in item["v"]])
     for item in results:
       item["i"] = self._search_icon(item["v"])
     for part in entity_search.pack_answer(request["id"], results, full, more):

@@ -33,7 +33,9 @@ class SearchModuleTests(unittest.TestCase):
         self.assertEqual(parse('{"id":7,"list":"sensors","o":60}')["o"], 60, "The picker's next page")
         self.assertFalse(parse('{"id":7,"list":"switches","web_auth":"true"}')["web_auth"], "Only a real true counts")
         self.assertEqual(len(parse(json.dumps({"id": 1, "list": "covers", "q": "x" * 500}))["q"]), SEARCH.MAX_QUERY)
-        for bad in ('{"id":-1,"list":"sensors"}', '{"id":true,"list":"sensors"}', '{"id":1,"list":"energy"}',
+        self.assertEqual(parse('{"id":7,"list":"energy","web_auth":true}')["list"], "energy",
+                         "The Energy dashboard's sources")
+        for bad in ('{"id":-1,"list":"sensors"}', '{"id":true,"list":"sensors"}', '{"id":1,"list":"gas"}',
                     '{"id":1,"list":"sensors","q":5}', '{"id":1,"list":"sensors","o":-1}',
                     '{"id":1,"list":"sensors","o":5001}', '{"id":1,"list":"sensors","o":"60"}', '[]', 'nope', None):
             self.assertIsNone(parse(bad), bad)
@@ -140,6 +142,7 @@ def bridge_type():
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     bridge = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Tab5Bridge")
     names = {"_released_for_list", "_search_entries", "_search_icon", "_async_handle_entities_command",
+             "_energy_categories", "_energy_search_entries",
              "_async_handle_tiles_command", "_access_secured", "_secure_log_due",
              "_async_load_panel_entities", "_async_save_panel_entities"}
     functions = [node for node in bridge.body if getattr(node, "name", None) in names]
@@ -193,6 +196,8 @@ class BridgeHarness(unittest.IsolatedAsyncioTestCase):
             "_extract_media_player_mdi_icon": lambda state, hass: "mdi:speaker",
             "_is_weather_entity": lambda entity: entity.startswith("weather."),
             "_weather_icon_from_state": lambda state, hass: "mdi:weather-sunny",
+            "CONF_ENERGY_ELECTRICITY": "energy_electricity", "CONF_ENERGY_GAS": "energy_gas",
+            "CONF_ENERGY_WATER": "energy_water",
         }
         exec(compile(ast.fix_missing_locations(module), "__init__.py", "exec"), scope)
         Bridge = type("Bridge", (), {name: scope[name] for name in names})
@@ -201,6 +206,22 @@ class BridgeHarness(unittest.IsolatedAsyncioTestCase):
             get=states.get,
             async_all=lambda domains: [state for state in states.values() if state.entity_id.split(".")[0] in domains]))
         bridge.base_topic = "hometiles/test"
+        # The Energy Dashboard options release nothing; the dashboard has a
+        # PV source, its total, a gas meter and the consumption total.
+        bridge.entry = SimpleNamespace(data={})
+        self.energy_categories = []
+
+        async def energy_meta(categories=None):
+            self.energy_categories.append(categories)
+            meta = [{"id": "sensor.pv", "category": "solar", "name": "PV Dach", "unit": "kWh"},
+                    {"id": "solar_total", "category": "solar", "name": "PV gesamt", "unit": "kWh", "is_total": True},
+                    {"id": "sensor.gas", "category": "gas", "name": "Gas (m³)", "unit": "m³"},
+                    {"id": "consumption_total", "category": "consumption", "name": "Gesamtverbrauch", "unit": "kWh"}]
+            if categories:
+                meta = [entry for entry in meta if entry["category"] in categories | {"consumption"}]
+            return meta
+
+        bridge._build_energy_meta = energy_meta
         bridge._secure_log_at = {}
         bridge._command_channel = SimpleNamespace(removing=False, keys=SimpleNamespace(key_id=key_id))
         # This panel's entry releases sensor.kitchen; another panel's entry
@@ -276,6 +297,30 @@ class WiringTests(BridgeHarness):
         bridge._command_channel.removing = True
         await bridge._async_handle_entities_command(self.command({"id": 4, "q": "", "list": "sensors", "web_auth": True}))
         self.assertFalse(self.sent[-1][1]["full"], "A pairing being removed grants nothing")
+
+    async def test_energy_sources_follow_the_password_rule(self):
+        bridge = self.make()
+        await bridge._async_handle_entities_command(self.command({"id": 7, "q": "", "list": "energy", "web_auth": True}))
+        [(kind, answer)] = self.sent
+        self.assertEqual(kind, "entities")
+        self.assertTrue(answer["full"])
+        self.assertEqual([(item["v"], item["t"]) for item in answer["r"]],
+                         [("sensor.gas", "Gas (m³)"), ("consumption_total", "Gesamtverbrauch (kWh)"),
+                          ("sensor.pv", "PV Dach (kWh)"), ("solar_total", "PV gesamt (kWh)")],
+                         "With the password every source of the dashboard, names with their unit")
+        self.assertEqual(self.energy_categories, [None])
+        self.assertEqual(self.loaded_icons, [["sensor.gas", "sensor.pv"]], "Icons only for real entities")
+        self.sent.clear()
+        await bridge._async_handle_entities_command(self.command({"id": 8, "q": "", "list": "energy", "web_auth": False}))
+        [(_, answer)] = self.sent
+        self.assertEqual((answer["full"], answer["r"]), (False, []), "Without the password and options: nothing")
+        self.sent.clear()
+        bridge.entry.data = {"energy_electricity": True}
+        await bridge._async_handle_entities_command(self.command({"id": 9, "q": "pv", "list": "energy", "web_auth": False}))
+        [(_, answer)] = self.sent
+        self.assertEqual([item["v"] for item in answer["r"]], ["sensor.pv", "solar_total"],
+                         "Without the password the released categories, searched")
+        self.assertEqual(self.energy_categories[-1], {"solar", "grid", "battery", "device"})
 
     async def test_next_page(self):
         bridge = self.make()
@@ -360,7 +405,7 @@ class WiringTests(BridgeHarness):
         self.assertIn('mine = self._collect_all_entries_entities([self.entry]) if declaration and declaration.get("own") else merged',
                       refresh, "an own declaration reads the panel's own entry")
         self.assertIn('self.scene_map = dict(merged["scene_map"])', refresh, "lock rules and scenes stay from every entry")
-        self.assertIn('"entity_search": 2,', text)
+        self.assertIn('"entity_search": 3,', text)
         self.assertIn('"entities": self._async_handle_entities_command,', text)
         self.assertIn('"tiles": self._async_handle_tiles_command,', text)
         setup = text[text.index("  async def async_setup(self) -> None:"):]

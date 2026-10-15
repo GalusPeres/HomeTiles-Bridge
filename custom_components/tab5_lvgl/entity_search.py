@@ -44,6 +44,12 @@ LIST_DOMAINS: Dict[str, Tuple[str, ...]] = {
   "fans": ("fan",),
 }
 
+# The sources of Home Assistant's Energy dashboard (statistics ids and the
+# Bridge's totals, Tab5Bridge._build_energy_meta), searched like a list
+# without a domain: with a Web Admin password every source, otherwise the
+# categories the entry's Energy Dashboard options release.
+ENERGY_LIST = "energy"
+
 # Bridge entity list attributes of each picker list.
 LIST_ATTRS: Dict[str, Tuple[str, ...]] = {
   "sensors": ("sensors",), "binary_sensors": ("binary_sensors",), "numbers": ("numbers",),
@@ -75,7 +81,7 @@ def parse_search(body: Any) -> Optional[Dict[str, Any]]:
   if isinstance(request_id, bool) or not isinstance(request_id, int) or not 0 <= request_id <= 0xFFFFFFFF:
     return None
   key = data.get("list")
-  if key not in LIST_DOMAINS:
+  if key not in LIST_DOMAINS and key != ENERGY_LIST:
     return None
   query = data.get("q", "")
   if not isinstance(query, str):
