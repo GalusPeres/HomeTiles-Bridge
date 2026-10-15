@@ -218,11 +218,39 @@
           "60min": "60 min",
           "never": "Nooit"
         }
+      },
+      "wake_word": {
+        "name": "Wekwoord",
+        "state": {
+          "off": "Uit",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
+      "pipeline": {
+        "name": "Assistent",
+        "state": {
+          "preferred": "Voorkeur"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Detectie einde spraak",
+        "state": {
+          "default": "Standaard",
+          "aggressive": "Agressief",
+          "relaxed": "Ontspannen"
+        }
       }
     },
     "switch": {
       "local_camera": {
         "name": "Camera"
+      },
+      "microphone": {
+        "name": "Microfoon"
       }
     },
     "binary_sensor": {
@@ -253,14 +281,41 @@
       "external_temperature": {
         "name": "Externe temperatuur"
       }
+    },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Luidspreker"
+      }
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Zet de microfoon aan op het display, of versleutel eerst de verbinding: Home Assistant mag hem alleen via de versleutelde verbinding aanzetten."
+    },
+    "assist_unavailable": {
+      "message": "De microfoon van het display is niet beschikbaar: het display is offline of heeft hem niet aangemeld."
+    },
+    "assist_not_connected": {
+      "message": "De microfoon van het display is niet bereikbaar: de versleutelde verbinding is niet gereed."
+    },
     "view_unavailable": {
       "message": "Het scherm is offline of de weergavelijst is nog niet klaar."
     },
     "invalid_view": {
       "message": "De gekozen weergave bestaat niet meer."
+    },
+    "speaker_not_connected": {
+      "message": "De luidspreker van het display is niet bereikbaar: de versleutelde verbinding is niet gereed."
     }
   }
 }

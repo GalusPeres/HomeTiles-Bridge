@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from time import monotonic
 
-from homeassistant.components import media_source, mqtt
+from homeassistant.components import media_source
 from homeassistant.components.media_player import (
     MediaPlayerDeviceClass,
     MediaPlayerEntity,
@@ -23,6 +23,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
+# MQTT calls also reach panels on the direct link (link_mqtt.py).
+from . import link_mqtt as mqtt
 from .capabilities import merged_capabilities_data, supports
 from .command_channel import entry_pairing_key
 from .const import DOMAIN

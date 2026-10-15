@@ -218,11 +218,39 @@
           "60min": "60 min",
           "never": "Jamais"
         }
+      },
+      "wake_word": {
+        "name": "Mot d'activation",
+        "state": {
+          "off": "Désactivé",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
+      "pipeline": {
+        "name": "Assistant",
+        "state": {
+          "preferred": "Préféré"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Détection de fin de parole",
+        "state": {
+          "default": "Par défaut",
+          "aggressive": "Agressif",
+          "relaxed": "Détendu"
+        }
       }
     },
     "switch": {
       "local_camera": {
         "name": "Cam\u00e9ra"
+      },
+      "microphone": {
+        "name": "Microphone"
       }
     },
     "binary_sensor": {
@@ -253,14 +281,41 @@
       "external_temperature": {
         "name": "Temp\u00e9rature externe"
       }
+    },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Haut-parleur"
+      }
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Activez le microphone sur l'écran, ou chiffrez d'abord la connexion : Home Assistant ne peut l'activer que par la connexion chiffrée."
+    },
+    "assist_unavailable": {
+      "message": "Le microphone de l'écran n'est pas disponible : l'écran est hors ligne ou ne l'a pas annoncé."
+    },
+    "assist_not_connected": {
+      "message": "Le microphone de l'écran est injoignable : la connexion chiffrée n'est pas prête."
+    },
     "view_unavailable": {
       "message": "L'\u00e9cran est hors ligne ou son catalogue de vues n'est pas pr\u00eat."
     },
     "invalid_view": {
       "message": "La vue s\u00e9lectionn\u00e9e n'existe plus."
+    },
+    "speaker_not_connected": {
+      "message": "Le haut-parleur de l'écran est injoignable : la connexion chiffrée n'est pas prête."
     }
   }
 }

@@ -218,11 +218,39 @@
           "60min": "60 min",
           "never": "Nigdy"
         }
+      },
+      "wake_word": {
+        "name": "Słowo aktywujące",
+        "state": {
+          "off": "Wyłączone",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
+      "pipeline": {
+        "name": "Asystent",
+        "state": {
+          "preferred": "Preferowany"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Wykrywanie końca mowy",
+        "state": {
+          "default": "Domyślny",
+          "aggressive": "Agresywny",
+          "relaxed": "Swobodny"
+        }
       }
     },
     "switch": {
       "local_camera": {
         "name": "Kamera"
+      },
+      "microphone": {
+        "name": "Mikrofon"
       }
     },
     "binary_sensor": {
@@ -253,14 +281,41 @@
       "external_temperature": {
         "name": "Temperatura zewn\u0119trzna"
       }
+    },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Głośnik"
+      }
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Włącz mikrofon na wyświetlaczu albo najpierw zaszyfruj połączenie: Home Assistant może go włączyć tylko przez szyfrowane połączenie."
+    },
+    "assist_unavailable": {
+      "message": "Mikrofon wyświetlacza jest niedostępny: wyświetlacz jest offline lub go nie zgłosił."
+    },
+    "assist_not_connected": {
+      "message": "Mikrofon wyświetlacza jest nieosiągalny: szyfrowane połączenie nie jest gotowe."
+    },
     "view_unavailable": {
       "message": "Wy\u015bwietlacz jest offline lub jego katalog widok\u00f3w nie jest gotowy."
     },
     "invalid_view": {
       "message": "Wybrany widok ju\u017c nie istnieje."
+    },
+    "speaker_not_connected": {
+      "message": "Głośnik wyświetlacza jest nieosiągalny: szyfrowane połączenie nie jest gotowe."
     }
   }
 }

@@ -218,11 +218,39 @@
           "60min": "60 min",
           "never": "Mai"
         }
+      },
+      "wake_word": {
+        "name": "Parola di attivazione",
+        "state": {
+          "off": "Disattivato",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
+      "pipeline": {
+        "name": "Assistente",
+        "state": {
+          "preferred": "Preferito"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Rilevamento fine del parlato",
+        "state": {
+          "default": "Predefinito",
+          "aggressive": "Aggressivo",
+          "relaxed": "Rilassato"
+        }
       }
     },
     "switch": {
       "local_camera": {
         "name": "Telecamera"
+      },
+      "microphone": {
+        "name": "Microfono"
       }
     },
     "binary_sensor": {
@@ -253,14 +281,41 @@
       "external_temperature": {
         "name": "Temperatura esterna"
       }
+    },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Altoparlante"
+      }
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Attiva il microfono sul display oppure cifra prima la connessione: Home Assistant può attivarlo solo tramite la connessione cifrata."
+    },
+    "assist_unavailable": {
+      "message": "Il microfono del display non è disponibile: il display è offline o non lo ha annunciato."
+    },
+    "assist_not_connected": {
+      "message": "Il microfono del display non è raggiungibile: la connessione cifrata non è pronta."
+    },
     "view_unavailable": {
       "message": "Il display è offline o il suo catalogo delle viste non è pronto."
     },
     "invalid_view": {
       "message": "La vista selezionata non esiste più."
+    },
+    "speaker_not_connected": {
+      "message": "L'altoparlante del display non è raggiungibile: la connessione cifrata non è pronta."
     }
   }
 }

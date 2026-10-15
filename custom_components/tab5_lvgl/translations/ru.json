@@ -218,11 +218,39 @@
           "60min": "60 мин",
           "never": "Никогда"
         }
+      },
+      "wake_word": {
+        "name": "Слово активации",
+        "state": {
+          "off": "Выключено",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
+      "pipeline": {
+        "name": "Ассистент",
+        "state": {
+          "preferred": "Предпочтительный"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Определение конца речи",
+        "state": {
+          "default": "По умолчанию",
+          "aggressive": "Агрессивный",
+          "relaxed": "Расслабленный"
+        }
       }
     },
     "switch": {
       "local_camera": {
         "name": "Камера"
+      },
+      "microphone": {
+        "name": "Микрофон"
       }
     },
     "binary_sensor": {
@@ -253,14 +281,41 @@
       "external_temperature": {
         "name": "Внешняя температура"
       }
+    },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Динамик"
+      }
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Включите микрофон на дисплее или сначала зашифруйте соединение: Home Assistant может включить его только по зашифрованному соединению."
+    },
+    "assist_unavailable": {
+      "message": "Микрофон дисплея недоступен: дисплей не в сети или не сообщил о нём."
+    },
+    "assist_not_connected": {
+      "message": "Микрофон дисплея недоступен: зашифрованное соединение не готово."
+    },
     "view_unavailable": {
       "message": "Дисплей не в сети или его каталог видов ещё не готов."
     },
     "invalid_view": {
       "message": "Выбранный вид больше не существует."
+    },
+    "speaker_not_connected": {
+      "message": "Динамик дисплея недоступен: зашифрованное соединение не готово."
     }
   }
 }

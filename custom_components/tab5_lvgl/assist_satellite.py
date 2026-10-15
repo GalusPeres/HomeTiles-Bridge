@@ -21,7 +21,6 @@ import contextlib
 import logging
 from time import monotonic
 
-from homeassistant.components import mqtt
 from homeassistant.components.assist_pipeline import (
     PipelineEvent,
     PipelineEventType,
@@ -37,6 +36,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
+# MQTT calls also reach panels on the direct link (link_mqtt.py).
+from . import link_mqtt as mqtt
 from .assist import (
     ASSIST_SATELLITES_KEY,
     MAX_ACTIVE_WAKE_WORDS,

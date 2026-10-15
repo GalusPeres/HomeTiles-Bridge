@@ -218,11 +218,39 @@
           "60min": "60 min",
           "never": "Nunca"
         }
+      },
+      "wake_word": {
+        "name": "Palavra de ativação",
+        "state": {
+          "off": "Desligado",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
+      "pipeline": {
+        "name": "Assistente",
+        "state": {
+          "preferred": "Preferido"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Detecção de fim de fala",
+        "state": {
+          "default": "Padrão",
+          "aggressive": "Agressivo",
+          "relaxed": "Relaxado"
+        }
       }
     },
     "switch": {
       "local_camera": {
         "name": "Câmera"
+      },
+      "microphone": {
+        "name": "Microfone"
       }
     },
     "binary_sensor": {
@@ -253,14 +281,41 @@
       "external_temperature": {
         "name": "Temperatura externa"
       }
+    },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Alto-falante"
+      }
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Ligue o microfone na tela ou criptografe primeiro a conexão: o Home Assistant só pode ligá-lo pela conexão criptografada."
+    },
+    "assist_unavailable": {
+      "message": "O microfone da tela não está disponível: a tela está offline ou não o anunciou."
+    },
+    "assist_not_connected": {
+      "message": "Não é possível acessar o microfone da tela: a conexão criptografada não está pronta."
+    },
     "view_unavailable": {
       "message": "A tela está offline ou seu catálogo de visualizações não está pronto."
     },
     "invalid_view": {
       "message": "A visualização selecionada não existe mais."
+    },
+    "speaker_not_connected": {
+      "message": "Não é possível acessar o alto-falante da tela: a conexão criptografada não está pronta."
     }
   }
 }

@@ -218,11 +218,39 @@
           "60min": "60 min",
           "never": "Aldrig"
         }
+      },
+      "wake_word": {
+        "name": "Väckningsord",
+        "state": {
+          "off": "Av",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
+      "pipeline": {
+        "name": "Assistent",
+        "state": {
+          "preferred": "Föredragen"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Identifiering av talslut",
+        "state": {
+          "default": "Standard",
+          "aggressive": "Aggressiv",
+          "relaxed": "Avslappnad"
+        }
       }
     },
     "switch": {
       "local_camera": {
         "name": "Kamera"
+      },
+      "microphone": {
+        "name": "Mikrofon"
       }
     },
     "binary_sensor": {
@@ -253,14 +281,41 @@
       "external_temperature": {
         "name": "Extern temperatur"
       }
+    },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Högtalare"
+      }
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Slå på mikrofonen på skärmen eller kryptera anslutningen först: Home Assistant får bara slå på den via den krypterade anslutningen."
+    },
+    "assist_unavailable": {
+      "message": "Skärmens mikrofon är inte tillgänglig: skärmen är offline eller har inte anmält den."
+    },
+    "assist_not_connected": {
+      "message": "Skärmens mikrofon kan inte nås: den krypterade anslutningen är inte redo."
+    },
     "view_unavailable": {
       "message": "Skärmen är offline eller dess vykatalog är inte klar."
     },
     "invalid_view": {
       "message": "Den valda vyn finns inte längre."
+    },
+    "speaker_not_connected": {
+      "message": "Skärmens högtalare kan inte nås: den krypterade anslutningen är inte redo."
     }
   }
 }

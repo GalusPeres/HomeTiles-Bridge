@@ -218,11 +218,39 @@
           "60min": "60 min",
           "never": "Nunca"
         }
+      },
+      "wake_word": {
+        "name": "Palabra de activación",
+        "state": {
+          "off": "Desactivado",
+          "okay_nabu": "Okay Nabu",
+          "hey_jarvis": "Hey Jarvis",
+          "hey_mycroft": "Hey Mycroft",
+          "alexa": "Alexa",
+          "hey_home_assistant": "Hey Home Assistant"
+        }
+      },
+      "pipeline": {
+        "name": "Asistente",
+        "state": {
+          "preferred": "Preferido"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Detección de fin de habla",
+        "state": {
+          "default": "Predeterminado",
+          "aggressive": "Agresivo",
+          "relaxed": "Relajado"
+        }
       }
     },
     "switch": {
       "local_camera": {
         "name": "Cámara"
+      },
+      "microphone": {
+        "name": "Micrófono"
       }
     },
     "binary_sensor": {
@@ -253,14 +281,41 @@
       "external_temperature": {
         "name": "Temperatura externa"
       }
+    },
+    "assist_satellite": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "button": {
+      "assist": {
+        "name": "Assist"
+      }
+    },
+    "media_player": {
+      "speaker": {
+        "name": "Altavoz"
+      }
     }
   },
   "exceptions": {
+    "microphone_needs_pairing": {
+      "message": "Activa el micrófono en la pantalla o cifra primero la conexión: Home Assistant solo puede activarlo a través de la conexión cifrada."
+    },
+    "assist_unavailable": {
+      "message": "El micrófono de la pantalla no está disponible: la pantalla está desconectada o no lo ha anunciado."
+    },
+    "assist_not_connected": {
+      "message": "No se puede acceder al micrófono de la pantalla: la conexión cifrada no está lista."
+    },
     "view_unavailable": {
       "message": "La pantalla está desconectada o su catálogo de vistas no está listo."
     },
     "invalid_view": {
       "message": "La vista seleccionada ya no existe."
+    },
+    "speaker_not_connected": {
+      "message": "No se puede acceder al altavoz de la pantalla: la conexión cifrada no está lista."
     }
   }
 }
