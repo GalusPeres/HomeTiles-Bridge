@@ -2918,10 +2918,16 @@ class Tab5Bridge:
     names = entity_search.LIST_ATTRS.get(key, (key,))
     return _unique_entities([item for name in names for item in self._released.get(name, getattr(self, name, []))])
 
+  def _panel_secured(self) -> bool:
+    """The panel's last sealed declaration stated a Web Admin password (it
+    declares again whenever the password changes)."""
+    declaration = self._panel_declaration
+    return bool(declaration) and declaration.get("secured") is True
+
   def _energy_categories(self) -> set:
     """The Energy dashboard categories the entry's Energy Dashboard options
-    release to the panels (sent in the configuration, searchable without a
-    Web Admin password)."""
+    release to the panels: without a Web Admin password the only ones in the
+    configuration, the search and the energy answers."""
     categories = set()
     if self.entry.data.get(CONF_ENERGY_ELECTRICITY):
       categories.update({"solar", "grid", "battery", "device"})
@@ -4031,6 +4037,16 @@ class Tab5Bridge:
         _LOGGER.warning("Tab5 energy request: no statistic IDs found in energy config")
       await self._async_publish_energy_empty(period)
       return
+
+    # Like every entity (entity_search.served_lists): without a Web Admin
+    # password on the panel only the categories released under Energy
+    # Dashboard; the totals and the consumption follow from these.
+    if not self._panel_secured():
+      released = self._energy_categories()
+      entries = [entry for entry in entries if entry["category"] in released]
+      if not entries:
+        await self._async_publish_energy_empty(period)
+        return
 
     all_stat_ids = {e["stat_id"] for e in entries}
     # Also fetch cost statistic IDs

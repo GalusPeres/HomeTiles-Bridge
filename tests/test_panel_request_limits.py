@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import datetime
 import json
 import logging
 import types
@@ -151,6 +152,80 @@ class EnergyWithoutDashboardTest(unittest.IsolatedAsyncioTestCase):
     with self.assertLogs(LOGGER, "WARNING"):
       await self.request("day")
     self.assertEqual(self.published[-1][1], {"period": "day", "entries": []})
+
+
+class EnergyReleaseTest(unittest.IsolatedAsyncioTestCase):
+  """Without a Web Admin password on the panel the energy answer holds only
+  the categories released under Energy Dashboard, like every other entity
+  (user 2026-10-15: with nothing released the panel still got every source,
+  "ein Sicherheitsrisiko")."""
+
+  def setUp(self):
+    self.clock = Clock()
+    self.published = []
+
+    async def publish(hass, topic, payload, qos=0, retain=False):
+      self.published.append(json.loads(payload))
+
+    async def get_manager(hass):
+      return types.SimpleNamespace(data={
+        "energy_sources": [
+          {"type": "solar", "stat_energy_from": "sensor.pv"},
+          {"type": "grid", "stat_energy_from": "sensor.grid_in", "stat_energy_to": "sensor.grid_out"},
+          {"type": "gas", "stat_energy_from": "sensor.gas"},
+        ],
+        "device_consumption": [{"stat_consumption": "sensor.heat_pump", "name": "Heat pump"}],
+      })
+
+    async def run_job(job):
+      return job()
+
+    self.scope = {
+      "_LOGGER": LOGGER, "monotonic": self.clock, "json": json, "timedelta": datetime.timedelta,
+      "mqtt": types.SimpleNamespace(async_publish=publish),
+      "ENERGY_UNAVAILABLE_LOG_S": LIMITS.ENERGY_UNAVAILABLE_LOG_S,
+      "async_get_energy_manager": get_manager,
+      "statistics_during_period": lambda hass, start, end, ids, period, units, kinds:
+        {stat_id: [{"change": 1.0, "sum": 1.0}] for stat_id in ids},
+      "get_instance": lambda hass: types.SimpleNamespace(async_add_executor_job=run_job),
+      "dt_util": types.SimpleNamespace(
+        now=lambda: datetime.datetime(2026, 10, 15, 12, tzinfo=datetime.timezone.utc), as_utc=lambda d: d),
+      "CONF_ENERGY_ELECTRICITY": "energy_electricity", "CONF_ENERGY_GAS": "energy_gas",
+      "CONF_ENERGY_WATER": "energy_water",
+    }
+    extract({"_async_handle_energy_request", "_async_publish_energy_empty", "_try_parse_json",
+             "_secure_log_due", "_panel_secured", "_energy_categories"}, self.scope)
+    self.bridge = types.SimpleNamespace(
+      hass=types.SimpleNamespace(data={}, states=types.SimpleNamespace(get=lambda entity_id: None),
+                                 config=types.SimpleNamespace(currency="EUR")),
+      energy_response_topic="hometiles/energy/response", _secure_log_at={},
+      _panel_declaration=None, entry=types.SimpleNamespace(data={}))
+    for name in ("_secure_log_due", "_async_publish_energy_empty", "_panel_secured", "_energy_categories"):
+      setattr(self.bridge, name, lambda *args, name=name: self.scope[name](self.bridge, *args))
+
+  async def answer(self):
+    await self.scope["_async_handle_energy_request"](self.bridge, _message('{"period":"day"}'))
+    return sorted(entry["id"] for entry in self.published[-1]["entries"])
+
+  async def test_nothing_released_and_no_password_sends_nothing(self):
+    # Also a panel without a declaration (MQTT, no pairing).
+    with self.assertNoLogs(LOGGER, "WARNING"):
+      self.assertEqual(await self.answer(), [])
+    self.bridge._panel_declaration = {"lists": {}, "secured": False, "own": True}
+    self.assertEqual(await self.answer(), [])
+
+  async def test_released_categories_without_password(self):
+    self.bridge.entry.data = {"energy_electricity": True}
+    self.assertEqual(await self.answer(), ["consumption_total", "consumption_untracked", "grid_total",
+                                           "sensor.grid_in", "sensor.grid_out", "sensor.heat_pump", "sensor.pv"],
+                     "Electricity: solar, grid, battery and devices with their totals, no gas")
+    self.bridge.entry.data = {"energy_gas": True}
+    self.assertEqual(await self.answer(), ["sensor.gas"])
+
+  async def test_every_source_with_a_password(self):
+    self.bridge._panel_declaration = {"lists": {}, "secured": True, "own": True}
+    self.assertIn("sensor.gas", await self.answer())
+    self.assertIn("sensor.pv", await self.answer())
 
 
 class MetaPushTest(unittest.TestCase):
