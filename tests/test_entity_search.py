@@ -132,6 +132,28 @@ class SearchModuleTests(unittest.TestCase):
         self.assertEqual(served(released, own, dict(secured, lists={"switches": ["fan.bath"]}))["switches"],
                          ["switch.relay", "fan.bath"], "Switch-like entities that are no lights join the switches")
 
+    def test_scene_tiles_search_and_run_by_entity_id(self):
+        helpers = load_link_module("control_helpers")
+        self.assertEqual(SEARCH.LIST_DOMAINS["scenes"], ("scene", "script", "button", "input_button"))
+        self.assertEqual(SEARCH.LIST_ATTRS["scenes"], ("scenes",))
+        self.assertEqual(SEARCH.clean_lists({"scenes": ["button.wolf_fhs280_uhrzeit_synchronisieren", "light.x",
+                                                        "wolf_uhrzeit"]}),
+                         {"scenes": ["button.wolf_fhs280_uhrzeit_synchronisieren"]},
+                         "Only scene, script and button ids; an alias is never declared")
+        aliases = {"tv": "scene.tv"}
+        released = {"scenes": ["scene.tv"]}
+        declared = {"lists": {"scenes": ["button.wolf_fhs280_uhrzeit_synchronisieren"]}, "own": True}
+        for secured, runs in ((False, False), (True, True)):
+            served = SEARCH.served_lists(released, released, dict(declared, secured=secured))["scenes"]
+            scene_map = helpers.scene_map_with_served(aliases, served)
+            self.assertEqual(helpers.resolve_action_entity("tv", scene_map), "scene.tv", "An old alias still runs")
+            self.assertEqual(helpers.resolve_action_entity("scene.tv", scene_map), "scene.tv",
+                             "A released scene runs by its id")
+            self.assertEqual(helpers.resolve_action_entity("button.wolf_fhs280_uhrzeit_synchronisieren", scene_map)
+                             is not None, runs, "A declared button runs only with the password")
+        self.assertIsNone(helpers.resolve_action_entity("light.desk", helpers.scene_map_with_served({}, ["light.desk"])),
+                          "Nothing but scenes, scripts and buttons")
+
     def test_sealed_only(self):
         self.assertTrue({"entities", "tiles"} <= CHANNEL.SEALED_ONLY_COMMANDS <= CHANNEL.SEALED_COMMANDS)
         self.assertTrue({"entities", "tiles"} <= CHANNEL.SEALED_DATA)
@@ -412,8 +434,11 @@ class WiringTests(BridgeHarness):
                         refresh.index("self.tracked_entities = _unique_entities("))
         self.assertIn('mine = self._collect_all_entries_entities([self.entry]) if declaration and declaration.get("own") else merged',
                       refresh, "an own declaration reads the panel's own entry")
-        self.assertIn('self.scene_map = dict(merged["scene_map"])', refresh, "lock rules and scenes stay from every entry")
-        self.assertIn('"entity_search": 3,', text)
+        self.assertIn('self.scene_map = scene_map_with_served(merged["scene_map"], self.scenes)', refresh,
+                      "scene aliases stay from every entry, served Scene tile ids join them")
+        self.assertIn('"scenes": _unique_entities(list(source["scene_map"].values())),', refresh,
+                      "the released scenes are a picker list like the others")
+        self.assertIn('"entity_search": 4,', text)
         self.assertIn('"entities": self._async_handle_entities_command,', text)
         self.assertIn('"tiles": self._async_handle_tiles_command,', text)
         setup = text[text.index("  async def async_setup(self) -> None:"):]

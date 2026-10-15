@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from .control_helpers import SWITCH_DOMAINS, entity_domain
+from .control_helpers import ACTION_DOMAINS, SWITCH_DOMAINS, entity_domain
 from .editable_helpers import DATETIME_DOMAINS, NUMBER_DOMAINS, SELECT_DOMAINS
 
 # Picker list (/api/entity_options key on the panel) -> searchable domains.
@@ -42,6 +42,8 @@ LIST_DOMAINS: Dict[str, Tuple[str, ...]] = {
   "locks": ("lock",),
   "alarm_panels": ("alarm_control_panel",),
   "fans": ("fan",),
+  # The Scene tile: scenes, scripts and buttons it runs or presses.
+  "scenes": ACTION_DOMAINS,
 }
 
 # The sources of Home Assistant's Energy dashboard (statistics ids and the
@@ -57,7 +59,7 @@ LIST_ATTRS: Dict[str, Tuple[str, ...]] = {
   "switches": ("lights", "switches"), "media": ("media_players",), "climates": ("climates",),
   "covers": ("covers",), "cameras": ("cameras",), "images": ("images", "cameras"),
   "locks": ("locks",),
-  "alarm_panels": ("alarm_panels",), "fans": ("fans",),
+  "alarm_panels": ("alarm_panels",), "fans": ("fans",), "scenes": ("scenes",),
 }
 
 MAX_QUERY = 64

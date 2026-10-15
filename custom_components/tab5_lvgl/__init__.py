@@ -102,6 +102,7 @@ from .control_helpers import (
   panel_entity_list,
   resolve_action_entity,
   resolve_control_entity,
+  scene_map_with_served,
 )
 from .state_history import (
   STATE_HISTORY_KIND,
@@ -1460,6 +1461,9 @@ class Tab5Bridge:
     self.locks: List[str] = _unique_entities(list(data.get(CONF_LOCKS, [])))
     self.alarm_panels: List[str] = _unique_entities(list(data.get(CONF_ALARM_PANELS, [])))
     self.fans: List[str] = _unique_entities(list(data.get(CONF_FANS, [])))
+    # Scenes, scripts and buttons a Scene tile may run by its entity id
+    # (released ones and, with a Web Admin password, declared ones).
+    self.scenes: List[str] = []
     # Locks and alarm panels that may be unlocked/opened/disarmed without a
     # code Home Assistant checks (access_helpers.plan_access_call).
     self.open_without_code: List[str] = _unique_entities(list(data.get(CONF_OPEN_WITHOUT_CODE, [])))
@@ -1719,6 +1723,7 @@ class Tab5Bridge:
         "covers": source["covers"], "cameras": source["cameras"], "images": source["images"],
         "weathers": source["weathers"],
         "locks": source["locks"], "alarm_panels": source["alarm_panels"], "fans": source["fans"],
+        "scenes": _unique_entities(list(source["scene_map"].values())),
       }
 
     # A panel that declares everything it uses gets its own entry's releases
@@ -1731,7 +1736,7 @@ class Tab5Bridge:
     self._configured_sensors = mine["sensors"]
     self.open_without_code = merged["open_without_code"]
     self.access_codes = merged["access_codes"]
-    self.scene_map = dict(merged["scene_map"])
+    self.scene_map = scene_map_with_served(merged["scene_map"], self.scenes)
     self.tracked_entities = _unique_entities(
       self.sensors
       + self.binary_sensors
@@ -2089,8 +2094,9 @@ class Tab5Bridge:
           "scene_map": self.scene_map,
           # The picker searches through this Bridge, and the panel declares
           # its tiles' entities (entity_search.py): 2 = declarations, 3 = also
-          # the Energy dashboard's sources (entity_search.ENERGY_LIST).
-          "entity_search": 3,
+          # the Energy dashboard's sources (entity_search.ENERGY_LIST), 4 =
+          # also scenes, scripts and buttons for the Scene tile.
+          "entity_search": 4,
           # This Bridge sends name, unit and icon changes by itself
           # (_handle_state_event), so a panel that reads this flag needs no
           # refresh every minute, only after a reconnect or a lost message.

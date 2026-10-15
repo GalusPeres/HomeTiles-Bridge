@@ -95,6 +95,19 @@ def resolve_action_entity(payload: str, scene_map: Mapping[str, str]) -> str | N
     return entity_id
 
 
+def scene_map_with_served(scene_map: Mapping[str, str], served: Iterable[str]) -> dict[str, str]:
+    """The released aliases plus every served scene, script or button by its
+    own id (a Scene tile that stores the entity id, declared by the panel),
+    so resolve_action_entity accepts exactly what the panel may run."""
+    result = dict(scene_map)
+    known = set(result.values())
+    for entity_id in served:
+        if entity_id not in known and entity_domain(entity_id) in ACTION_DOMAINS:
+            result[entity_id.lower()] = entity_id
+            known.add(entity_id)
+    return result
+
+
 def build_action_service_call(payload: str, scene_map: Mapping[str, str], state: Any) -> tuple[str, str, dict] | None:
     entity_id = resolve_action_entity(payload, scene_map)
     # Unpressed buttons and scenes normally have an unknown timestamp. They
