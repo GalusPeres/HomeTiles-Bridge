@@ -12,7 +12,8 @@ This integration is the Home Assistant companion for the **HomeTiles** firmware.
 - Numeric sensor graphs plus bounded binary and textual-state timelines for 24 hours or 7 days
 - Weather forecasts (daily, twice-daily day/night periods, and hourly)
 - Energy dashboard data (consumption, solar, grid, battery, gas, water)
-- Light, switch, cover, climate, media player, fan and scene control from the display
+- Light, switch, cover, climate, media player, fan and scene/script/button control from the display
+- Speaker, Assist and wake words for ESP32-P4 displays with audio hardware (early version)
 - Lock and alarm panel control from encrypted displays, with codes checked by Home Assistant or, for devices that ignore wrong codes, by the Bridge
 - Experimental camera popups with local, receiver-paced JPEG video transport
 - Auto-discovery of integration-owned sensors and device-announced local I/O
