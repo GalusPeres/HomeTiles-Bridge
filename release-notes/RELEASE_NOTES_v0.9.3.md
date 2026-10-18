@@ -15,4 +15,6 @@ Update through HACS and restart Home Assistant. Nothing changes on the displays;
 
 735 automated tests passed, including new tests that stop the link and camera servers while a panel is still connected. A restart of a real Home Assistant with a connected panel has not been tested by the maintainer yet.
 
+Thanks to @x-Felix for tracking down the cause (#15).
+
 **Full Changelog:** https://github.com/GalusPeres/HomeTiles-Bridge/compare/v0.9.2...v0.9.3
