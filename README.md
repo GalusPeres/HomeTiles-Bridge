@@ -296,8 +296,9 @@ image. The full wire format is documented in
 - Push the matching `v*` tag (for example `v0.6.32`); GitHub Actions creates
   the release
 - Never create the GitHub release manually; wait for the tag workflow to finish
-- Replace the generated release text with the matching checked-in release notes,
-  for example `gh release edit v0.6.34 --notes-file RELEASE_NOTES_v0.6.34.md`
+- Replace the generated release text with the matching checked-in release notes
+  in `release-notes/`, for example
+  `gh release edit v0.6.34 --notes-file release-notes/RELEASE_NOTES_v0.6.34.md`
 
 ## License
 
