@@ -231,6 +231,13 @@ class LinkServerTest(unittest.IsolatedAsyncioTestCase):
         await settle()
         self.assertEqual(self.received[-1], (f"{BASE}/stat/connected", b"1", False))
 
+    async def test_stop_returns_while_a_panel_is_connected(self):
+        # Issue #15: Home Assistant's restart hung while a panel was connected,
+        # because the server waited for its open connections before closing them.
+        panel = await self.session()
+        await asyncio.wait_for(self.runtime.async_stop(), 5)
+        self.assertTrue(await panel.closed())
+
     async def test_pair_mode_only_carries_pairing_topics(self):
         client = self.client()
         frame_type, answer = await client.hello(LINK.MODE_PAIR)

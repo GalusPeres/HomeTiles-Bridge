@@ -18,6 +18,7 @@ import time
 from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from .link_broker import LinkBroker
+from .server_close import async_close_server
 from .link_protocol import (
   HANDSHAKE_TIMEOUT_S,
   IDLE_TIMEOUT_S,
@@ -307,11 +308,12 @@ class LinkServer:
     raise last_error or OSError("no free port for the HomeTiles link server")
 
   async def async_stop(self) -> None:
-    if self._server is not None:
-      self._server.close()
-      with suppress(Exception):
-        await self._server.wait_closed()
-      self._server = None
+    # The panels' connections close before the server waits for them: it
+    # waits for every open connection (issue #15).
+    server = self._server
+    self._server = None
+    if server is not None:
+      server.close()
     for connection in list(self._connections):
       connection.close()
     for task in list(self._tasks):
@@ -319,6 +321,8 @@ class LinkServer:
     for task in list(self._tasks):
       with suppress(asyncio.CancelledError, Exception):
         await task
+    if server is not None:
+      await async_close_server(server, "link")
 
   def connected(self, device_id: str) -> bool:
     session = self.broker.session(device_id)

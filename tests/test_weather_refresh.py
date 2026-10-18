@@ -191,6 +191,17 @@ class WeatherRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime._weather_pending)
         self.assertFalse(published)
 
+    async def test_stop_listener_does_not_remove_itself_again(self):
+        # Issue #15: Home Assistant removes a one-time listener before calling
+        # it; removing it again logged "Unable to remove unknown job listener".
+        runtime, _, _, _, _, _ = self.runtime({})
+        stopped = []
+        runtime._unsub_weather_stop = lambda: stopped.append("stop")
+        runtime._unsub_weather_started = lambda: stopped.append("start")
+        await runtime._async_stop_weather_updates(SimpleNamespace(event_type="homeassistant_stop"))
+        self.assertEqual(stopped, ["start"])
+        self.assertIsNone(runtime._unsub_weather_stop)
+
     async def test_new_notification_wins_over_inflight_old_state_publication(self):
         data = forecasts.yandex_forecasts()
         runtime, state, provider, published, _, _ = self.runtime(data)

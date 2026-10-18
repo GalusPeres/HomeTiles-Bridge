@@ -5304,9 +5304,13 @@ class Tab5Bridge:
     finally:
       self._weather_update_task = None
 
-  async def _async_stop_weather_updates(self, _event=None) -> None:
+  async def _async_stop_weather_updates(self, event=None) -> None:
     """Remove forecast/start/stop listeners and cancel an in-flight publication."""
     self._runtime_setup_complete = False
+    if event is not None:
+      # Called by the one-time stop listener itself: Home Assistant removed it
+      # before the call, and removing it again logs an error (issue #15).
+      self._unsub_weather_stop = None
     for name in ("_unsub_weather_stop", "_unsub_weather_started"):
       unsubscribe = getattr(self, name)
       if unsubscribe is not None:

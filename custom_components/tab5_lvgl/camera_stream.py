@@ -23,6 +23,7 @@ from .local_camera_stream import (
   LocalCameraUploadRegistry,
   is_upload_handshake,
 )
+from .server_close import async_close_server
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -758,10 +759,10 @@ class CameraStreamManager:
           await broadcast.task
     self.local_camera_uploads.close_all()
     if self._tcp_server is not None:
-      self._tcp_server.close()
-      await self._tcp_server.wait_closed()
+      server = self._tcp_server
       self._tcp_server = None
       self._tcp_port = None
+      await async_close_server(server, "camera")
 
   async def async_create_session(
     self,

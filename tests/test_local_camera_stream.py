@@ -338,6 +338,20 @@ class UploadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await panel.closed(), b"")
         self.assertFalse(self.registry.is_registered(SESSION))
 
+    async def test_manager_shutdown_does_not_wait_for_an_open_connection(self):
+        # Issue #15: Home Assistant's stop waited for every open camera
+        # connection, here one that has not sent its handshake yet.
+        self.manager._tcp_server = self.server
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        self.clients.append(Panel(reader, writer))
+        await asyncio.sleep(0.01)
+        # The bounded wait (server_close.py), shortened for the test.
+        close_server = getattr(self.camera_stream, "async_close_server", None)
+        shorter = (mock.patch.dict(close_server.__globals__, {"SERVER_CLOSE_TIMEOUT_S": 0.2})
+                   if close_server is not None else contextlib.nullcontext())
+        with shorter:
+            await asyncio.wait_for(self.manager.async_shutdown(), 2)
+
     async def test_downstream_handshake_still_uses_the_existing_path(self):
         client = await Panel.connect(self.port, b"HTCAM/1 unknown-token\n")
         self.clients.append(client)
