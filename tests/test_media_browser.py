@@ -66,3 +66,18 @@ class CatalogPagesTest(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+class CatalogTopicTest(unittest.TestCase):
+  def test_pages_go_to_one_fixed_topic(self):
+    # A panel on the direct link may subscribe only concrete topics
+    # (link_protocol.valid_topic): v0.9.4b1 sent catalog/<page>, the panel's
+    # catalog/+ was refused and no page ever arrived.
+    from pathlib import Path
+    link = load_module("link_protocol")
+    self.assertFalse(link.valid_topic("hometiles/stat/media/catalog/+"))
+    self.assertTrue(link.valid_topic("hometiles/stat/media/catalog"))
+    source = (Path(__file__).resolve().parents[1] / "custom_components" / "tab5_lvgl" / "__init__.py").read_text(
+      encoding="utf-8")
+    self.assertIn('f"{self.base_topic}/stat/media/catalog", text', source)
+    self.assertNotIn("stat/media/catalog/{", source)

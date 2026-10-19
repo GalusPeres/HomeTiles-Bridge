@@ -2,8 +2,9 @@
 
 Based on memooox3's media browse work (HomeTiles PR #87, Bridge PR #11). The
 panel asks for one level with `browse_media` (empty id and type = the root);
-the Bridge answers with the level's children on `stat/media/catalog/<page>`,
-split into pages by size so every page fits the panel's 32 KB receive buffer,
+the Bridge answers with the level's children on `stat/media/catalog`, split
+into pages by size so every page fits the panel's 32 KB receive buffer (one
+fixed topic: the direct link takes no wildcard subscription from a panel),
 or with an error on `stat/media`. Pure helpers, no Home Assistant imports.
 """
 

@@ -5026,7 +5026,8 @@ class Tab5Bridge:
 
   async def _async_media_browse(self, entity_id: str, request: Dict[str, Any]) -> None:
     """One level of the player's media browser for the panel (browse_media):
-    the children on stat/media/catalog/<page>, an error on stat/media."""
+    the children page by page on stat/media/catalog (one fixed topic: the
+    direct link takes no wildcard subscription), an error on stat/media."""
     try:
       request_id = int(request.get("request_id") or 0)
     except (TypeError, ValueError):
@@ -5066,7 +5067,7 @@ class Tab5Bridge:
     if truncated:
       header["truncated"] = True
     for index, text in enumerate(catalog_pages(header, items)):
-      await mqtt.async_publish(self.hass, f"{self.base_topic}/stat/media/catalog/{index}", text, qos=0, retain=False)
+      await mqtt.async_publish(self.hass, f"{self.base_topic}/stat/media/catalog", text, qos=0, retain=False)
 
   def _remember_media_thumbnails(self, items: List[Dict[str, Any]]) -> None:
     for item in items:
