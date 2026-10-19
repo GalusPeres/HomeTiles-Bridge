@@ -207,7 +207,7 @@ from .access_helpers import (
 )
 from .fan_helpers import FAN_DOMAIN, build_fan_detail, build_fan_service_call, parse_fan_command
 from .media_artwork import ArtworkClearGate, artwork_url, image_key, image_key_field, is_ha_media_proxy
-from .media_browser import catalog_pages, normalize_result as normalize_browse_result
+from .media_browser import browse_arguments as media_browse_arguments, catalog_pages, normalize_result as normalize_browse_result
 from .media_controls import (
   CONTROL_COMMANDS as MEDIA_CONTROL_COMMANDS,
   FEATURE_GROUPING as MEDIA_FEATURE_GROUPING,
@@ -5009,9 +5009,10 @@ class Tab5Bridge:
         return
       service_payload["seek_position"] = position
     elif command == "play_media":
-      content_id = str(parsed_payload.get("media_content_id") or "").strip()
-      content_type = str(parsed_payload.get("media_content_type") or "").strip()
-      if not content_id or not content_type:
+      # The id exactly as the library listed it (a trimmed one may not play).
+      content_id = str(parsed_payload.get("media_content_id") or "")
+      content_type = str(parsed_payload.get("media_content_type") or "")
+      if not content_id.strip() or not content_type.strip():
         _LOGGER.warning("Unhandled play_media command from Tab5 (missing content): %s", msg.payload)
         return
       service_payload["media_content_id"] = content_id
@@ -5038,8 +5039,11 @@ class Tab5Bridge:
       "request_id": request_id,
       "entity_id": entity_id,
     }
-    content_id = str(request.get("media_content_id") or "").strip()
-    content_type = str(request.get("media_content_type") or "").strip()
+    # Exactly as the panel got them from the catalog (an empty id included).
+    raw_id = request.get("media_content_id")
+    raw_type = request.get("media_content_type")
+    content_id = "" if raw_id is None else str(raw_id)
+    content_type = "" if raw_type is None else str(raw_type)
     normalized = None
     error = ""
     component = self.hass.data.get("media_player")
@@ -5049,7 +5053,8 @@ class Tab5Bridge:
       error = "not_supported"
     else:
       try:
-        result = await browse(media_content_type=content_type or None, media_content_id=content_id or None)
+        browse_type, browse_id = media_browse_arguments(content_id, content_type)
+        result = await browse(media_content_type=browse_type, media_content_id=browse_id)
         normalized = normalize_browse_result(result)
         if normalized is None:
           error = "invalid_result"

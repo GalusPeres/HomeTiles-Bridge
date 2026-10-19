@@ -81,3 +81,21 @@ class CatalogTopicTest(unittest.TestCase):
       encoding="utf-8")
     self.assertIn('f"{self.base_topic}/stat/media/catalog", text', source)
     self.assertNotIn("stat/media/catalog/{", source)
+
+
+class BrowseArgumentsTest(unittest.TestCase):
+  def test_root_has_neither(self):
+    self.assertEqual(BROWSER.browse_arguments("", ""), (None, None))
+    self.assertEqual(BROWSER.browse_arguments(None, None), (None, None))
+
+  def test_a_folder_with_an_empty_id_keeps_it(self):
+    # Sonos: "Favorites" is id "" with type "favorites"; None is its root.
+    self.assertEqual(BROWSER.browse_arguments("", "favorites"), ("favorites", ""))
+    self.assertEqual(BROWSER.browse_arguments("S://share/x", "playlist"), ("playlist", "S://share/x"))
+
+  def test_ids_stay_exact(self):
+    item = BROWSER.normalize_item(child(1, media_content_id=" spotify:track:1 "))
+    self.assertEqual(item["media_content_id"], " spotify:track:1 ")
+    self.assertIsNone(BROWSER.normalize_item(child(2, media_content_id="x" * (BROWSER.MAX_ID_BYTES + 1))))
+    empty = BROWSER.normalize_item(child(3, media_content_id="", media_content_type="favorites", can_expand=True))
+    self.assertEqual((empty["media_content_id"], empty["media_content_type"]), ("", "favorites"))

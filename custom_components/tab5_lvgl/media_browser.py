@@ -36,13 +36,35 @@ def _cut(value: Any, max_bytes: int) -> str:
   return data[:max_bytes].decode("utf-8", errors="ignore")
 
 
+def browse_arguments(content_id: Any, content_type: Any) -> Tuple[Optional[str], Optional[str]]:
+  """(media_content_type, media_content_id) for async_browse_media, like Home
+  Assistant's own media browser: the root without either; a folder with its
+  id and type exactly as listed, an empty id too (Sonos lists "Favorites" and
+  "Music Library" with the id "" and their type; None would be its root
+  again, so the panel showed the same level once more)."""
+  content_id = "" if content_id is None else str(content_id)
+  content_type = "" if content_type is None else str(content_type)
+  if not content_id and not content_type:
+    return None, None
+  return content_type, content_id
+
+
+def _exact(value: Any, max_bytes: int) -> Optional[str]:
+  """An id or type exactly as Home Assistant listed it (a cut or stripped one
+  would not open again); None when it is too long for the panel."""
+  text = "" if value is None else str(value)
+  return text if len(text.encode("utf-8")) <= max_bytes else None
+
+
 def normalize_item(item: Any) -> Optional[Dict[str, Any]]:
   """One child of a BrowseMedia result as the panel needs it."""
   if not isinstance(item, dict):
     return None
   title = _cut(item.get("title"), MAX_TITLE_BYTES)
-  content_id = _cut(item.get("media_content_id"), MAX_ID_BYTES)
-  content_type = _cut(item.get("media_content_type"), MAX_TYPE_BYTES)
+  content_id = _exact(item.get("media_content_id"), MAX_ID_BYTES)
+  content_type = _exact(item.get("media_content_type"), MAX_TYPE_BYTES)
+  if content_id is None or content_type is None:
+    return None
   if not title and not content_id and not content_type:
     return None
   out: Dict[str, Any] = {
