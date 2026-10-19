@@ -25,6 +25,10 @@ class ViewNavigation:
         self.pages: dict[int, dict[str, str]] = {}
         self.page_count = 0
         self.targets: dict[str, str] = {}
+        # The labels of the last complete catalog. They stay while a new
+        # revision's catalog arrives (commands wait for it), so the select's
+        # options change only when the list itself changes (issue #17).
+        self.options: list[str] = []
         self.current: str | None = None
         self.mode = "unknown"
         self.ready = False
@@ -116,6 +120,7 @@ class ViewNavigation:
         self.pages, self.page_count = pages, count
         if len(pages) == count and "home" in combined:
             self.targets = combined
+            self.options = list(combined.values())
         return True
 
     def current_label(self) -> str | None:

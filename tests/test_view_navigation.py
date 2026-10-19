@@ -188,6 +188,16 @@ class SelectLifecycleTest(unittest.IsolatedAsyncioTestCase):
         await subscriptions["panel/a/stat/view"](message(json.dumps(state())))
         await subscriptions["panel/a/view/catalog/+"](message(json.dumps(catalog()), True))
         self.assertTrue(entity.available)
+        # Issue #17: every tile edit on the panel bumps the revision. The
+        # options stay until the new catalog is complete, so the select's
+        # capabilities change only when the list itself changes.
+        shown = entity.options
+        await subscriptions["panel/a/stat/view"](message(json.dumps(state(revision=2))))
+        self.assertFalse(entity.available)
+        self.assertEqual(entity.options, shown)
+        await subscriptions["panel/a/view/catalog/+"](message(json.dumps(catalog(revision=2))))
+        self.assertTrue(entity.available)
+        self.assertEqual(entity.options, shown)
         mqtt.async_publish.reset_mock()
         await entity.async_select_option("Home / Room / Door [t:12]")
         self.assertEqual(entity.current_option, "Home")

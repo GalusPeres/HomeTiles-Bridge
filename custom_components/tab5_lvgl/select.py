@@ -185,7 +185,7 @@ class HomeTilesViewSelect(SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        return list(self._view.targets.values())
+        return list(self._view.options)
 
     @property
     def current_option(self) -> str | None:
