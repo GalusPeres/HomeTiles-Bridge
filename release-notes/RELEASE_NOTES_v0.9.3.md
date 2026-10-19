@@ -11,6 +11,8 @@ Home Assistant restarts again while a panel is connected.
 
 Update through HACS and restart Home Assistant. Nothing changes on the displays; HomeTiles v0.9.3 and older firmware keep working.
 
+Coming from v0.9.2: the restart right after the update still runs the old Bridge and can hang while a panel is connected. Restart the panel first, or restart Home Assistant's host or container once.
+
 ## Validation
 
 735 automated tests passed, including new tests that stop the link and camera servers while a panel is still connected. A restart of a real Home Assistant with a connected panel has not been tested by the maintainer yet.
