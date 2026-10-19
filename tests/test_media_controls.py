@@ -7,6 +7,7 @@ import types
 import unittest
 
 from test_control_entity_validation import bridge_methods
+from test_local_camera_platform import bridge_methods as tab5_bridge_methods
 from test_view_navigation import load_module
 
 CONTROLS = load_module("media_controls")
@@ -135,6 +136,57 @@ class MediaControlWiringTest(unittest.IsolatedAsyncioTestCase):
   async def test_shuffle_alias(self):
     await self.command({"entity_id": "media_player.living", "command": "shuffle", "shuffle": True})
     self.assertEqual(self.calls, [("media_player", "shuffle_set", {"entity_id": "media_player.living", "shuffle": True})])
+
+
+class MediaGroupAcrossPanelsTest(unittest.TestCase):
+  """Two panels on one state prefix: the player's shared state carries the
+  candidates of whichever entry published last, so both entries must offer
+  and accept the same speakers (V2 join refused as not_a_candidate,
+  2026-10-19)."""
+
+  def setUp(self):
+    def unique(items):
+      return list(dict.fromkeys(item.strip() for item in items if item and item.strip()))
+
+    registry = types.SimpleNamespace(
+      async_get=lambda entity_id: types.SimpleNamespace(platform="sonos"))
+    scope = {"er": types.SimpleNamespace(async_get=lambda hass: registry), "DOMAIN": "tab5_lvgl",
+             "MEDIA_FEATURE_GROUPING": CONTROLS.FEATURE_GROUPING, "_unique_entities": unique}
+    methods = tab5_bridge_methods({"_served_media_players", "_media_group_candidates"}, scope)
+    players = {entity_id: types.SimpleNamespace(state="playing", name=entity_id.split(".")[1],
+                                                attributes={"supported_features": ALL})
+               for entity_id in ("media_player.living", "media_player.kitchen")}
+    entries = {}
+    hass = types.SimpleNamespace(data={"tab5_lvgl": {"entries": entries}},
+                                 states=types.SimpleNamespace(get=players.get))
+
+    def bridge(served):
+      instance = types.SimpleNamespace(hass=hass, ha_prefix="ha/statestream", media_players=served)
+      instance._served_media_players = lambda: methods["_served_media_players"](instance)
+      instance._media_group_candidates = (
+        lambda entity_id, state: methods["_media_group_candidates"](instance, entity_id, state))
+      return instance
+
+    # The V2 serves only the living room, the S3 the living room and the kitchen.
+    self.v2 = entries["v2"] = bridge(["media_player.living"])
+    self.s3 = entries["s3"] = bridge(["media_player.living", "media_player.kitchen"])
+    self.living = players["media_player.living"]
+
+  def test_every_entry_offers_the_same_speakers(self):
+    names = lambda bridge: [c["entity_id"] for c in bridge._media_group_candidates("media_player.living", self.living)]
+    self.assertEqual(names(self.v2), ["media_player.kitchen"])
+    self.assertEqual(names(self.v2), names(self.s3))
+
+  def test_a_speaker_another_panel_serves_is_accepted(self):
+    allowed = [c["entity_id"] for c in self.v2._media_group_candidates("media_player.living", self.living)]
+    self.assertEqual(
+      CONTROLS.build_media_control_call("join", {"group_members": ["media_player.kitchen"]},
+                                        self.living.attributes, allowed),
+      ("join", {"group_members": ["media_player.kitchen"]}, ""))
+
+  def test_another_state_prefix_stays_apart(self):
+    self.s3.ha_prefix = "other/prefix"
+    self.assertEqual(self.v2._media_group_candidates("media_player.living", self.living), [])
 
 
 if __name__ == "__main__":

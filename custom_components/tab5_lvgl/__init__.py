@@ -5161,10 +5161,27 @@ class Tab5Bridge:
     await mqtt.async_publish(self.hass, f"{self.base_topic}/stat/media/thumb",
                              json.dumps(answer, separators=(",", ":")), qos=0, retain=False)
 
+  def _served_media_players(self) -> List[str]:
+    """The media players served to any panel on this entry's state prefix.
+
+    The group candidates travel in the player's state on the shared prefix
+    (ha/statestream/...), which every entry serving that player publishes.
+    A list of this entry's own players made the candidates depend on the
+    entry that wrote last: the V2 showed a speaker only the S3 is served
+    and its join was refused as not_a_candidate (2026-10-19)."""
+    players: List[str] = list(self.media_players)
+    for bridge in self.hass.data.get(DOMAIN, {}).get("entries", {}).values():
+      if bridge is self or getattr(bridge, "ha_prefix", None) != self.ha_prefix:
+        continue
+      players.extend(getattr(bridge, "media_players", []))
+    return _unique_entities(players)
+
   def _media_group_candidates(self, entity_id: str, state: Optional[State]) -> List[Dict[str, str]]:
-    """Players this panel may group with entity_id: served media players of
-    the same integration that support GROUPING (never other entities, so no
-    name or state of an unserved player reaches the panel)."""
+    """Players a panel may group with entity_id: media players served on this
+    state prefix (_served_media_players) of the same integration that support
+    GROUPING (never other entities, so no name or state of an unserved player
+    reaches a panel). The same list for every entry, so the candidates a panel
+    shows are the ones its join is checked against."""
     attrs = (state.attributes or {}) if state is not None else {}
     try:
       features = int(attrs.get("supported_features") or 0)
@@ -5178,7 +5195,7 @@ class Tab5Bridge:
     if not platform:
       return []
     found: List[Dict[str, str]] = []
-    for other_id in self.media_players:
+    for other_id in self._served_media_players():
       if other_id == entity_id:
         continue
       other_entry = registry.async_get(other_id)
