@@ -207,6 +207,13 @@ from .access_helpers import (
 )
 from .fan_helpers import FAN_DOMAIN, build_fan_detail, build_fan_service_call, parse_fan_command
 from .media_artwork import ArtworkClearGate, artwork_url, image_key, image_key_field, is_ha_media_proxy
+from .media_browser import catalog_pages, normalize_result as normalize_browse_result
+from .media_controls import (
+  CONTROL_COMMANDS as MEDIA_CONTROL_COMMANDS,
+  FEATURE_GROUPING as MEDIA_FEATURE_GROUPING,
+  build_media_control_call,
+  media_control_fields,
+)
 from .camera_stream import (
   CAMERA_BRIDGE_PROTOCOL_VERSION,
   CAMERA_STREAM_FPS,
@@ -403,6 +410,64 @@ async def _async_media_player_image(entity: Any, entity_id: str) -> Tuple[bytes,
   return bytes(data), (content_type if isinstance(content_type, str) else "")
 
 
+# The library's thumbnails (memooox3, Bridge PR #11): small square JPEGs for
+# the panel's rows, sides a multiple of 16 for the ESP32-P4 JPEG decoder.
+MEDIA_THUMB_SIZE_DEFAULT = 64
+MEDIA_THUMB_SIZE_MIN = 16
+MEDIA_THUMB_SIZE_MAX = 128
+MEDIA_THUMB_CACHE_MAX = 128
+# Only thumbnail URLs this Bridge published in a catalog are fetched, so the
+# panel can never make the Bridge request an arbitrary URL.
+MEDIA_THUMB_ALLOWED_MAX = 1024
+
+
+def _media_thumb_size(value: Any) -> int:
+  try:
+    size = int(value)
+  except (TypeError, ValueError):
+    return MEDIA_THUMB_SIZE_DEFAULT
+  size = max(MEDIA_THUMB_SIZE_MIN, min(MEDIA_THUMB_SIZE_MAX, size))
+  return size - (size % 16)
+
+
+def _media_thumb_background(value: Any) -> Tuple[int, int, int]:
+  text = str(value or "").strip().lstrip("#")
+  try:
+    if len(text) == 6:
+      return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
+  except ValueError:
+    pass
+  return (0x2A, 0x2A, 0x2A)
+
+
+def _resize_media_thumbnail(data: bytes, size: int, background: Tuple[int, int, int]) -> Optional[bytes]:
+  """The whole picture padded into a size x size JPEG (a logo is never cut);
+  transparent parts take the panel's card color."""
+  try:
+    from PIL import Image, ImageFile, ImageOps
+  except Exception:  # pragma: no cover - Pillow ships with Home Assistant
+    return None
+  ImageFile.LOAD_TRUNCATED_IMAGES = True
+  resample = getattr(Image, "Resampling", Image).LANCZOS
+  try:
+    with Image.open(BytesIO(data)) as image:
+      image.draft("RGB", (size * 2, size * 2))
+      image = ImageOps.exif_transpose(image)
+      if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+        rgba = image.convert("RGBA")
+        flat = Image.new("RGB", rgba.size, background)
+        flat.paste(rgba, mask=rgba.split()[-1])
+        image = flat
+      else:
+        image = image.convert("RGB")
+      image = ImageOps.pad(image, (size, size), method=resample, color=background)
+      output = BytesIO()
+      image.save(output, format="JPEG", quality=80, optimize=False, progressive=False, subsampling=2)
+      return output.getvalue()
+  except Exception:
+    return None
+
+
 LIGHT_SERVICE_FIELDS = {
   "transition",
   "brightness",
@@ -454,6 +519,18 @@ MEDIA_COMMAND_ALIASES = {
   "seek": "media_seek",
   "media_seek": "media_seek",
   "play_media": "play_media",
+  "shuffle": "shuffle_set",
+  "shuffle_set": "shuffle_set",
+  "repeat": "repeat_set",
+  "repeat_set": "repeat_set",
+  "sound_mode": "select_sound_mode",
+  "select_sound_mode": "select_sound_mode",
+  "join": "join",
+  "unjoin": "unjoin",
+  "browse": "browse_media",
+  "browse_media": "browse_media",
+  "thumbnail": "browse_thumbnail",
+  "browse_thumbnail": "browse_thumbnail",
 }
 
 SERVICE_SCHEMA = vol.Schema({vol.Optional("entry_id"): cv.string})
@@ -1473,6 +1550,10 @@ class Tab5Bridge:
     self._media_cover_cache: Dict[str, Dict[str, Any]] = {}
     self._media_cover_warning_last: Dict[Tuple[str, str], float] = {}
     self._media_publish_generation: Dict[str, int] = {}
+    # The library's thumbnails: finished payloads and the URLs published in
+    # catalogs (insertion ordered, oldest first).
+    self._media_thumb_cache: Dict[str, str] = {}
+    self._media_thumb_allowed: Dict[str, None] = {}
     self._media_artwork_gate = ArtworkClearGate()
     self._media_artwork_timers: Dict[str, Any] = {}
     self.scene_map: Dict[str, str] = {
@@ -2588,6 +2669,7 @@ class Tab5Bridge:
   ) -> str:
     if entity_id.startswith("media_player."):
       payload = _extract_media_player_payload(state, self.hass)
+      self._add_media_group(entity_id, state, payload)
       self._gate_media_artwork(entity_id, payload)
       # Linked panels show the picture with this key (images.py).
       key = image_key_field(payload)
@@ -4886,6 +4968,26 @@ class Tab5Bridge:
 
     service_payload: Dict[str, Any] = {"entity_id": entity_id}
 
+    if command == "browse_media":
+      await self._async_media_browse(entity_id, parsed_payload)
+      return
+    if command == "browse_thumbnail":
+      await self._async_media_thumbnail(entity_id, parsed_payload)
+      return
+
+    if command in MEDIA_CONTROL_COMMANDS:
+      # The popup's controls, checked against the player's features and lists.
+      state = self.hass.states.get(entity_id)
+      attrs = (state.attributes or {}) if state is not None else {}
+      allowed = [candidate["entity_id"] for candidate in self._media_group_candidates(entity_id, state)]
+      service, data, error = build_media_control_call(command, parsed_payload, attrs, allowed)
+      if service is None:
+        _LOGGER.warning("Media command %s for %s refused: %s", command, entity_id, error)
+        return
+      service_payload.update(data)
+      await self.hass.services.async_call("media_player", service, service_payload, blocking=False)
+      return
+
     if command == "volume_set":
       raw_volume = parsed_payload.get("volume_level", parsed_payload.get("volume"))
       volume = _coerce_float(raw_volume)
@@ -4900,12 +5002,6 @@ class Tab5Bridge:
       if muted is None:
         muted = True
       service_payload["is_volume_muted"] = muted
-    elif command == "select_source":
-      source = str(parsed_payload.get("source") or "").strip()
-      if not source:
-        _LOGGER.warning("Unhandled media source command from Tab5 (missing source): %s", msg.payload)
-        return
-      service_payload["source"] = source
     elif command == "media_seek":
       position = _coerce_float(parsed_payload.get("seek_position", parsed_payload.get("position")))
       if position is None:
@@ -4927,6 +5023,176 @@ class Tab5Bridge:
       service_payload,
       blocking=False,
     )
+
+  async def _async_media_browse(self, entity_id: str, request: Dict[str, Any]) -> None:
+    """One level of the player's media browser for the panel (browse_media):
+    the children on stat/media/catalog/<page>, an error on stat/media."""
+    try:
+      request_id = int(request.get("request_id") or 0)
+    except (TypeError, ValueError):
+      request_id = 0
+    header: Dict[str, Any] = {
+      "version": 1,
+      "session": str(request.get("session") or "")[:64],
+      "request_id": request_id,
+      "entity_id": entity_id,
+    }
+    content_id = str(request.get("media_content_id") or "").strip()
+    content_type = str(request.get("media_content_type") or "").strip()
+    normalized = None
+    error = ""
+    component = self.hass.data.get("media_player")
+    entity = component.get_entity(entity_id) if component is not None else None
+    browse = getattr(entity, "async_browse_media", None)
+    if entity is None or not callable(browse):
+      error = "not_supported"
+    else:
+      try:
+        result = await browse(media_content_type=content_type or None, media_content_id=content_id or None)
+        normalized = normalize_browse_result(result)
+        if normalized is None:
+          error = "invalid_result"
+      except Exception as err:
+        _LOGGER.info("Media library of %s failed: %s", entity_id, type(err).__name__)
+        error = "failed"
+    if error:
+      await mqtt.async_publish(self.hass, f"{self.base_topic}/stat/media",
+                               json.dumps({**header, "status": "error", "error": error}), qos=0, retain=False)
+      return
+    title, items, truncated = normalized
+    self._remember_media_thumbnails(items)
+    header["title"] = title
+    header["parent"] = {"media_content_id": content_id, "media_content_type": content_type}
+    if truncated:
+      header["truncated"] = True
+    for index, text in enumerate(catalog_pages(header, items)):
+      await mqtt.async_publish(self.hass, f"{self.base_topic}/stat/media/catalog/{index}", text, qos=0, retain=False)
+
+  def _remember_media_thumbnails(self, items: List[Dict[str, Any]]) -> None:
+    for item in items:
+      url = item.get("thumbnail")
+      if isinstance(url, str) and url:
+        self._media_thumb_allowed.pop(url, None)
+        self._media_thumb_allowed[url] = None
+    while len(self._media_thumb_allowed) > MEDIA_THUMB_ALLOWED_MAX:
+      self._media_thumb_allowed.pop(next(iter(self._media_thumb_allowed)))
+
+  def _media_thumbnail_url(self, url: str) -> Optional[str]:
+    """Absolute URL of a catalog thumbnail; Home Assistant paths signed."""
+    if url.startswith(("http://", "https://")):
+      return url
+    if not url.startswith("/") or url.startswith("//") or get_url is None:
+      return None
+    path = url
+    # Proxy URLs carry their own token; everything else on Home Assistant
+    # needs authentication, the brand images too.
+    if "token=" not in path and "authSig=" not in path:
+      brand_token = None
+      if path.startswith("/api/brands/"):
+        tokens = self.hass.data.get("brands")
+        try:
+          brand_token = tokens[-1] if tokens else None
+        except Exception:  # pragma: no cover - unexpected container
+          brand_token = None
+      if brand_token:
+        path += ("&" if "?" in path else "?") + "token=" + str(brand_token)
+      else:
+        try:
+          from homeassistant.components.http.auth import async_sign_path
+          path = async_sign_path(self.hass, path, timedelta(minutes=5), use_content_user=True)
+        except Exception:  # pragma: no cover - depends on the HA version
+          return None
+    try:
+      base = get_url(self.hass, prefer_external=False, allow_internal=True, allow_external=True)
+    except Exception:  # pragma: no cover - NoURLAvailableError
+      return None
+    return base.rstrip("/") + path if isinstance(base, str) and base else None
+
+  async def _async_media_thumbnail(self, entity_id: str, request: Dict[str, Any]) -> None:
+    """One library thumbnail as a small JPEG on stat/media/thumb."""
+    try:
+      thumb_id = int(request.get("thumb_id") or 0)
+    except (TypeError, ValueError):
+      thumb_id = 0
+    url = str(request.get("url") or "").strip()
+    size = _media_thumb_size(request.get("size"))
+    background = _media_thumb_background(request.get("bg"))
+    answer: Dict[str, Any] = {"version": 1, "session": str(request.get("session") or "")[:64],
+                              "entity_id": entity_id, "thumb_id": thumb_id}
+    encoded = None
+    error = ""
+    if not url or url not in self._media_thumb_allowed:
+      error = "not_allowed"
+    else:
+      key = f"{size}:{background[0]:02x}{background[1]:02x}{background[2]:02x}:{url}"
+      encoded = self._media_thumb_cache.get(key)
+      if encoded is None:
+        data = None
+        resolved = self._media_thumbnail_url(url)
+        if resolved:
+          # Never log the resolved URL: it carries a token or signature.
+          try:
+            async with async_get_clientsession(self.hass).get(resolved, timeout=5) as response:
+              if response.status == 200:
+                data = await response.content.read(MEDIA_COVER_FETCH_MAX_BYTES + 1)
+          except Exception:
+            data = None
+        if not data or len(data) > MEDIA_COVER_FETCH_MAX_BYTES:
+          error = "fetch_failed"
+        else:
+          jpeg = await self.hass.async_add_executor_job(_resize_media_thumbnail, data, size, background)
+          if not jpeg:
+            error = "convert_failed"
+          else:
+            encoded = base64.b64encode(jpeg).decode("ascii")
+            self._media_thumb_cache[key] = encoded
+            while len(self._media_thumb_cache) > MEDIA_THUMB_CACHE_MAX:
+              self._media_thumb_cache.pop(next(iter(self._media_thumb_cache)))
+    if error:
+      answer.update({"status": "error", "error": error})
+    else:
+      answer.update({"status": "ok", "mime": "image/jpeg", "size": size, "data": encoded})
+    await mqtt.async_publish(self.hass, f"{self.base_topic}/stat/media/thumb",
+                             json.dumps(answer, separators=(",", ":")), qos=0, retain=False)
+
+  def _media_group_candidates(self, entity_id: str, state: Optional[State]) -> List[Dict[str, str]]:
+    """Players this panel may group with entity_id: served media players of
+    the same integration that support GROUPING (never other entities, so no
+    name or state of an unserved player reaches the panel)."""
+    attrs = (state.attributes or {}) if state is not None else {}
+    try:
+      features = int(attrs.get("supported_features") or 0)
+    except (TypeError, ValueError):
+      features = 0
+    if not features & MEDIA_FEATURE_GROUPING:
+      return []
+    registry = er.async_get(self.hass)
+    entry = registry.async_get(entity_id)
+    platform = getattr(entry, "platform", None)
+    if not platform:
+      return []
+    found: List[Dict[str, str]] = []
+    for other_id in self.media_players:
+      if other_id == entity_id:
+        continue
+      other_entry = registry.async_get(other_id)
+      other = self.hass.states.get(other_id)
+      if other is None or getattr(other_entry, "platform", None) != platform:
+        continue
+      try:
+        other_features = int((other.attributes or {}).get("supported_features") or 0)
+      except (TypeError, ValueError):
+        other_features = 0
+      if not other_features & MEDIA_FEATURE_GROUPING:
+        continue
+      found.append({"entity_id": other_id, "name": str(other.name or other_id), "state": str(other.state)})
+    found.sort(key=lambda candidate: candidate["name"].lower())
+    return found
+
+  def _add_media_group(self, entity_id: str, state: State, payload: Dict[str, Any]) -> None:
+    candidates = self._media_group_candidates(entity_id, state)
+    if candidates:
+      payload.update(media_control_fields(state.attributes or {}, candidates))
 
   def _resolve_target_entity(self, entity_id: Optional[str], candidates: List[str]) -> Optional[str]:
     """Accept only a configured entity; legacy commands may omit a single target."""
@@ -5202,7 +5468,9 @@ class Tab5Bridge:
         default=str,
       )
     if entity_id.startswith("media_player."):
-      return json.dumps(_extract_media_player_payload(state, self.hass), default=str)
+      payload = _extract_media_player_payload(state, self.hass)
+      self._add_media_group(entity_id, state, payload)
+      return json.dumps(payload, default=str)
     if entity_id.startswith("sensor."):
       return sensor_live_state_payload(state)
     # Preserve the established wire format for existing switch entities.
@@ -6470,6 +6738,10 @@ def _extract_media_player_payload(state: State, hass: Optional[HomeAssistant] = 
   ):
     if key in attrs and attrs[key] is not None:
       payload[key] = _normalize_weather_value(attrs[key])
+
+  # The Media popup's controls: feature bits, shuffle, repeat, sources, sound
+  # modes and the group (media_controls.py).
+  payload.update(media_control_fields(attrs))
 
   for url_key in ("entity_picture", "media_image_url"):
     value = payload.get(url_key)

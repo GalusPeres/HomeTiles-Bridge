@@ -12,6 +12,7 @@ from test_view_navigation import ROOT, load_module
 
 CONTROL = load_module("control_helpers")
 CLIMATE = load_module("climate_helpers")
+CONTROLS = load_module("media_controls")
 
 MODULE_FUNCTIONS = {
     "_try_parse_json", "_normalise_command", "_normalise_media_command",
@@ -75,6 +76,8 @@ class ControlEntityValidationTest(unittest.IsolatedAsyncioTestCase):
             **vars(CONTROL),
             **vars(CLIMATE),
             "json": json,
+            "MEDIA_CONTROL_COMMANDS": CONTROLS.CONTROL_COMMANDS,
+            "build_media_control_call": CONTROLS.build_media_control_call,
             "_LOGGER": logging.getLogger(__name__),
             "mqtt": types.SimpleNamespace(async_publish=publish),
             "DOMAIN": "tab5_lvgl",

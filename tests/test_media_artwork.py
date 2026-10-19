@@ -11,11 +11,12 @@ from test_announcement_guard import extract
 from test_view_navigation import load_module
 
 ARTWORK = load_module("media_artwork")
+CONTROLS = load_module("media_controls")
 PLAYER = "media_player.sonos"
 COVER = "https://cdn.test/song.jpg"
 METHODS = {
   "_async_build_state_payload", "_gate_media_artwork", "_async_publish_entity_state",
-  "_owns_state_publish", "_ha_topic_for_entity",
+  "_owns_state_publish", "_ha_topic_for_entity", "_add_media_group", "_media_group_candidates",
 }
 
 
@@ -107,6 +108,8 @@ class MediaArtworkWiringTest(unittest.IsolatedAsyncioTestCase):
       "json": json,
       "mqtt": types.SimpleNamespace(async_publish=publish),
       "_extract_media_player_payload": extract_payload,
+      "MEDIA_FEATURE_GROUPING": CONTROLS.FEATURE_GROUPING,
+      "media_control_fields": CONTROLS.media_control_fields,
       "_is_weather_entity": lambda entity_id: False,
       "DOMAIN": "tab5_lvgl",
       "_LOGGER": types.SimpleNamespace(debug=lambda *args: None),
