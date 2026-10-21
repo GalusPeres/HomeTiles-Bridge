@@ -445,6 +445,9 @@ class AudioStreamConnection:
             pass
 
     async def _async_send_pcm(self, stdout: asyncio.StreamReader) -> None:
+        if self._session.live:
+            await self._async_send_live_pcm(stdout)
+            return
         while not self._session.stop_event.is_set():
             try:
                 block = await stdout.readexactly(AUDIO_STREAM_CHUNK_BYTES)
@@ -455,6 +458,23 @@ class AudioStreamConnection:
                     await self._async_send(AUDIO_MESSAGE_AUDIO, block)
                 return
             await self._async_send(AUDIO_MESSAGE_AUDIO, block)
+
+    async def _async_send_live_pcm(self, stdout: asyncio.StreamReader) -> None:
+        """A camera's sound: whatever FFmpeg wrote goes out at once.
+
+        Waiting for a full 4 KB block held 93 ms of sound at 22.05 kHz (b11),
+        on top of the panel's own buffer.
+        """
+        carry = b""
+        while not self._session.stop_event.is_set():
+            data = await stdout.read(AUDIO_STREAM_CHUNK_BYTES)
+            if not data:
+                return
+            data = carry + data
+            even = len(data) & ~1
+            carry = data[even:]
+            if even:
+                await self._async_send(AUDIO_MESSAGE_AUDIO, data[:even])
 
     def _next_sequence(self) -> int:
         self._sequence = (self._sequence + 1) & 0xFFFFFFFF

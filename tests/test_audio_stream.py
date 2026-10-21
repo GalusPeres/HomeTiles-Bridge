@@ -42,6 +42,17 @@ FAKE_FFMPEG = textwrap.dedent("""
     out.flush()
 """)
 
+# A camera: a little sound, then a pause, as a live source delivers it.
+TRICKLE_FFMPEG = textwrap.dedent("""
+    import sys, time
+    sys.stderr.write("  Duration: N/A, start: 0.000000, bitrate: N/A\\n")
+    sys.stderr.write("Output #0, s16le, to 'pipe:1':\\n")
+    sys.stderr.flush()
+    sys.stdout.buffer.write(bytes(1001))
+    sys.stdout.buffer.flush()
+    time.sleep(3)
+""")
+
 FAILING_FFMPEG = textwrap.dedent("""
     import sys
     sys.stderr.write("http://ha/missing.mp3?authSig=x: Server returned 404 Not Found\\n")
@@ -308,6 +319,20 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
             self.manager.finish_device(DEVICE)
             self.assertIsNone(self.manager.current(DEVICE))
             self.assertEqual(await panel.play(), "end")
+
+    async def test_live_sound_goes_out_without_waiting_for_a_full_block(self):
+        session = self.manager.create_session(DEVICE, "rtsp://cam/stream1", 22050, live=True)
+        with mock.patch.object(AUDIO, "ffmpeg_audio_command", fake_command(TRICKLE_FFMPEG)):
+            panel = await self.connect(session.token)
+            await panel.hello()
+            kind, sequence, payload = await panel.message()
+            await panel.ack(sequence, len(payload))
+            self.assertEqual(AUDIO.AUDIO_STREAM_FORMAT_STRUCT.unpack(payload)[4], 0)
+            # 1001 bytes arrived, FFmpeg then waits: 1000 go out at once (b11
+            # waited for 4 KB, 93 ms of sound), the odd byte waits for its pair.
+            kind, sequence, payload = await panel.message(timeout=1.5)
+            self.assertEqual((kind, len(payload)), (AUDIO.AUDIO_MESSAGE_AUDIO, 1000))
+            self.manager.stop_device(DEVICE)
 
     async def test_stop_ends_a_running_clip(self):
         session = self.manager.create_session(DEVICE, URL, 44100)
