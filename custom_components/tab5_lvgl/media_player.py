@@ -272,7 +272,13 @@ class HomeTilesSpeaker(MediaPlayerEntity):
         if clip is None:
             return
         url, title, rate = clip
-        await self._async_start(url, title, rate, max(0, int(position * 1000)))
+        start_ms = max(0, int(position * 1000))
+        await self._async_start(url, title, rate, start_ms)
+        # The panel reports the new position once its new stream started;
+        # until then Home Assistant moved the bar back to the old position.
+        self._attr_media_position = start_ms // 1000
+        self._attr_media_position_updated_at = dt_util.utcnow()
+        self.async_write_ha_state()
 
     async def async_set_volume_level(self, volume: float) -> None:
         level = clamp_volume(volume)

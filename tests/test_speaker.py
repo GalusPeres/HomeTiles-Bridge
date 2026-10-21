@@ -466,8 +466,13 @@ class MediaPlayerPlatformTest(unittest.IsolatedAsyncioTestCase):
             state="playing", pausable=True, stream="tcp-ack-v1", id=request_id,
             position_ms=1000, duration_ms=162000)))
         self.assertTrue(player.supported_features & 512)
+        written = player.written
         await player.async_media_seek(90.5)
         self.assertEqual(bridge.streams[-1], ("http://192.168.1.2:8123/local/song.mp3", 44100, 90500))
+        # The bar shows the new position at once, not the old one until the
+        # panel reports (b9 jumped back first).
+        self.assertEqual(player._attr_media_position, 90)
+        self.assertEqual(player.written, written + 1)
         self.assertEqual(bridge.sent[-1]["url"], "tcp://192.168.1.2:8124/token2")
         self.assertEqual(player._title, (bridge.sent[-1]["id"], "song"))
         await player.async_media_pause()
