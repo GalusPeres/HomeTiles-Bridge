@@ -41,6 +41,7 @@ This integration is the Home Assistant companion for the **HomeTiles** firmware.
 4. Add the integration:
    - Settings > Devices & Services > Add Integration
    - Search for "HomeTiles Bridge"
+   - A panel whose Pair button was pressed (Settings > System > Security) appears under Discovered. Where mDNS does not reach Home Assistant (Docker without host networking, VLANs), press Pair on the panel, then choose "Panel by IP address (direct connection)" and enter its IP address; "Manually over MQTT" is the form for MQTT panels.
 
 ### Manual Installation
 

@@ -35,7 +35,7 @@ import hashlib
 import hmac
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +52,8 @@ ERROR_IDENTITY = "panel_identity_failed"
 ERROR_LINK_UNSUPPORTED = "link_unsupported"
 # Pair was not pressed on the panel within the last two minutes.
 ERROR_LINK_WINDOW_CLOSED = "link_window_closed"
+# A panel added by its IP address whose Pair button was not pressed.
+ERROR_LINK_PRESS_PAIR = "link_press_pair"
 
 KDF_MIN_ITERATIONS = 10_000
 KDF_MAX_ITERATIONS = 1_000_000
@@ -184,6 +186,41 @@ async def async_push_link(session: Any, host: str, form: Dict[str, str],
     if response.status != 200:
       return ERROR_CANNOT_CONNECT
   return None
+
+
+# The panel's GET /api/link (firmware handleLinkInfo): what its mDNS record
+# says. The device id is the panel's MAC as 12 hex digits (buildDeviceId).
+_LINK_DEVICE_ID = re.compile(r"[0-9A-Fa-f]{12}\Z")
+_LINK_TEXT_FIELDS = {"name": 64, "model": 64, "firmware": 32, "base_topic": 64, "ha_prefix": 64}
+
+
+async def async_link_info(session: Any, host: str,
+                          timeout: Any) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+  """GET /api/link of a panel added by its IP address (Bridge #16).
+
+  No login: the answer is the panel's mDNS record (device id, name, model,
+  firmware, topics) and whether Pair runs. Returns (info, None), or (None,
+  error): link_unsupported for older firmware or another device, and
+  link_press_pair while Pair was not pressed on the panel.
+  """
+  async with session.get(f"http://{host}/api/link", timeout=timeout,
+                         allow_redirects=False) as response:
+    if response.status >= 500:
+      return None, ERROR_CANNOT_CONNECT
+    if response.status != 200:
+      # Older firmware has only POST /api/link; a password redirects.
+      return None, ERROR_LINK_UNSUPPORTED
+    data = await _json(response)
+  device_id = data.get("device_id")
+  if data.get("link") != 1 or not isinstance(device_id, str) or not _LINK_DEVICE_ID.fullmatch(device_id):
+    return None, ERROR_LINK_UNSUPPORTED
+  if data.get("pair") is not True:
+    return None, ERROR_LINK_PRESS_PAIR
+  info = {"device_id": device_id}
+  for key, limit in _LINK_TEXT_FIELDS.items():
+    value = data.get(key)
+    info[key] = value.strip()[:limit] if isinstance(value, str) else ""
+  return info, None
 
 
 async def async_push_credentials(session: Any, host: str, form: Dict[str, str],

@@ -2,7 +2,25 @@
   "config": {
     "step": {
       "user": {
-        "title": "Ajouter un \u00e9cran",
+        "title": "Ajouter un écran",
+        "description": "Comment voulez-vous ajouter l'écran ?",
+        "menu_options": {
+          "link_ip": "Écran par adresse IP (connexion directe)",
+          "manual": "Manuellement via MQTT"
+        }
+      },
+      "link_ip": {
+        "title": "Écran par adresse IP",
+        "description": "Touchez d'abord « Appairer » sur l'écran (Paramètres > Système > Sécurité), puis saisissez ici son adresse IP. L'écran l'affiche sous Paramètres > WiFi. Conseil : donnez à l'écran une adresse IP fixe dans votre routeur.",
+        "data": {
+          "host": "Adresse IP de l'écran"
+        },
+        "data_description": {
+          "host": "Par exemple 192.168.1.50"
+        }
+      },
+      "manual": {
+        "title": "Manuellement via MQTT",
         "description": "Configurer un nouvel \u00e9cran HomeTiles.",
         "data": {
           "base_topic": "Topic MQTT de base",
@@ -75,6 +93,8 @@
       "panel_locked": "Trop de mots de passe erron\u00e9s. Patientez quelques minutes et r\u00e9essayez.",
       "panel_identity_failed": "L'appareil n'a pas pu prouver qu'il est l'\u00e9cran associ\u00e9 \u00e0 ce mot de passe. Aucun identifiant n'a \u00e9t\u00e9 envoy\u00e9.",
       "link_unsupported": "Le firmware de l'\u00e9cran ne permet pas encore la connexion directe. Mettez d'abord l'\u00e9cran \u00e0 jour.",
+      "invalid_host": "Saisissez l'adresse IP de l'écran, par exemple 192.168.1.50.",
+      "link_press_pair": "« Appairer » n'a pas été touché sur l'écran (ou ses deux minutes sont écoulées). Touchez d'abord « Appairer » sur l'écran (Paramètres > Système > Sécurité), puis validez à nouveau.",
       "link_window_closed": "L'\u00e9cran n'accepte plus la connexion. Touchez \u00e0 nouveau \u00ab Appairer \u00bb sur l'\u00e9cran et ajoutez-le dans les deux minutes."
     },
     "abort": {

@@ -3,6 +3,24 @@
     "step": {
       "user": {
         "title": "Paneel toevoegen",
+        "description": "Hoe wil je het paneel toevoegen?",
+        "menu_options": {
+          "link_ip": "Paneel via IP-adres (directe verbinding)",
+          "manual": "Handmatig via MQTT"
+        }
+      },
+      "link_ip": {
+        "title": "Paneel via IP-adres",
+        "description": "Druk eerst op het paneel op Pair (Settings > System > Security) en vul daarna hier het IP-adres in. Het paneel toont het onder Settings > WiFi. Tip: geef het paneel een vast IP-adres in je router.",
+        "data": {
+          "host": "IP-adres van het paneel"
+        },
+        "data_description": {
+          "host": "Bijvoorbeeld 192.168.1.50"
+        }
+      },
+      "manual": {
+        "title": "Handmatig via MQTT",
         "description": "Een nieuw HomeTiles-paneel instellen.",
         "data": {
           "base_topic": "MQTT-basistopic",
@@ -75,6 +93,8 @@
       "panel_locked": "Te veel verkeerde wachtwoorden. Wacht een paar minuten en probeer het opnieuw.",
       "panel_identity_failed": "Het apparaat kon niet aantonen dat het het paneel met dit wachtwoord is. Er zijn geen inloggegevens verzonden.",
       "link_unsupported": "De firmware van het paneel kan nog niet rechtstreeks verbinden. Werk eerst het paneel bij.",
+      "invalid_host": "Vul het IP-adres van het paneel in, bijvoorbeeld 192.168.1.50.",
+      "link_press_pair": "Op het paneel is niet op Pair gedrukt (of de twee minuten zijn voorbij). Druk eerst op het paneel op Pair (Settings > System > Security) en verstuur daarna opnieuw.",
       "link_window_closed": "Het paneel accepteert de verbinding niet meer. Druk opnieuw op Pair op het paneel en voeg het binnen twee minuten toe."
     },
     "abort": {

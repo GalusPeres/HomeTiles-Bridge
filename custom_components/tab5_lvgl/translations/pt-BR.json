@@ -3,6 +3,24 @@
     "step": {
       "user": {
         "title": "Adicionar painel",
+        "description": "Como você quer adicionar o painel?",
+        "menu_options": {
+          "link_ip": "Painel por endereço IP (conexão direta)",
+          "manual": "Manualmente via MQTT"
+        }
+      },
+      "link_ip": {
+        "title": "Painel por endereço IP",
+        "description": "Pressione Pair no painel primeiro (Settings > System > Security) e depois digite aqui o endereço IP dele. O painel o mostra em Settings > WiFi. Dica: dê ao painel um endereço IP fixo no seu roteador.",
+        "data": {
+          "host": "Endereço IP do painel"
+        },
+        "data_description": {
+          "host": "Por exemplo 192.168.1.50"
+        }
+      },
+      "manual": {
+        "title": "Manualmente via MQTT",
         "description": "Configure um novo painel HomeTiles.",
         "data": {
           "base_topic": "Tópico base MQTT",
@@ -75,6 +93,8 @@
       "panel_locked": "Senhas erradas demais. Aguarde alguns minutos e tente de novo.",
       "panel_identity_failed": "O dispositivo não conseguiu provar que é o painel com esta senha. Nenhuma credencial foi enviada.",
       "link_unsupported": "O firmware do painel ainda não consegue se conectar diretamente. Atualize o painel primeiro.",
+      "invalid_host": "Digite o endereço IP do painel, por exemplo 192.168.1.50.",
+      "link_press_pair": "Pair não foi pressionado no painel (ou os dois minutos já passaram). Pressione Pair no painel primeiro (Settings > System > Security) e envie de novo.",
       "link_window_closed": "O painel não aceita mais a conexão. Pressione Pair no painel de novo e adicione-o em até dois minutos."
     },
     "abort": {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import re
 import socket
 from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlparse
@@ -23,7 +24,7 @@ from homeassistant.helpers.network import get_url
 from . import link_mqtt
 from .access_helpers import parse_access_codes
 from .binary_sensor_helpers import split_binary_sensor_entities
-from .panel_auth import ERROR_CANNOT_CONNECT, async_push_credentials, async_push_link
+from .panel_auth import ERROR_CANNOT_CONNECT, async_link_info, async_push_credentials, async_push_link
 from .capabilities import CAPABILITIES
 from .command_channel import entry_pairing_key, entry_removing_key, key_id_for_key, with_pairing_key, without_pairing
 from .pairing import ANSWER_PAIRED, ANSWER_WAITING
@@ -83,6 +84,8 @@ CONF_PROVISION_MQTT_PASSWORD = "mqtt_password"
 # Optional Web Admin password of the panel. Used only for the pairing push and
 # never stored in the config entry or logged.
 CONF_PROVISION_PANEL_PASSWORD = "panel_password"
+# Step "link_ip": the address of a panel added without mDNS (Bridge #16).
+CONF_PANEL_HOST = "host"
 # Options step "security": removes the pairing key (CONF_COMMAND_PAIRING).
 CONF_REMOVE_PAIRING = "remove_pairing"
 # Result of the user's answer on a pairing card (pairing.ANSWER_*).
@@ -201,6 +204,57 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     return dict(creds), cred_error
 
   async def async_step_user(self, user_input: Dict[str, Any] | None = None):
+    """Add device: a panel by its IP address over the direct link, or by hand over MQTT."""
+    return self.async_show_menu(step_id="user", menu_options=["link_ip", "manual"])
+
+  async def async_step_link_ip(self, user_input: Dict[str, Any] | None = None):
+    """Add a panel by its IP address where mDNS does not reach Home Assistant (#16).
+
+    GET /api/link answers what the panel's mDNS record says; then the setup
+    is the one of a panel found over mDNS: "Panel found" (link_confirm), or
+    link_switch for a panel that has an entry, POST /api/link and the number.
+    """
+    errors: Dict[str, str] = {}
+    typed = str((user_input or {}).get(CONF_PANEL_HOST) or "").strip()
+    if user_input is not None:
+      host = _panel_host_input(typed)
+      if not host:
+        errors[CONF_PANEL_HOST] = "invalid_host"
+      else:
+        info, error = await _async_panel_link_info(self.hass, host)
+        if error:
+          errors["base"] = error
+        else:
+          device_id = info["device_id"]
+          # A card of the same panel found over mDNS would start a second
+          # setup; this dialog takes over.
+          await self.async_set_unique_id(device_id, raise_on_progress=False)
+          self._async_dismiss_cards(device_id, _LINK_CARD_STEPS, "it is added by its IP address")
+          from . import async_ensure_link_runtime
+          await async_ensure_link_runtime(self.hass)
+          self._discovered_host = host
+          self._discovered_device_id = device_id
+          self._discovered_name = info["name"] or device_id
+          self._discovered_model = info["model"]
+          self._discovered_base_topic = info["base_topic"]
+          self._discovered_ha_prefix = info["ha_prefix"]
+          existing = self._link_existing_entry(device_id)
+          self._link_entry_id = existing.entry_id if existing is not None else None
+          _LOGGER.info("HomeTiles Bridge found %s at %s by its IP address (firmware %s)",
+                       device_id, host, info["firmware"] or "unknown")
+          if existing is not None:
+            self.context["title_placeholders"] = {"name": existing.title}
+            return await self.async_step_link_switch()
+          self.context["title_placeholders"] = {"name": self._discovered_name}
+          return await self.async_step_link_confirm()
+    return self.async_show_form(
+      step_id="link_ip",
+      data_schema=vol.Schema({vol.Required(CONF_PANEL_HOST, default=typed): str}),
+      errors=errors,
+    )
+
+  async def async_step_manual(self, user_input: Dict[str, Any] | None = None):
+    """The panel by hand over MQTT (the form "Add device" opened before #16)."""
     errors: Dict[str, str] = {}
 
     if user_input is not None:
@@ -216,7 +270,7 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     defaults = user_input or {}
     return self.async_show_form(
-      step_id="user",
+      step_id="manual",
       data_schema=vol.Schema({
         vol.Required(CONF_BASE_TOPIC, default=defaults.get(CONF_BASE_TOPIC, DEFAULT_BASE)): str,
         vol.Required(CONF_HA_PREFIX, default=defaults.get(CONF_HA_PREFIX, DEFAULT_PREFIX)): str,
@@ -1546,6 +1600,41 @@ async def _wait_event(event: asyncio.Event, timeout: float) -> None:
     await asyncio.wait_for(event.wait(), timeout)
   except asyncio.TimeoutError:
     pass
+
+
+# A panel's host name (RFC 1123 labels), for the step "link_ip".
+_PANEL_HOSTNAME = re.compile(
+  r"(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z")
+
+
+def _panel_host_input(value: Any) -> str:
+  """The panel address the user typed: an IPv4 address or a host name.
+
+  A pasted URL (http://192.168.1.50/) keeps its host. Anything else is
+  refused (empty string): the panel answers on port 80 of its address.
+  """
+  text = str(value or "").strip()
+  if "://" in text:
+    text = urlparse(text).hostname or ""
+  text = text.strip().rstrip("/").rstrip(".")
+  try:
+    address = ipaddress.ip_address(text)
+  except ValueError:
+    if text.replace(".", "").isdigit() or not _PANEL_HOSTNAME.fullmatch(text):
+      return ""
+    return text.lower()
+  return str(address) if address.version == 4 else ""
+
+
+async def _async_panel_link_info(
+  hass: HomeAssistant, host: str,
+) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+  """GET /api/link of a panel added by its IP address (panel_auth.py)."""
+  session = async_get_clientsession(hass)
+  try:
+    return await async_link_info(session, host, aiohttp.ClientTimeout(total=5))
+  except (aiohttp.ClientError, asyncio.TimeoutError):
+    return None, ERROR_CANNOT_CONNECT
 
 
 async def _push_link_to_device(
