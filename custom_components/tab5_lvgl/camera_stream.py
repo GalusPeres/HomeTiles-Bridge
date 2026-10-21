@@ -103,7 +103,11 @@ CAMERA_STREAM_CHUNK_BYTES: Final = 8 * 1024
 # chunk at a time held a Guition V2 at 12 Mbit/s of the 28 it receives).
 CAMERA_STREAM_CHUNK_SIZES: Final = (8 * 1024, 16 * 1024, 32 * 1024)
 CAMERA_STREAM_HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
-CAMERA_STREAM_ACK_TIMEOUT_SECONDS: Final = 5.0
+# A panel that acknowledges nothing for this long is gone, the same limit as
+# the direct link's (link_protocol.IDLE_TIMEOUT_S). Wi-Fi stalls of several
+# seconds happen: with 5 s the Bridge closed the stream during such a stall
+# and the popup ended for good (#116).
+CAMERA_STREAM_ACK_TIMEOUT_SECONDS: Final = 45.0
 CAMERA_STREAM_DIAGNOSTIC_INTERVAL_SECONDS: Final = 5.0
 # A direct stream is decoded on this many threads, next to the one thread
 # that scales and encodes. A 1440p60 stream ran at 0.9x real time in a Home
@@ -1913,11 +1917,19 @@ class CameraStreamConnection:
           )
         except TimeoutError:
           pass
+    except TimeoutError:
+      # The only way the Bridge itself ends a running stream; the panel then
+      # shows "Stream connection ended".
+      _LOGGER.warning(
+        "HomeTiles camera %s: the panel acknowledged nothing for %.0f s; "
+        "stream ended",
+        session.entity_id,
+        CAMERA_STREAM_ACK_TIMEOUT_SECONDS,
+      )
     except (
       asyncio.IncompleteReadError,
       ConnectionResetError,
       BrokenPipeError,
-      asyncio.TimeoutError,
       asyncio.CancelledError,
     ):
       _LOGGER.debug(
