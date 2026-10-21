@@ -214,9 +214,10 @@ from .media_controls import (
   build_media_control_call,
   media_control_fields,
 )
-from .audio_stream import async_has_audio
+from .audio_stream import async_probe_camera, camera_sound_lead_ms
 from .camera_stream import (
   CAMERA_BRIDGE_PROTOCOL_VERSION,
+  CAMERA_STREAM_DECODE_THREADS,
   CAMERA_STREAM_FPS,
   CAMERA_STREAM_FRAMING,
   CAMERA_STREAM_HEIGHT,
@@ -1598,7 +1599,7 @@ class Tab5Bridge:
     # task that starts it and whether a stream source has sound (cached).
     self._camera_sound_entity: str | None = None
     self._camera_sound_task: asyncio.Task | None = None
-    self._camera_sound_probes: dict[str, tuple[bool, float]] = {}
+    self._camera_sound_probes: dict[str, tuple[Any, float]] = {}
     self._unsub_connected = None
     self._unsub_ip = None
     self._unsub_scene = None
@@ -3540,13 +3541,13 @@ class Tab5Bridge:
     now = monotonic()
     cached = self._camera_sound_probes.get(source)
     if cached is not None and now - cached[1] < CAMERA_SOUND_PROBE_CACHE_SECONDS:
-      has_audio = cached[0]
+      probe = cached[0]
     else:
-      has_audio = await async_has_audio(manager.audio_streams.binary(), source)
-      self._camera_sound_probes[source] = (has_audio, now)
+      probe = await async_probe_camera(manager.audio_streams.binary(), source)
+      self._camera_sound_probes[source] = (probe, now)
     if self._camera_sound_entity != entity_id:
       return
-    if not has_audio:
+    if not probe.has_audio:
       # Another camera's sound must not run under this picture.
       if self._camera_sound_session() is not None:
         manager.audio_streams.finish_device(self.device_id)
@@ -3557,9 +3558,12 @@ class Tab5Bridge:
     except ValueError as err:
       _LOGGER.debug("HomeTiles camera sound for %s not started: %s", entity_id, err)
       return
+    lead_ms = camera_sound_lead_ms(probe, CAMERA_STREAM_DECODE_THREADS)
     await self.async_publish_audio_command(
-      build_play_command(new_request_id(), url, live=True))
-    _LOGGER.info("HomeTiles camera sound for %s started on the panel", entity_id)
+      build_play_command(new_request_id(), url, live=True, lead_ms=lead_ms))
+    _LOGGER.info(
+      "HomeTiles camera sound for %s started on the panel (picture %s FPS, sound %d ms ahead)",
+      entity_id, f"{probe.fps:g}" if probe.fps else "?", lead_ms)
 
   def _finish_camera_sound(self) -> None:
     """The camera closed: its sound ends after what the panel still holds."""

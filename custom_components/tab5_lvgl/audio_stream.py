@@ -12,7 +12,9 @@ internal network memory whatever the clip. Firmware side:
 Camera sound (live): while a panel shows a camera whose stream has an audio
 track, the Bridge plays that track the same way (``live`` sessions, started
 and ended with the camera popup in ``__init__.py``); the panel keeps only a
-fraction of a second of it so the sound stays close to the picture.
+fraction of a second of it. For lip sync the panel holds each picture back by
+its own measured sound delay, less ``lead_ms``: how much earlier the Bridge's
+sound leaves FFmpeg than the matching picture (``camera_sound_lead_ms``).
 
 Messages after the hello (frame header ``>4sB3xII`` as in camera_stream.py):
 
@@ -88,6 +90,17 @@ AUDIO_CAMERA_PROBE_TIMEOUT_SECONDS: Final = 10.0
 
 _DURATION_RE = re.compile(r"^\s*Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)")
 _AUDIO_STREAM_RE = re.compile(r"^\s*Stream #\d+:\d+.*: Audio: ")
+_VIDEO_STREAM_RE = re.compile(r"^\s*Stream #\d+:\d+.*: Video: ")
+_FPS_RE = re.compile(r"(\d+(?:\.\d+)?) (?:fps|tbr)\b")
+_AUDIO_CODEC_RE = re.compile(r": Audio: (\w+)")
+_SAMPLE_RATE_RE = re.compile(r"(\d+) Hz")
+# Samples per decoded packet of the usual camera codecs; PCM (G.711) packets
+# are short and count as none.
+_AUDIO_FRAME_SAMPLES: Final = {"aac": 1024, "mp3": 1152, "mp2": 1152, "opus": 960}
+# The picture's FFmpeg also scales and encodes each frame after decoding it.
+CAMERA_PICTURE_ENCODE_MS: Final = 15
+# Bound on lead_ms: beyond it something is off, and no lip sync is tried.
+CAMERA_SOUND_MAX_LEAD_MS: Final = 400
 _QUERY_RE = re.compile(r"\?[^\s'\"]*")
 
 
@@ -131,9 +144,52 @@ def has_audio_stream(log: str) -> bool:
     return any(_AUDIO_STREAM_RE.match(line) for line in log.splitlines())
 
 
-async def async_has_audio(binary: str, url: str,
-                          timeout: float = AUDIO_CAMERA_PROBE_TIMEOUT_SECONDS) -> bool:
-    """Whether a camera's stream carries sound; False when it cannot be read."""
+@dataclass(frozen=True, slots=True)
+class CameraProbe:
+    """What FFmpeg told about a camera's stream."""
+
+    has_audio: bool
+    fps: float | None = None
+    audio_frame_ms: int = 0
+
+
+def parse_camera_probe(log: str) -> CameraProbe:
+    """Sound, picture rate and sound packet length from FFmpeg's description."""
+    has_audio = False
+    fps: float | None = None
+    audio_frame_ms = 0
+    for line in log.splitlines():
+        if fps is None and _VIDEO_STREAM_RE.match(line):
+            match = _FPS_RE.search(line)
+            if match is not None and float(match.group(1)) > 0:
+                fps = float(match.group(1))
+        if not has_audio and _AUDIO_STREAM_RE.match(line):
+            has_audio = True
+            codec = _AUDIO_CODEC_RE.search(line)
+            rate = _SAMPLE_RATE_RE.search(line)
+            samples = _AUDIO_FRAME_SAMPLES.get(codec.group(1) if codec else "", 0)
+            if samples and rate is not None and int(rate.group(1)) > 0:
+                audio_frame_ms = round(samples * 1000 / int(rate.group(1)))
+    return CameraProbe(has_audio, fps, audio_frame_ms)
+
+
+def camera_sound_lead_ms(probe: CameraProbe, decode_threads: int) -> int:
+    """How much earlier the sound leaves the Bridge than its picture.
+
+    The picture's FFmpeg decodes on decode_threads threads, which holds each
+    frame back by decode_threads - 1 source frames, then scales and encodes
+    it; the sound's FFmpeg holds a packet's length. An unknown rate counts as
+    25 FPS.
+    """
+    fps = probe.fps if probe.fps and probe.fps > 0 else 25.0
+    picture_ms = (decode_threads - 1) * 1000 / fps + CAMERA_PICTURE_ENCODE_MS
+    lead = round(picture_ms - probe.audio_frame_ms)
+    return max(0, min(CAMERA_SOUND_MAX_LEAD_MS, lead))
+
+
+async def async_probe_camera(binary: str, url: str,
+                             timeout: float = AUDIO_CAMERA_PROBE_TIMEOUT_SECONDS) -> CameraProbe:
+    """A camera's stream described by FFmpeg; no sound when it cannot be read."""
     process = await asyncio.create_subprocess_exec(
         *ffmpeg_probe_command(binary, url),
         stdin=asyncio.subprocess.DEVNULL,
@@ -146,8 +202,8 @@ async def async_has_audio(binary: str, url: str,
         with suppress(ProcessLookupError):
             process.kill()
         await process.wait()
-        return False
-    return has_audio_stream(stderr.decode("utf-8", errors="replace"))
+        return CameraProbe(False)
+    return parse_camera_probe(stderr.decode("utf-8", errors="replace"))
 
 
 def parse_duration_ms(line: str) -> int | None:

@@ -99,13 +99,20 @@ def _encode(payload: dict[str, Any]) -> str:
     return json.dumps(payload, separators=(",", ":"))
 
 
-def build_play_command(request_id: str, url: str, live: bool = False) -> str:
-    """Play url; live (a camera's sound) keeps the panel's buffer short."""
+def build_play_command(request_id: str, url: str, live: bool = False,
+                       lead_ms: int | None = None) -> str:
+    """Play url; live (a camera's sound) keeps the panel's buffer short.
+
+    lead_ms: how much earlier this sound leaves the Bridge than the camera's
+    picture; the panel holds the picture back by its sound delay less that.
+    """
     if not valid_request_id(request_id):
         raise ValueError("invalid_request_id")
     payload = {"v": AUDIO_PROTOCOL_VERSION, "op": "play", "id": request_id, "url": url}
     if live:
         payload["live"] = True
+        if lead_ms is not None:
+            payload["lead_ms"] = max(0, min(1000, int(lead_ms)))
     return _encode(payload)
 
 

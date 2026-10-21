@@ -37,9 +37,9 @@ class CameraSoundTest(unittest.IsolatedAsyncioTestCase):
         async def publish(hass, topic, payload, qos=0, retain=False):
             self.published.append((topic, json.loads(payload)))
 
-        async def has_audio(binary, source):
+        async def probe_camera(binary, source):
             self.probes.append(source)
-            return self.has_audio
+            return AUDIO.CameraProbe(self.has_audio, 15.0, 64)
 
         async def source_ip(hass, target_ip=None):
             return "192.168.1.2"
@@ -56,7 +56,9 @@ class CameraSoundTest(unittest.IsolatedAsyncioTestCase):
             "_LOGGER": logging.getLogger(__name__),
             "is_local_camera_self_loop": LOCAL_CAMERA.is_local_camera_self_loop,
             "ha_network": types.SimpleNamespace(async_get_source_ip=source_ip),
-            "async_has_audio": has_audio,
+            "async_probe_camera": probe_camera,
+            "camera_sound_lead_ms": AUDIO.camera_sound_lead_ms,
+            "CAMERA_STREAM_DECODE_THREADS": 4,
             "monotonic": lambda: 1000.0,
             "CAMERA_SOUND_PROBE_CACHE_SECONDS": 600.0,
             "AUDIO_RATE_SPEECH": SPEAKER.AUDIO_RATE_SPEECH,
@@ -129,6 +131,9 @@ class CameraSoundTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.published[-1][1]["status"], "ready")
         [play] = self.audio_commands
         self.assertEqual((play["op"], play["live"]), ("play", True))
+        # 15 FPS on 4 decode threads: the picture leaves 3 frames + 15 ms
+        # later, the AAC sound one 64 ms packet later.
+        self.assertEqual(play["lead_ms"], 151)
         self.assertTrue(play["url"].startswith("tcp://192.168.1.2:8124/"))
         session = self.audio_streams.current("mac")
         self.assertEqual((session.url, session.rate, session.live), (SOURCE, 22050, True))

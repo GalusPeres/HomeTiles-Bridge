@@ -123,6 +123,30 @@ class ContractTest(unittest.TestCase):
         self.assertFalse(AUDIO.has_audio_stream("    comment : Stream #0:1: Audio: x"))
         self.assertTrue(AUDIO.has_audio_stream("  Stream #0:1[0x101](und): Audio: pcm_alaw, 8000 Hz"))
 
+    def test_camera_probe(self):
+        log = (
+            "Input #0, rtsp, from 'rtsp://cam/stream1':\n"
+            "  Duration: N/A, start: 0.000000, bitrate: N/A\n"
+            "  Stream #0:0: Video: h264 (High), yuv420p(progressive), 2560x1440, 15 fps, 15 tbr, 90k tbn\n"
+            "  Stream #0:1: Audio: aac (LC), 16000 Hz, mono, fltp\n")
+        self.assertEqual(AUDIO.parse_camera_probe(log), AUDIO.CameraProbe(True, 15.0, 64))
+        g711 = AUDIO.parse_camera_probe(
+            "  Stream #0:0: Video: h264, yuv420p, 1920x1080, 25 tbr, 90k tbn\n"
+            "  Stream #0:1: Audio: pcm_alaw, 8000 Hz, mono, s16, 64 kb/s\n")
+        self.assertEqual(g711, AUDIO.CameraProbe(True, 25.0, 0))
+        self.assertEqual(AUDIO.parse_camera_probe("  Stream #0:0: Video: mjpeg, 10 fps\n"),
+                         AUDIO.CameraProbe(False, 10.0, 0))
+
+    def test_sound_lead(self):
+        lead = AUDIO.camera_sound_lead_ms
+        # 4 decode threads hold a picture 3 source frames, plus scaling and
+        # encoding; the sound one codec packet.
+        self.assertEqual(lead(AUDIO.CameraProbe(True, 15.0, 64), 4), 151)
+        self.assertEqual(lead(AUDIO.CameraProbe(True, 30.0, 21), 4), 94)
+        self.assertEqual(lead(AUDIO.CameraProbe(True, None, 0), 4), 135)
+        self.assertEqual(lead(AUDIO.CameraProbe(True, 1.0, 0), 4), 400)
+        self.assertEqual(lead(AUDIO.CameraProbe(True, 60.0, 64), 1), 0)
+
     def test_duration_line(self):
         parse = AUDIO.parse_duration_ms
         self.assertEqual(parse("  Duration: 00:02:42.12, start: 0.025057, bitrate: 192 kb/s"),
