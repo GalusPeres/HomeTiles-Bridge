@@ -24,6 +24,12 @@ Such a panel gets a ``tcp://`` play URL: the Bridge's FFmpeg reads the clip
 and sends PCM over the camera transport (audio_stream.py), so the panel
 neither downloads nor decodes. Other panels download the http(s) URL
 themselves and play MP3 at any sample rate and WAV.
+
+A Bridge stream's play command carries ``"restart": true``: the Bridge plays
+the clip again from the paused point to resume. Firmware from b512 then
+closes the stream on a pause (no buffers, no FFmpeg held while paused) and
+reports ``"released": true`` with the paused ``"position_ms"``; older
+firmware keeps the stream and resumes it.
 """
 
 from __future__ import annotations
@@ -100,11 +106,13 @@ def _encode(payload: dict[str, Any]) -> str:
 
 
 def build_play_command(request_id: str, url: str, live: bool = False,
-                       lead_ms: int | None = None) -> str:
+                       lead_ms: int | None = None, restart: bool = False) -> str:
     """Play url; live (a camera's sound) keeps the panel's buffer short.
 
     lead_ms: how much earlier this sound leaves the Bridge than the camera's
     picture; the panel holds the picture back by its sound delay less that.
+    restart: the Bridge plays this clip again from the paused point to
+    resume, so the panel may close the stream on a pause (never live).
     """
     if not valid_request_id(request_id):
         raise ValueError("invalid_request_id")
@@ -113,6 +121,8 @@ def build_play_command(request_id: str, url: str, live: bool = False,
         payload["live"] = True
         if lead_ms is not None:
             payload["lead_ms"] = max(0, min(1000, int(lead_ms)))
+    elif restart:
+        payload["restart"] = True
     return _encode(payload)
 
 
@@ -265,6 +275,9 @@ def parse_status(payload: Any) -> dict[str, Any] | None:
         "duration_ms": _time_ms(data.get("duration_ms")) or None,
         # Firmware from b502 takes Bridge-decoded clips (audio_stream.py).
         "stream": data.get("stream") == AUDIO_STREAM_TRANSPORT,
+        # Firmware from b512: paused with the stream closed; resume plays the
+        # clip again at position_ms.
+        "released": state == "paused" and data.get("released") is True,
     }
 
 

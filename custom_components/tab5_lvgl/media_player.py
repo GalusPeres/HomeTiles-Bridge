@@ -245,7 +245,10 @@ class HomeTilesSpeaker(MediaPlayerEntity):
         request_id = new_request_id()
         self._last_request_id = request_id
         self._title = (request_id, title)
-        await self._async_send(build_play_command(request_id, play_url))
+        # A Bridge stream comes back by playing it again (async_media_play),
+        # so the panel frees it while paused.
+        await self._async_send(build_play_command(
+            request_id, play_url, restart=self._stream_clip is not None))
 
     def _bridge_call(self, name: str, *args) -> None:
         method = getattr(self._bridge(), name, None)
@@ -262,7 +265,19 @@ class HomeTilesSpeaker(MediaPlayerEntity):
         self._bridge_call("set_audio_stream_paused", True)
 
     async def async_media_play(self) -> None:
-        # Resumes the paused clip; the panel has no queue to start from.
+        # A clip the panel paused by closing its stream plays again from the
+        # paused point (user 2026-10-21: a pause holds nothing); otherwise the
+        # panel resumes the clip it kept. It has no queue to start from.
+        status = self._status
+        clip = self._stream_clip
+        if status is not None and status["released"] and clip is not None:
+            url, title, rate = clip
+            position_ms = status["position_ms"] or 0
+            await self._async_start(url, title, rate, position_ms)
+            self._attr_media_position = position_ms // 1000
+            self._attr_media_position_updated_at = dt_util.utcnow()
+            self.async_write_ha_state()
+            return
         await self._async_send(build_pause_command(False))
         self._bridge_call("set_audio_stream_paused", False)
 

@@ -42,6 +42,11 @@ class SpeakerContractTest(unittest.TestCase):
         self.assertEqual(json.loads(SPEAKER.build_play_command(
             ID, "tcp://ha:8124/t", live=True, lead_ms=151))["lead_ms"], 151)
         self.assertNotIn("lead_ms", json.loads(SPEAKER.build_play_command(ID, "http://h/a", lead_ms=5)))
+        # A Bridge stream comes back by playing it again (b512); never live.
+        self.assertTrue(json.loads(SPEAKER.build_play_command(ID, "tcp://ha:8124/t", restart=True))["restart"])
+        self.assertNotIn("restart", json.loads(SPEAKER.build_play_command(ID, "tcp://ha:8124/t")))
+        self.assertNotIn("restart", json.loads(SPEAKER.build_play_command(
+            ID, "tcp://ha:8124/t", live=True, restart=True)))
         self.assertEqual(json.loads(SPEAKER.build_stop_command()), {"v": 1, "op": "stop"})
         self.assertEqual(json.loads(SPEAKER.build_volume_command(0.256)),
                          {"v": 1, "op": "volume", "volume": 0.256})
@@ -70,7 +75,8 @@ class SpeakerContractTest(unittest.TestCase):
         self.assertEqual(parsed, {"state": "idle", "volume": 0.5, "muted": False,
                                   "max_bytes": 4194304, "formats": ["mp3", "wav"],
                                   "id": None, "error": None, "pausable": False,
-                                  "position_ms": None, "duration_ms": None, "stream": False})
+                                  "position_ms": None, "duration_ms": None, "stream": False,
+                                  "released": False})
         # Firmware b502: Bridge-decoded clips; any other value is not that.
         self.assertTrue(SPEAKER.parse_status(json.dumps(status(stream="tcp-ack-v1")))["stream"])
         for other in ("tcp-ack-v2", True, 1):
@@ -80,6 +86,13 @@ class SpeakerContractTest(unittest.TestCase):
             state="paused", pausable=True, position_ms=61500, duration_ms=213000)))
         self.assertEqual((parsed["state"], parsed["pausable"], parsed["position_ms"],
                           parsed["duration_ms"]), ("paused", True, 61500, 213000))
+        self.assertFalse(parsed["released"])
+        # Firmware b512: paused with the stream closed; only while paused.
+        self.assertTrue(SPEAKER.parse_status(json.dumps(status(
+            state="paused", position_ms=61500, released=True)))["released"])
+        for state, value in (("playing", True), ("idle", True), ("paused", 1), ("paused", "true")):
+            self.assertFalse(SPEAKER.parse_status(json.dumps(status(
+                state=state, released=value)))["released"], (state, value))
         for bad in ({"position_ms": -1}, {"position_ms": "5"}, {"duration_ms": 1.5},
                     {"position_ms": True}, {"duration_ms": 0}, {"pausable": 1}):
             parsed = SPEAKER.parse_status(json.dumps(status(state="playing", **bad)))
@@ -481,9 +494,28 @@ class MediaPlayerPlatformTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player.written, written + 1)
         self.assertEqual(bridge.sent[-1]["url"], "tcp://192.168.1.2:8124/token2")
         self.assertEqual(player._title, (bridge.sent[-1]["id"], "song"))
+        self.assertTrue(bridge.sent[-1]["restart"], "the panel may free a paused stream")
+        # Older firmware keeps the stream while paused and resumes it.
         await player.async_media_pause()
         await player.async_media_play()
         self.assertEqual(bridge.paused, [True, False])
+        self.assertEqual([bridge.sent[-2]["op"], bridge.sent[-1]["op"]], ["pause", "resume"])
+        # Firmware from b512 closed the stream: play starts the clip again
+        # from the paused point, with its title, and the bar stays there.
+        streams = len(bridge.streams)
+        await player.async_media_pause()
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status(
+            state="paused", pausable=True, stream="tcp-ack-v1",
+            id=[p for p in bridge.sent if p["op"] == "play"][-1]["id"],
+            position_ms=95300, duration_ms=162000, released=True)))
+        self.assertEqual(player._attr_state, "paused")
+        await player.async_media_play()
+        self.assertEqual(len(bridge.streams), streams + 1)
+        self.assertEqual(bridge.streams[-1], ("http://192.168.1.2:8123/local/song.mp3", 44100, 95300))
+        self.assertEqual(bridge.sent[-1]["op"], "play")
+        self.assertTrue(bridge.sent[-1]["restart"])
+        self.assertEqual(player._title, (bridge.sent[-1]["id"], "song"))
+        self.assertEqual(player._attr_media_position, 95)
         await player.async_media_stop()
         self.assertEqual(bridge.stopped, 1)
         # Announcements and spoken text at the speech rate.
