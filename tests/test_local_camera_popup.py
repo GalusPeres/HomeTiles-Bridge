@@ -234,7 +234,9 @@ class PopupLiveViewerTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task, 2)
         feeder.assert_not_called()
         pairs = [list(pair) for pair in zip(self.commands[0], self.commands[0][1:])]
-        self.assertIn(["-fpsmax", "24"], pairs)
+        self.assertIn(["-fps_mode", "passthrough"], pairs)
+        self.assertIn("gt(floor(t*24),floor(prev_selected_t*24))",
+                      self.commands[0][self.commands[0].index("-vf") + 1])
         self.assertIn(["-q:v", str(self.module.CAMERA_STREAM_JPEG_QUALITY)], pairs)
         self.assertNotIn("-framerate", self.commands[0])
 

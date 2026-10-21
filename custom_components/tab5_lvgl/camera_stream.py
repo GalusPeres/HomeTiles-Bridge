@@ -1610,10 +1610,10 @@ class CameraStreamConnection:
     scale_flags = ""
     if not image_mode:
       # Scaling runs on one thread and was the larger part of the work: every
-      # frame of a 60 FPS source was scaled before -fpsmax dropped most of
-      # them. Keep only the first frame of each 1/fps slot first, which never
-      # repeats a frame of a slower source. The area scaler is the cheapest
-      # of the sharp ones for this large reduction.
+      # frame of a 60 FPS source was scaled before the rate cap dropped most
+      # of them. Keep only the first frame of each 1/fps slot first, which
+      # never repeats a frame of a slower source. The area scaler is the
+      # cheapest of the sharp ones for this large reduction.
       video_filters.append(
         "select='isnan(prev_selected_t)"
         f"+gt(floor(t*{session.fps}),floor(prev_selected_t*{session.fps}))'"
@@ -1664,11 +1664,14 @@ class CameraStreamConnection:
       "-q:v", str(jpeg_quality),
     ])
     if not image_mode:
-      # A fixed fps filter duplicates frames when the source is slower (for
-      # example 10 FPS from OBS), wasting ESP decode/display time and making
-      # the on-device counter look faster than the real video. fpsmax only
-      # drops excess source frames and never fabricates missing ones.
-      command.extend(["-fpsmax", str(session.fps)])
+      # The select filter above already keeps at most one frame per 1/fps
+      # slot; pass those through unchanged. -fpsmax repeated frames: with
+      # the short probe FFmpeg never learns the source rate, so the cap
+      # became a constant output rate and a 20 FPS OBS stream reached the
+      # panel as 30 FPS with every third frame a copy (until v0.9.4b13),
+      # which also made the picture stutter. Duplicates waste ESP decode time and
+      # make the on-device counter look faster than the real video.
+      command.extend(["-fps_mode", "passthrough"])
     command.extend([
       "-flush_packets", "1",
       "-f", "image2pipe",

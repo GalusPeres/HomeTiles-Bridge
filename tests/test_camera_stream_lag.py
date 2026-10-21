@@ -3,8 +3,8 @@
 FFmpeg could not keep up with a 1440p60 OBS stream in a Home Assistant VM
 (0.9x real time). The delay grew until the RTSP server dropped data for the
 slow reader, and every panel showed a smeared picture. The larger part of
-the work was scaling all 60 frames per second on one thread before -fpsmax
-dropped most of them. The Bridge now thins the frames to the session rate
+the work was scaling all 60 frames per second on one thread before the rate
+cap dropped most of them. The Bridge now thins the frames to the session rate
 before scaling, decodes on several threads, and restarts FFmpeg at the live
 position when it still falls behind. v0.7.1b7 switched to key frames only
 after two restarts, which left the popup at one picture per second; that
@@ -140,7 +140,7 @@ class StreamRateTest(unittest.TestCase):
         session = types.SimpleNamespace(source=SOURCE, width=752, height=424, fps=30)
         command = self.module.CameraStreamConnection._ffmpeg_command("ffmpeg", session, 11)
         self.assertIn("gt(floor(t*30),floor(prev_selected_t*30))", command[command.index("-vf") + 1])
-        self.assertIn(["-fpsmax", "30"], [list(p) for p in zip(command, command[1:])])
+        self.assertIn(["-fps_mode", "passthrough"], [list(p) for p in zip(command, command[1:])])
 
 
 class FfmpegCommandTest(unittest.TestCase):
@@ -169,15 +169,29 @@ class FfmpegCommandTest(unittest.TestCase):
                       self.pairs(command[:input_at]))
         self.assertEqual(self.module.CAMERA_STREAM_DECODE_THREADS, 4)
         self.assertIn(["-progress", "pipe:2"], self.pairs(command[:input_at]))
-        self.assertIn(["-fpsmax", "24"], self.pairs(command))
         # No key frames only fallback (v0.7.1b7: one picture per second).
         self.assertNotIn("-skip_frame", command)
-        self.assertNotIn("-fps_mode", command)
         # The encoder stays single threaded, the RTSP options stay in place.
         self.assertIn(["-threads:v", "1"], self.pairs(command[input_at:]))
         for pair in (["-rtsp_transport", "tcp"], ["-fflags", "nobuffer"],
                      ["-probesize", "32"], ["-analyzeduration", "0"]):
             self.assertIn(pair, self.pairs(command[:input_at]))
+
+    def test_a_slower_source_is_never_filled_up_with_copies(self):
+        # v0.9.4b14: the short probe (-probesize 32 -analyzeduration 0) never
+        # tells FFmpeg the source rate, so -fpsmax 24 became a constant rate
+        # and the image2pipe output repeated frames: a 20 FPS OBS stream
+        # reached the panel as 30 FPS, every third frame a copy (measured
+        # with FFmpeg 8.1: 300 frames in 10 s, 185 different). The select
+        # filter alone caps the rate; FFmpeg passes its frames through.
+        command = self.command()
+        output = command[command.index("-i") + 2:]
+        # -fpsmax (or -r) with a non-constant -fps_mode makes FFmpeg refuse
+        # to start, so neither may come back.
+        self.assertNotIn("-fpsmax", command)
+        self.assertNotIn("-r", output)
+        self.assertIn(["-fps_mode", "passthrough"], self.pairs(output))
+        self.assertIn("select=", self.filters(command))
 
     def test_frames_are_thinned_to_the_session_rate_before_scaling(self):
         filters = self.filters(self.command()).split(",scale=")
@@ -216,7 +230,7 @@ class FfmpegCommandTest(unittest.TestCase):
             "-i", "pipe:0",
         ])
         self.assertNotIn("-progress", command)
-        self.assertNotIn("-fpsmax", command)
+        self.assertNotIn("-fps_mode", command)
         self.assertNotIn("select=", self.filters(command))
         self.assertNotIn("flags=area", self.filters(command))
 
@@ -287,7 +301,7 @@ class LagRestartTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.processes[restart - 1].returncode, -15)
             # Every restart runs the same full-rate command, never key frames only.
             self.assertTrue(all(command == self.commands[0] for command in self.commands))
-            self.assertIn("-fpsmax", self.commands[-1])
+            self.assertIn("passthrough", self.commands[-1])
             self.assertNotIn("-skip_frame", self.commands[-1])
             await self.manager.async_stop_device("viewer")
             await asyncio.wait_for(task, 3)
