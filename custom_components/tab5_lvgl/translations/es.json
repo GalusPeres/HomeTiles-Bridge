@@ -3,6 +3,24 @@
     "step": {
       "user": {
         "title": "Añadir panel",
+        "description": "¿Cómo quieres añadir el panel?",
+        "menu_options": {
+          "link_ip": "Panel por dirección IP (conexión directa)",
+          "manual": "Manualmente por MQTT"
+        }
+      },
+      "link_ip": {
+        "title": "Panel por dirección IP",
+        "description": "Pulsa primero Pair en el panel (Settings > System > Security) y luego introduce aquí su dirección IP. El panel la muestra en Settings > WiFi. Consejo: asigna al panel una dirección IP fija en tu router.",
+        "data": {
+          "host": "Dirección IP del panel"
+        },
+        "data_description": {
+          "host": "Por ejemplo 192.168.1.50"
+        }
+      },
+      "manual": {
+        "title": "Manualmente por MQTT",
         "description": "Configura un nuevo panel HomeTiles.",
         "data": {
           "base_topic": "Tema base MQTT",
@@ -75,6 +93,8 @@
       "panel_locked": "Demasiadas contraseñas incorrectas. Espera unos minutos e inténtalo de nuevo.",
       "panel_identity_failed": "El dispositivo no ha podido demostrar que es el panel con esta contraseña. No se ha enviado ninguna credencial.",
       "link_unsupported": "El firmware del panel todavía no puede conectarse directamente. Actualiza primero el panel.",
+      "invalid_host": "Introduce la dirección IP del panel, por ejemplo 192.168.1.50.",
+      "link_press_pair": "No se ha pulsado Pair en el panel (o ya han pasado sus dos minutos). Pulsa primero Pair en el panel (Settings > System > Security) y vuelve a enviar.",
       "link_window_closed": "El panel ya no acepta la conexión. Pulsa de nuevo Pair en el panel y añádelo en menos de dos minutos."
     },
     "abort": {

@@ -3,6 +3,24 @@
     "step": {
       "user": {
         "title": "Dodaj panel",
+        "description": "Jak chcesz dodać panel?",
+        "menu_options": {
+          "link_ip": "Panel przez adres IP (połączenie bezpośrednie)",
+          "manual": "Ręcznie przez MQTT"
+        }
+      },
+      "link_ip": {
+        "title": "Panel przez adres IP",
+        "description": "Najpierw naciśnij na panelu „Paruj” (Ustawienia > System > Bezpieczeństwo), a potem wpisz tutaj jego adres IP. Panel pokazuje go w Ustawienia > WiFi. Wskazówka: nadaj panelowi stały adres IP w routerze.",
+        "data": {
+          "host": "Adres IP panelu"
+        },
+        "data_description": {
+          "host": "Na przykład 192.168.1.50"
+        }
+      },
+      "manual": {
+        "title": "Ręcznie przez MQTT",
         "description": "Skonfiguruj nowy panel HomeTiles.",
         "data": {
           "base_topic": "Bazowy temat MQTT",
@@ -75,6 +93,8 @@
       "panel_locked": "Zbyt wiele b\u0142\u0119dnych hase\u0142. Odczekaj kilka minut i spr\u00f3buj ponownie.",
       "panel_identity_failed": "Urz\u0105dzenie nie mog\u0142o udowodni\u0107, \u017ce jest panelem z tym has\u0142em. Nie wys\u0142ano \u017cadnych danych logowania.",
       "link_unsupported": "Oprogramowanie panelu nie obs\u0142uguje jeszcze po\u0142\u0105czenia bezpo\u015bredniego. Najpierw zaktualizuj panel.",
+      "invalid_host": "Wpisz adres IP panelu, na przykład 192.168.1.50.",
+      "link_press_pair": "Na panelu nie naciśnięto „Paruj” (albo minęły już dwie minuty). Najpierw naciśnij na panelu „Paruj” (Ustawienia > System > Bezpieczeństwo), a potem wyślij ponownie.",
       "link_window_closed": "Panel nie przyjmuje ju\u017c po\u0142\u0105czenia. Naci\u015bnij ponownie \u201eParuj\u201d na panelu i dodaj go w ci\u0105gu dw\u00f3ch minut."
     },
     "abort": {

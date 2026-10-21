@@ -3,6 +3,24 @@
     "step": {
       "user": {
         "title": "Lägg till panel",
+        "description": "Hur vill du lägga till panelen?",
+        "menu_options": {
+          "link_ip": "Panel via IP-adress (direktanslutning)",
+          "manual": "Manuellt via MQTT"
+        }
+      },
+      "link_ip": {
+        "title": "Panel via IP-adress",
+        "description": "Tryck först på Pair på panelen (Settings > System > Security) och ange sedan dess IP-adress här. Panelen visar den under Settings > WiFi. Tips: ge panelen en fast IP-adress i routern.",
+        "data": {
+          "host": "Panelens IP-adress"
+        },
+        "data_description": {
+          "host": "Till exempel 192.168.1.50"
+        }
+      },
+      "manual": {
+        "title": "Manuellt via MQTT",
         "description": "Konfigurera en ny HomeTiles-panel.",
         "data": {
           "base_topic": "MQTT-basämne",
@@ -75,6 +93,8 @@
       "panel_locked": "För många felaktiga lösenord. Vänta några minuter och försök igen.",
       "panel_identity_failed": "Enheten kunde inte bevisa att den är panelen med detta lösenord. Inga uppgifter skickades.",
       "link_unsupported": "Panelens firmware kan ännu inte ansluta direkt. Uppdatera panelen först.",
+      "invalid_host": "Ange panelens IP-adress, till exempel 192.168.1.50.",
+      "link_press_pair": "Pair har inte tryckts på panelen (eller så har de två minuterna gått ut). Tryck först på Pair på panelen (Settings > System > Security) och skicka sedan igen.",
       "link_window_closed": "Panelen tar inte längre emot anslutningen. Tryck på Pair på panelen igen och lägg till den inom två minuter."
     },
     "abort": {

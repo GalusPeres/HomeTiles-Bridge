@@ -2,7 +2,25 @@
   "config": {
     "step": {
       "user": {
-        "title": "Panel hinzuf\u00fcgen",
+        "title": "Panel hinzufügen",
+        "description": "Wie soll das Panel hinzugefügt werden?",
+        "menu_options": {
+          "link_ip": "Panel per IP-Adresse (direkte Verbindung)",
+          "manual": "Manuell über MQTT"
+        }
+      },
+      "link_ip": {
+        "title": "Panel per IP-Adresse",
+        "description": "Drücke vorher am Panel Koppeln (Einstellungen > System > Sicherheit) und gib dann hier seine IP-Adresse ein. Das Panel zeigt sie unter Einstellungen > WLAN. Tipp: Gib dem Panel im Router eine feste IP-Adresse.",
+        "data": {
+          "host": "IP-Adresse des Panels"
+        },
+        "data_description": {
+          "host": "Zum Beispiel 192.168.1.50"
+        }
+      },
+      "manual": {
+        "title": "Manuell über MQTT",
         "description": "Neues HomeTiles-Panel einrichten.",
         "data": {
           "base_topic": "MQTT-Basis",
@@ -75,6 +93,8 @@
       "panel_locked": "Zu viele falsche Passw\u00f6rter. Bitte einige Minuten warten und erneut versuchen.",
       "panel_identity_failed": "Das Ger\u00e4t konnte nicht nachweisen, dass es das Panel mit diesem Passwort ist. Es wurden keine Zugangsdaten gesendet.",
       "link_unsupported": "Die Firmware des Panels kann sich noch nicht direkt verbinden. Bitte das Panel zuerst aktualisieren.",
+      "invalid_host": "Bitte die IP-Adresse des Panels eingeben, zum Beispiel 192.168.1.50.",
+      "link_press_pair": "Am Panel ist Koppeln nicht gedrückt (oder die zwei Minuten sind vorbei). Drücke zuerst am Panel Koppeln (Einstellungen > System > Sicherheit) und sende dann erneut ab.",
       "link_window_closed": "Das Panel nimmt die Verbindung nicht mehr an. Am Panel erneut auf Koppeln dr\u00fccken und es innerhalb von zwei Minuten hinzuf\u00fcgen."
     },
     "abort": {

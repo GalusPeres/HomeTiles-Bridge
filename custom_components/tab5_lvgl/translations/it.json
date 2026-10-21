@@ -3,6 +3,24 @@
     "step": {
       "user": {
         "title": "Aggiungi pannello",
+        "description": "Come vuoi aggiungere il pannello?",
+        "menu_options": {
+          "link_ip": "Pannello tramite indirizzo IP (connessione diretta)",
+          "manual": "Manualmente tramite MQTT"
+        }
+      },
+      "link_ip": {
+        "title": "Pannello tramite indirizzo IP",
+        "description": "Premi prima Pair sul pannello (Settings > System > Security), poi inserisci qui il suo indirizzo IP. Il pannello lo mostra in Settings > WiFi. Suggerimento: assegna al pannello un indirizzo IP fisso nel router.",
+        "data": {
+          "host": "Indirizzo IP del pannello"
+        },
+        "data_description": {
+          "host": "Per esempio 192.168.1.50"
+        }
+      },
+      "manual": {
+        "title": "Manualmente tramite MQTT",
         "description": "Configura un nuovo pannello HomeTiles.",
         "data": {
           "base_topic": "Topic base MQTT",
@@ -75,6 +93,8 @@
       "panel_locked": "Troppe password errate. Attendi qualche minuto e riprova.",
       "panel_identity_failed": "Il dispositivo non ha potuto dimostrare di essere il pannello con questa password. Non è stata inviata nessuna credenziale.",
       "link_unsupported": "Il firmware del pannello non può ancora collegarsi direttamente. Aggiorna prima il pannello.",
+      "invalid_host": "Inserisci l'indirizzo IP del pannello, per esempio 192.168.1.50.",
+      "link_press_pair": "Pair non è stato premuto sul pannello (o i suoi due minuti sono scaduti). Premi prima Pair sul pannello (Settings > System > Security), poi invia di nuovo.",
       "link_window_closed": "Il pannello non accetta più la connessione. Premi di nuovo Pair sul pannello e aggiungilo entro due minuti."
     },
     "abort": {
