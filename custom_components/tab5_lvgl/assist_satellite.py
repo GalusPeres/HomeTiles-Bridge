@@ -57,6 +57,7 @@ from .assist import (
     parse_audio_frame,
     parse_status,
     parse_wake_event,
+    wake_choice,
     wake_word_info,
     wake_word_phrase,
 )
@@ -127,6 +128,9 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
         # Wake words from the panel's retained status (ids).
         self._available_wake_words: list[str] = []
         self._active_wake_words: list[str] = []
+        # The chosen word stays while the listen switch is off.
+        self._chosen_wake_words: list[str] = []
+        self._wake_listen = False
 
     # Assist selects ------------------------------------------------------
 
@@ -187,6 +191,9 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
                     self._active_wake_words = [
                         word for word in status["active_wake_words"]
                         if word in self._available_wake_words]
+                choice = wake_choice(status)
+                if choice is not None:
+                    self._chosen_wake_words, self._wake_listen = choice
                 session = self._session
                 if (session is not None and status["id"] == session.session_id
                         and status["state"] == "idle"):
@@ -282,11 +289,44 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
         await self.async_set_active_wake_words(config.active_wake_words)
 
     async def async_set_active_wake_words(self, words: list[str]) -> None:
-        """Send the panel its active wake words (also used by the Wake word select)."""
+        """Home Assistant's own wake word setting: words listen, none stops."""
         active = [word for word in words
                   if word in self._available_wake_words][:MAX_ACTIVE_WAKE_WORDS]
+        await self._async_send_wake_words(active)
+        # The panel's retained status confirms it; until then show the request.
+        self._active_wake_words = active
+        if active:
+            self._chosen_wake_words = active
+        self._wake_listen = bool(active)
+        self.async_write_ha_state()
+
+    @property
+    def wake_listen(self) -> bool:
+        return self._wake_listen
+
+    async def async_set_wake_listen(self, enabled: bool) -> None:
+        """The Listening switch; the chosen word stays while it is off."""
+        words: list[str] = []
+        if enabled:
+            words = (self._chosen_wake_words or self._available_wake_words)[:1]
+        await self._async_send_wake_words(words, enabled)
+        self._active_wake_words = words
+        self._wake_listen = enabled
+        self.async_write_ha_state()
+
+    async def async_choose_wake_word(self, word: str) -> None:
+        """The Wake word select: changes the word, not the listen switch."""
+        if word not in self._available_wake_words:
+            raise HomeAssistantError(f"Unknown wake word: {word}")
+        await self._async_send_wake_words([word], self._wake_listen)
+        self._chosen_wake_words = [word]
+        if self._wake_listen:
+            self._active_wake_words = [word]
+        self.async_write_ha_state()
+
+    async def _async_send_wake_words(self, words: list[str], listen: bool | None = None) -> None:
         try:
-            sent = await self._async_send_assist(build_wake_words_command(active))
+            sent = await self._async_send_assist(build_wake_words_command(words, listen))
         except Exception:  # noqa: BLE001 - reported as not connected below
             _LOGGER.debug("HomeTiles Assist wake words for %s failed", self._base,
                           exc_info=True)
@@ -294,9 +334,6 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
         if not sent:
             raise HomeAssistantError(translation_domain=DOMAIN,
                                      translation_key="assist_not_connected")
-        # The panel's retained status confirms it; until then show the request.
-        self._active_wake_words = active
-        self.async_write_ha_state()
 
     async def async_set_microphone(self, enabled: bool) -> None:
         """Turn the panel's microphone privacy switch on or off.

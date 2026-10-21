@@ -11,15 +11,20 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "tab5_lvgl"
-PLATFORMS = ("binary_sensor", "light", "number", "select", "sensor", "switch", "camera")
+PLATFORMS = ("binary_sensor", "button", "light", "number", "select", "sensor", "switch", "camera")
 EXPECTED = {
-    ("binary_sensor", "mqtt_connection"): ("MQTT Connection", "MQTT Verbindung"),
+    ("binary_sensor", "mqtt_connection"): ("Connection", "Verbindung"),
     ("binary_sensor", "encryption"): ("Encryption", "Verschl\u00fcsselung"),
     ("light", "display_brightness"): ("Display Brightness", "Display Helligkeit"),
-    ("light", "screensaver_brightness"): ("Screensaver Brightness", "Screensaver Helligkeit"),
+    ("light", "screensaver_brightness"): ("Screensaver Brightness", "Bildschirmschoner Helligkeit"),
     ("number", "display_brightness"): ("Display Brightness", "Display Helligkeit"),
-    ("select", "sleep_mains"): ("Auto-Sleep Power", "Auto-Sleep Netzteil"),
-    ("select", "sleep_battery"): ("Auto-Sleep Battery", "Auto-Sleep Batterie"),
+    ("select", "sleep_mains"): ("Display Standby After", "Display Standby nach"),
+    ("switch", "display_rotation"): ("Display Rotation", "Display Rotation"),
+    ("switch", "display_standby"): ("Display Standby", "Display Standby"),
+    ("switch", "wake_listen"): ("Listening", "Zuhören"),
+    ("switch", "local_camera"): ("Camera", "Kamera"),
+    ("camera", "local_camera"): ("Camera Image", "Kamerabild"),
+    ("button", "assist"): ("Start Assist", "Assist starten"),
     ("sensor", "battery_soc"): ("Battery SoC", "Batterie SoC"),
     ("sensor", "external_temperature"): ("External Temperature", "Externe Temperatur"),
 }
@@ -46,7 +51,7 @@ class EntityNameTranslationTests(unittest.TestCase):
             text = (ROOT / f"{platform}.py").read_text(encoding="utf-8")
             keys = set(re.findall(r'_attr_translation_key = "([a-z0-9_]+)"', text))
             if platform == "select":
-                keys.update(("sleep_mains", "sleep_battery"))
+                keys.add("sleep_mains")
             for key in keys:
                 self.assertIn(key, en.get(platform, {}), f"{platform}.{key} en")
                 self.assertIn(key, de.get(platform, {}), f"{platform}.{key} de")

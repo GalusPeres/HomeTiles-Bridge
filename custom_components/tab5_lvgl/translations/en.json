@@ -184,7 +184,7 @@
   "entity": {
     "camera": {
       "local_camera": {
-        "name": "Camera"
+        "name": "Camera Image"
       }
     },
     "select": {
@@ -192,21 +192,7 @@
         "name": "View"
       },
       "sleep_mains": {
-        "name": "Auto-Sleep Power",
-        "state": {
-          "5s": "5 s",
-          "15s": "15 s",
-          "30s": "30 s",
-          "60s": "60 s",
-          "5min": "5 min",
-          "15min": "15 min",
-          "30min": "30 min",
-          "60min": "60 min",
-          "never": "Never"
-        }
-      },
-      "sleep_battery": {
-        "name": "Auto-Sleep Battery",
+        "name": "Display Standby After",
         "state": {
           "5s": "5 s",
           "15s": "15 s",
@@ -222,7 +208,6 @@
       "wake_word": {
         "name": "Wake word",
         "state": {
-          "off": "Off",
           "okay_nabu": "Okay Nabu",
           "hey_jarvis": "Hey Jarvis",
           "hey_mycroft": "Hey Mycroft",
@@ -251,6 +236,15 @@
       },
       "microphone": {
         "name": "Microphone"
+      },
+      "wake_listen": {
+        "name": "Listening"
+      },
+      "display_rotation": {
+        "name": "Display Rotation"
+      },
+      "display_standby": {
+        "name": "Display Standby"
       }
     },
     "binary_sensor": {
@@ -258,7 +252,7 @@
         "name": "Encryption"
       },
       "mqtt_connection": {
-        "name": "MQTT Connection"
+        "name": "Connection"
       }
     },
     "light": {
@@ -289,7 +283,7 @@
     },
     "button": {
       "assist": {
-        "name": "Assist"
+        "name": "Start Assist"
       }
     },
     "media_player": {

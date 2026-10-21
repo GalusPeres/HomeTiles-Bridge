@@ -65,11 +65,12 @@ def stale_speaker(unique_id: str, data: Mapping[str, Any]) -> bool:
 
 
 def stale_assist(unique_id: str, domain: str, data: Mapping[str, Any]) -> bool:
-    """The microphone's satellite, button or selects without audio_input."""
+    """The microphone's satellite, button, switches or selects without audio_input."""
     if supports(data, "audio_input"):
         return False
     return ((domain == "assist_satellite" and unique_id.endswith("_assist_satellite"))
             or (domain == "button" and unique_id.endswith("_assist"))
-            or (domain == "switch" and unique_id.endswith("_assist_microphone"))
+            or (domain == "switch" and unique_id.endswith(
+                ("_assist_microphone", "_assist_wake_listen")))
             or (domain == "select" and unique_id.endswith(
                 ("_assist-pipeline", "_assist-vad_sensitivity", "_assist_wake_word"))))

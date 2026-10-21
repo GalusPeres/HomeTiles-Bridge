@@ -184,7 +184,7 @@
   "entity": {
     "camera": {
       "local_camera": {
-        "name": "Kamera"
+        "name": "Obraz z kamery"
       }
     },
     "select": {
@@ -192,21 +192,7 @@
         "name": "Widok"
       },
       "sleep_mains": {
-        "name": "Auto-u\u015bpienie (zasilacz)",
-        "state": {
-          "5s": "5 s",
-          "15s": "15 s",
-          "30s": "30 s",
-          "60s": "60 s",
-          "5min": "5 min",
-          "15min": "15 min",
-          "30min": "30 min",
-          "60min": "60 min",
-          "never": "Nigdy"
-        }
-      },
-      "sleep_battery": {
-        "name": "Auto-u\u015bpienie (bateria)",
+        "name": "U\u015bpienie wy\u015bwietlacza po",
         "state": {
           "5s": "5 s",
           "15s": "15 s",
@@ -222,7 +208,6 @@
       "wake_word": {
         "name": "Słowo aktywujące",
         "state": {
-          "off": "Wyłączone",
           "okay_nabu": "Okay Nabu",
           "hey_jarvis": "Hey Jarvis",
           "hey_mycroft": "Hey Mycroft",
@@ -251,6 +236,15 @@
       },
       "microphone": {
         "name": "Mikrofon"
+      },
+      "wake_listen": {
+        "name": "Nas\u0142uchiwanie"
+      },
+      "display_rotation": {
+        "name": "Obr\u00f3t wy\u015bwietlacza"
+      },
+      "display_standby": {
+        "name": "U\u015bpienie wy\u015bwietlacza"
       }
     },
     "binary_sensor": {
@@ -258,7 +252,7 @@
         "name": "Szyfrowanie"
       },
       "mqtt_connection": {
-        "name": "Po\u0142\u0105czenie MQTT"
+        "name": "Po\u0142\u0105czenie"
       }
     },
     "light": {
@@ -289,7 +283,7 @@
     },
     "button": {
       "assist": {
-        "name": "Assist"
+        "name": "Uruchom Assist"
       }
     },
     "media_player": {

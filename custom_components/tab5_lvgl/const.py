@@ -81,7 +81,6 @@ TOPIC_SCREENSAVER_BRIGHTNESS = "screensaver_brightness"
 TOPIC_DISPLAY_ROTATE = "display_rotate"
 TOPIC_DISPLAY_SLEEP = "display_sleep"
 TOPIC_SLEEP_MAINS = "sleep_mains"
-TOPIC_SLEEP_BATTERY = "sleep_battery"
 TOPIC_SENSOR_SOC = "soc_pct"
 
 # Auto-sleep options: stable Home Assistant option keys (translated as

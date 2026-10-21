@@ -184,7 +184,7 @@
   "entity": {
     "camera": {
       "local_camera": {
-        "name": "Камера"
+        "name": "Изображение камеры"
       }
     },
     "select": {
@@ -192,21 +192,7 @@
         "name": "Вид"
       },
       "sleep_mains": {
-        "name": "Автосон (сеть)",
-        "state": {
-          "5s": "5 с",
-          "15s": "15 с",
-          "30s": "30 с",
-          "60s": "60 с",
-          "5min": "5 мин",
-          "15min": "15 мин",
-          "30min": "30 мин",
-          "60min": "60 мин",
-          "never": "Никогда"
-        }
-      },
-      "sleep_battery": {
-        "name": "Автосон (батарея)",
+        "name": "Сон дисплея через",
         "state": {
           "5s": "5 с",
           "15s": "15 с",
@@ -222,7 +208,6 @@
       "wake_word": {
         "name": "Слово активации",
         "state": {
-          "off": "Выключено",
           "okay_nabu": "Okay Nabu",
           "hey_jarvis": "Hey Jarvis",
           "hey_mycroft": "Hey Mycroft",
@@ -251,6 +236,15 @@
       },
       "microphone": {
         "name": "Микрофон"
+      },
+      "wake_listen": {
+        "name": "Прослушивание"
+      },
+      "display_rotation": {
+        "name": "Поворот дисплея"
+      },
+      "display_standby": {
+        "name": "Сон дисплея"
       }
     },
     "binary_sensor": {
@@ -258,7 +252,7 @@
         "name": "Шифрование"
       },
       "mqtt_connection": {
-        "name": "Подключение MQTT"
+        "name": "Подключение"
       }
     },
     "light": {
@@ -289,7 +283,7 @@
     },
     "button": {
       "assist": {
-        "name": "Assist"
+        "name": "Запустить Assist"
       }
     },
     "media_player": {

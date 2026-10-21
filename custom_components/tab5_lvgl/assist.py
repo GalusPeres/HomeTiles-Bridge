@@ -16,11 +16,15 @@ MQTT contract (base = the panel base topic):
 - ``{base}/stat/assist``: panel to Bridge, retained JSON status
   ``{"v": 1, "state": "idle"|"listening"|"wake", "id": "<hex>"}`` plus
   ``"error"`` when the last session failed, and the on-panel wake words:
-  ``"wake_words"`` (detectable) and ``"active_wake_words"`` (listening for).
+  ``"wake_words"`` (detectable), ``"active_wake_words"`` (listening for),
+  ``"chosen_wake_words"`` and ``"wake_listen"`` (the listen switch; firmware
+  from v0.9.4, the chosen word stays while listening is off).
 
 On-panel wake word (v1 addendum, microWakeWord models detected on the panel):
 - ``{base}/cmnd/assist`` ``{"v": 1, "op": "wake_words", "active": ["okay_nabu"]}``
-  sets the active words (empty list = off); sealed like start/stop.
+  sets the active words (empty list = off); sealed like start/stop. With
+  ``"listen": true|false`` it sets the listen switch and, for a non-empty
+  list, the chosen word, so listening can stop without losing the word.
 - ``{base}/stat/assist_wake``: panel to Bridge, QoS 0, not retained,
   ``{"v": 1, "word": "okay_nabu", "seq": <uint32 per boot>}`` on detection.
   The Bridge then starts a session exactly like the Assist button.
@@ -134,6 +138,10 @@ def assist_microphone_switch_unique_id(device_id: str) -> str:
     return f"{device_id}_assist_microphone"
 
 
+def assist_listen_switch_unique_id(device_id: str) -> str:
+    return f"{device_id}_assist_wake_listen"
+
+
 def assist_button_unique_id(device_id: str) -> str:
     return f"{device_id}{ASSIST_BUTTON_UNIQUE_ID_SUFFIX}"
 
@@ -201,8 +209,14 @@ def build_stop_command(session_id: str) -> str:
     return _encode({"v": ASSIST_PROTOCOL_VERSION, "op": "stop", "id": session_id})
 
 
-def build_wake_words_command(active: Any) -> str:
-    """Set the panel's active wake words; an empty list turns detection off."""
+def build_wake_words_command(active: Any, listen: bool | None = None) -> str:
+    """Set the panel's active wake words; an empty list turns detection off.
+
+    With ``listen`` the command sets the listen switch and, for a non-empty
+    list, the chosen word; an empty list then keeps the chosen word.
+    """
+    if listen is not None and not isinstance(listen, bool):
+        raise ValueError("invalid_listen")
     if not isinstance(active, (list, tuple)):
         raise ValueError("invalid_wake_words")
     words: list[str] = []
@@ -213,7 +227,11 @@ def build_wake_words_command(active: Any) -> str:
             words.append(word)
     if len(words) > MAX_ACTIVE_WAKE_WORDS:
         raise ValueError("too_many_wake_words")
-    return _encode({"v": ASSIST_PROTOCOL_VERSION, "op": "wake_words", "active": words})
+    payload: dict[str, Any] = {"v": ASSIST_PROTOCOL_VERSION, "op": "wake_words",
+                               "active": words}
+    if listen is not None:
+        payload["listen"] = listen
+    return _encode(payload)
 
 
 def build_mic_command(enabled: Any) -> str:
@@ -302,13 +320,37 @@ def parse_status(payload: Any) -> dict[str, Any] | None:
     active = _wake_word_list(data.get("active_wake_words"))
     if active is not None and available is not None:
         active = [word for word in active if word in available]
+    # None = firmware without the listen switch.
+    chosen = _wake_word_list(data.get("chosen_wake_words"))
+    if chosen is not None and available is not None:
+        chosen = [word for word in chosen if word in available]
+    wake_listen = data.get("wake_listen")
+    if not isinstance(wake_listen, bool):
+        wake_listen = None
     # None = firmware without the privacy switch.
     mic_enabled = data.get("mic_enabled")
     if not isinstance(mic_enabled, bool):
         mic_enabled = None
     return {"state": state, "id": session_id, "error": error,
             "wake_words": available, "active_wake_words": active,
+            "chosen_wake_words": chosen, "wake_listen": wake_listen,
             "mic_enabled": mic_enabled}
+
+
+def wake_choice(status: dict[str, Any]) -> tuple[list[str], bool] | None:
+    """The chosen wake words and the listen switch of a parsed status.
+
+    None when the panel reports no wake words. Firmware before the listen
+    switch reports only the active words: a word there is chosen and
+    listened for, none means off with nothing chosen.
+    """
+    if status["wake_words"] is None:
+        return None
+    active = status["active_wake_words"] or []
+    chosen = status["chosen_wake_words"]
+    listen = status["wake_listen"]
+    return (list(active) if chosen is None else chosen,
+            bool(active) if listen is None else listen)
 
 
 class WakeEvent(NamedTuple):

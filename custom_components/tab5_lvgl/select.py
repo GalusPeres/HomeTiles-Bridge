@@ -22,6 +22,7 @@ from .assist import (
     assist_status_topic,
     assist_wake_word_select_unique_id,
     parse_status,
+    wake_choice,
 )
 from .capabilities import merged_capabilities_data, supports
 from .view_navigation import ViewNavigation
@@ -29,7 +30,6 @@ from .const import (
     DOMAIN,
     SLEEP_OPTION_LABELS,
     SLEEP_OPTIONS,
-    TOPIC_SLEEP_BATTERY,
     TOPIC_SLEEP_MAINS,
 )
 from .device_helpers import (
@@ -52,15 +52,7 @@ async def async_setup_entry(
             TOPIC_SLEEP_MAINS,
             f"{entry_device_id(entry)}_sleep_mains",
             "sleep_mains",
-            "mdi:power-plug",
-        ),
-        Tab5SleepSelect(
-            entry,
-            base_topic,
-            TOPIC_SLEEP_BATTERY,
-            f"{entry_device_id(entry)}_sleep_battery",
-            "sleep_battery",
-            "mdi:battery",
+            "mdi:timer-outline",
         ),
     ]
     capabilities = merged_capabilities_data(entry)
@@ -276,15 +268,12 @@ class HomeTilesViewSelect(SelectEntity):
                                  json.dumps(payload), qos=0, retain=False)
 
 
-WAKE_WORD_OFF = "off"
-
-
 class HomeTilesWakeWordSelect(SelectEntity):
     """Wake word the panel listens for, from the words the panel reports.
 
     Home Assistant's own wake word picker only appears in some frontend
-    views, so the choice is also a plain device setting. It sends the same
-    command as the satellite's configuration (sealed when paired).
+    views, so the choice is also a plain device setting. Only words: the
+    Listening switch turns listening on and off and the word stays.
     """
 
     _attr_has_entity_name = True
@@ -299,7 +288,7 @@ class HomeTilesWakeWordSelect(SelectEntity):
         self._attr_unique_id = assist_wake_word_select_unique_id(entry_device_id(entry))
         self._base = base_topic
         self._words: list[str] = []
-        self._active: list[str] = []
+        self._chosen: list[str] = []
         self._status_seen = False
         self._unsubscribe = None
 
@@ -309,13 +298,13 @@ class HomeTilesWakeWordSelect(SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        return [*self._words, WAKE_WORD_OFF]
+        return list(self._words)
 
     @property
     def current_option(self) -> str | None:
-        if not self._status_seen:
+        if not self._status_seen or not self._chosen:
             return None
-        return self._active[0] if self._active else WAKE_WORD_OFF
+        return self._chosen[0]
 
     def apply_status(self, payload) -> bool:
         """Mirror the panel's retained Assist status; False when ignored."""
@@ -328,23 +317,23 @@ class HomeTilesWakeWordSelect(SelectEntity):
             return False
         if status["wake_words"] is not None:
             self._words = status["wake_words"]
-        if status["active_wake_words"] is not None:
-            self._active = [word for word in status["active_wake_words"] if word in self._words]
+        choice = wake_choice(status)
+        if choice is not None:
+            self._chosen = [word for word in choice[0] if word in self._words]
         self._status_seen = True
         return True
 
     async def async_select_option(self, option: str) -> None:
-        if option != WAKE_WORD_OFF and option not in self._words:
+        if option not in self._words:
             raise HomeAssistantError(f"Unknown wake word: {option}")
         satellite = (self.hass.data.get(DOMAIN, {})
                      .get(ASSIST_SATELLITES_KEY, {}).get(self._entry_id))
         if satellite is None:
             raise HomeAssistantError(translation_domain=DOMAIN,
                                      translation_key="assist_unavailable")
-        words = [] if option == WAKE_WORD_OFF else [option]
-        await satellite.async_set_active_wake_words(words)
+        await satellite.async_choose_wake_word(option)
         # The panel's retained status confirms it; until then show the request.
-        self._active = words
+        self._chosen = [option]
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:

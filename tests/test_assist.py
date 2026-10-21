@@ -88,13 +88,15 @@ class AssistContractTest(unittest.TestCase):
         self.assertEqual(ASSIST.parse_status(json.dumps({"v": 1, "state": "listening", "id": ID})),
                          {"state": "listening", "id": ID, "error": None,
                           "wake_words": None, "active_wake_words": None,
+                          "chosen_wake_words": None, "wake_listen": None,
                           "mic_enabled": None})
         self.assertEqual(
             ASSIST.parse_status(json.dumps({"v": 1, "state": "idle", "id": ID,
                                             "error": "timeout"}).encode()),
             {"state": "idle", "id": ID, "error": "timeout",
              "wake_words": None, "active_wake_words": None,
-                          "mic_enabled": None})
+             "chosen_wake_words": None, "wake_listen": None,
+             "mic_enabled": None})
         self.assertEqual(ASSIST.parse_status(json.dumps({"v": 1, "state": "idle",
                                                          "error": "new_code"}))["error"],
                          "unknown")
@@ -131,6 +133,31 @@ class AssistContractTest(unittest.TestCase):
             "v": 1, "state": "idle", "wake_words": [f"w{i}" for i in range(40)]}))
         self.assertEqual(len(many["wake_words"]), ASSIST.WAKE_WORDS_MAX)
 
+    def test_status_listen_switch(self):
+        # Firmware v0.9.4: the chosen word stays while listening is off.
+        status = ASSIST.parse_status(json.dumps({
+            "v": 1, "state": "idle", "wake_words": ["okay_nabu", "alexa"],
+            "active_wake_words": [], "chosen_wake_words": ["alexa", "hey_jarvis"],
+            "wake_listen": False}))
+        self.assertEqual((status["chosen_wake_words"], status["wake_listen"]), (["alexa"], False))
+        self.assertEqual(ASSIST.wake_choice(status), (["alexa"], False))
+        # Older firmware reports only the active word: that word is the choice.
+        old = ASSIST.parse_status(json.dumps({
+            "v": 1, "state": "idle", "wake_words": ["okay_nabu"],
+            "active_wake_words": ["okay_nabu"]}))
+        self.assertEqual((old["chosen_wake_words"], old["wake_listen"]), (None, None))
+        self.assertEqual(ASSIST.wake_choice(old), (["okay_nabu"], True))
+        old_off = ASSIST.parse_status(json.dumps({
+            "v": 1, "state": "idle", "wake_words": ["okay_nabu"], "active_wake_words": []}))
+        self.assertEqual(ASSIST.wake_choice(old_off), ([], False))
+        self.assertIsNone(ASSIST.wake_choice(ASSIST.parse_status(
+            json.dumps({"v": 1, "state": "idle"}))))
+        bad = ASSIST.parse_status(json.dumps({
+            "v": 1, "state": "idle", "wake_words": ["okay_nabu"], "active_wake_words": [],
+            "chosen_wake_words": "alexa", "wake_listen": "yes"}))
+        self.assertEqual((bad["chosen_wake_words"], bad["wake_listen"]), (None, None))
+        self.assertEqual(ASSIST.assist_listen_switch_unique_id("mac"), "mac_assist_wake_listen")
+
     def test_mic_command_and_status(self):
         self.assertEqual(json.loads(ASSIST.build_mic_command(False)),
                          {"v": 1, "op": "mic", "enabled": False})
@@ -156,6 +183,14 @@ class AssistContractTest(unittest.TestCase):
         for bad in (None, "okay_nabu", ["Okay Nabu"], [""], [1], ["okay_nabu", "alexa"]):
             with self.assertRaises(ValueError):
                 ASSIST.build_wake_words_command(bad)
+        # The listen switch: "listen" only when given.
+        self.assertEqual(json.loads(ASSIST.build_wake_words_command(["alexa"], listen=False)),
+                         {"v": 1, "op": "wake_words", "active": ["alexa"], "listen": False})
+        self.assertEqual(json.loads(ASSIST.build_wake_words_command([], True)),
+                         {"v": 1, "op": "wake_words", "active": [], "listen": True})
+        for bad in ("yes", 1):
+            with self.assertRaises(ValueError):
+                ASSIST.build_wake_words_command([], listen=bad)
 
     def test_wake_word_names(self):
         self.assertEqual(ASSIST.wake_word_info("okay_nabu"), ("Okay Nabu", ["en"]))
@@ -237,8 +272,10 @@ class AssistContractTest(unittest.TestCase):
             self.assertIn("name", data["entity"]["assist_satellite"]["assist"], name)
             self.assertIn("name", data["entity"]["button"]["assist"], name)
             selects = data["entity"]["select"]
-            self.assertTrue({"off", *ASSIST.KNOWN_WAKE_WORDS} <= set(selects["wake_word"]["state"]),
-                            name)
+            # Only words: the Listening switch turns listening off.
+            self.assertEqual(set(ASSIST.KNOWN_WAKE_WORDS), set(selects["wake_word"]["state"]),
+                             name)
+            self.assertIn("name", data["entity"]["switch"]["wake_listen"], name)
             self.assertEqual(set(selects["pipeline"]["state"]), {"preferred"}, name)
             self.assertEqual(set(selects["vad_sensitivity"]["state"]),
                              {"default", "aggressive", "relaxed"}, name)
@@ -274,7 +311,7 @@ class AssistSelectsTest(unittest.IsolatedAsyncioTestCase):
             "Tab5SleepSelect": lambda *args: "sleep",
             "HomeTilesViewSelect": lambda *args: "view",
             "HomeTilesWakeWordSelect": lambda *args: "wake_word",
-            "TOPIC_SLEEP_MAINS": "sleep_mains", "TOPIC_SLEEP_BATTERY": "sleep_battery",
+            "TOPIC_SLEEP_MAINS": "sleep_mains",
         }
         tree = ast.parse((ROOT / "select.py").read_text(encoding="utf-8"))
         names = {"async_setup_entry", "_assist_selects"}
@@ -298,16 +335,16 @@ class AssistSelectsTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_selects_only_with_microphone(self):
         _, created, _, _ = await self.created({})
-        self.assertEqual(created, ["sleep", "sleep"])
+        self.assertEqual(created, ["sleep"])
 
     async def test_no_selects_without_assist_pipeline(self):
         _, created, _, _ = await self.created({"audio_input": True}, components=())
-        self.assertEqual(created, ["sleep", "sleep", "wake_word"])
+        self.assertEqual(created, ["sleep", "wake_word"])
 
     async def test_selects_join_the_panel_device(self):
         hass, created, PipelineSelect, VadSelect = await self.created({"audio_input": True})
-        self.assertEqual(created[2], "wake_word")
-        pipeline, vad = created[3:]
+        self.assertEqual(created[1], "wake_word")
+        pipeline, vad = created[2:]
         self.assertIsInstance(pipeline, PipelineSelect)
         self.assertEqual(pipeline.args, (hass, "tab5_lvgl", "mac_assist"))
         self.assertIsInstance(vad, VadSelect)
@@ -318,7 +355,7 @@ class AssistSelectsTest(unittest.IsolatedAsyncioTestCase):
 
 
 class WakeWordSelectTest(unittest.IsolatedAsyncioTestCase):
-    """The Wake word select mirrors the panel status and sets it via the satellite."""
+    """The Wake word select lists only words; the Listening switch turns listening off."""
 
     def make(self):
         class Entity:
@@ -334,14 +371,12 @@ class WakeWordSelectTest(unittest.IsolatedAsyncioTestCase):
                  "ASSIST_SATELLITES_KEY": ASSIST.ASSIST_SATELLITES_KEY,
                  "assist_status_topic": ASSIST.assist_status_topic,
                  "assist_wake_word_select_unique_id": ASSIST.assist_wake_word_select_unique_id,
-                 "parse_status": ASSIST.parse_status,
+                 "parse_status": ASSIST.parse_status, "wake_choice": ASSIST.wake_choice,
                  "entry_device_info": lambda entry: {}, "entry_device_id": lambda entry: "mac",
                  "ConfigEntry": object}
         tree = ast.parse((ROOT / "select.py").read_text(encoding="utf-8"))
         body = [node for node in tree.body
-                if getattr(node, "name", None) == "HomeTilesWakeWordSelect"
-                or (isinstance(node, ast.Assign) and any(
-                    getattr(t, "id", None) == "WAKE_WORD_OFF" for t in node.targets))]
+                if getattr(node, "name", None) == "HomeTilesWakeWordSelect"]
         exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])),
                      "select.py", "exec"), scope)
         select = scope["HomeTilesWakeWordSelect"](types.SimpleNamespace(entry_id="e1"), BASE)
@@ -349,8 +384,9 @@ class WakeWordSelectTest(unittest.IsolatedAsyncioTestCase):
         return select, written
 
     def status(self, **fields):
-        payload = {"v": 1, "state": "idle", "wake_words": ["okay_nabu"],
-                   "active_wake_words": []}
+        payload = {"v": 1, "state": "idle", "wake_words": ["okay_nabu", "alexa"],
+                   "active_wake_words": [], "chosen_wake_words": ["okay_nabu"],
+                   "wake_listen": False}
         payload.update(fields)
         return json.dumps(payload)
 
@@ -361,13 +397,25 @@ class WakeWordSelectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(select.current_option)
         self.assertTrue(select.apply_status(self.status()))
         self.assertTrue(select.available)
-        self.assertEqual(select.options, ["okay_nabu", "off"])
-        self.assertEqual(select.current_option, "off")
-        self.assertTrue(select.apply_status(self.status(active_wake_words=["okay_nabu"])))
+        # Only words, no "off"; the chosen word shows while listening is off.
+        self.assertEqual(select.options, ["okay_nabu", "alexa"])
         self.assertEqual(select.current_option, "okay_nabu")
+        self.assertTrue(select.apply_status(self.status(chosen_wake_words=["alexa"],
+                                                        wake_listen=True,
+                                                        active_wake_words=["alexa"])))
+        self.assertEqual(select.current_option, "alexa")
         self.assertFalse(select.apply_status("not json"))
         self.assertTrue(select.apply_status(""))
         self.assertFalse(select.available)
+
+    def test_older_firmware_shows_the_active_word(self):
+        select, _ = self.make()
+        select.apply_status(json.dumps({"v": 1, "state": "idle", "wake_words": ["okay_nabu"],
+                                        "active_wake_words": ["okay_nabu"]}))
+        self.assertEqual(select.current_option, "okay_nabu")
+        select.apply_status(json.dumps({"v": 1, "state": "idle", "wake_words": ["okay_nabu"],
+                                        "active_wake_words": []}))
+        self.assertIsNone(select.current_option)
 
     async def test_select_sends_through_the_satellite(self):
         select, written = self.make()
@@ -375,17 +423,17 @@ class WakeWordSelectTest(unittest.IsolatedAsyncioTestCase):
         sent = []
 
         class Satellite:
-            async def async_set_active_wake_words(self, words):
-                sent.append(words)
+            async def async_choose_wake_word(self, word):
+                sent.append(word)
 
         select.hass = types.SimpleNamespace(data={"tab5_lvgl": {
             ASSIST.ASSIST_SATELLITES_KEY: {"e1": Satellite()}}})
-        await select.async_select_option("okay_nabu")
-        await select.async_select_option("off")
-        self.assertEqual(sent, [["okay_nabu"], []])
-        self.assertEqual(written, ["okay_nabu", "off"])
-        with self.assertRaises(FakeHomeAssistantError):
-            await select.async_select_option("alexa")
+        await select.async_select_option("alexa")
+        self.assertEqual(sent, ["alexa"])
+        self.assertEqual(written, ["alexa"])
+        for bad in ("off", "hey_jarvis"):
+            with self.assertRaises(FakeHomeAssistantError):
+                await select.async_select_option(bad)
 
     async def test_select_without_satellite_fails(self):
         select, _ = self.make()
@@ -818,6 +866,35 @@ class AssistSatellitePlatformTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.mqtt.published, [])
         self.assertEqual(satellite.async_get_configuration().active_wake_words, [])
 
+    async def test_listen_switch_keeps_the_chosen_word(self):
+        satellite = await self.start()
+        await self.deliver(f"{BASE}/stat/assist", json.dumps({
+            "v": 1, "state": "idle", "wake_words": ["okay_nabu", "alexa"],
+            "active_wake_words": [], "chosen_wake_words": ["alexa"], "wake_listen": False}))
+        self.assertFalse(satellite.wake_listen)
+        await satellite.async_set_wake_listen(True)
+        self.assertEqual(satellite.async_get_configuration().active_wake_words, ["alexa"])
+        await satellite.async_set_wake_listen(False)
+        self.assertEqual(satellite.async_get_configuration().active_wake_words, [])
+        # A word chosen while listening is off stays quiet.
+        await satellite.async_choose_wake_word("okay_nabu")
+        self.assertEqual(satellite.async_get_configuration().active_wake_words, [])
+        await satellite.async_set_wake_listen(True)
+        self.assertEqual(self.assist_commands(), [
+            {"v": 1, "op": "wake_words", "active": ["alexa"], "listen": True},
+            {"v": 1, "op": "wake_words", "active": [], "listen": False},
+            {"v": 1, "op": "wake_words", "active": ["okay_nabu"], "listen": False},
+            {"v": 1, "op": "wake_words", "active": ["okay_nabu"], "listen": True}])
+        with self.assertRaises(FakeHomeAssistantError):
+            await satellite.async_choose_wake_word("hey_jarvis")
+
+    async def test_listen_switch_with_older_firmware_picks_the_first_word(self):
+        satellite = await self.start()
+        await self.announce_wake_words(("okay_nabu", "alexa"), ())
+        await satellite.async_set_wake_listen(True)
+        self.assertEqual(self.assist_commands(),
+                         [{"v": 1, "op": "wake_words", "active": ["okay_nabu"], "listen": True}])
+
     async def test_wake_word_starts_a_run_with_its_phrase(self):
         satellite = await self.start()
         await self.announce_wake_words(active=("okay_nabu",))
@@ -1178,3 +1255,81 @@ class MicrophoneSwitchTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('if enabled and not self._paired:', source)
         self.assertIn('translation_key="microphone_needs_pairing"', source)
         self.assertIn("build_mic_command(enabled)", source)
+
+
+class WakeListenSwitchTest(unittest.IsolatedAsyncioTestCase):
+    """The Listening switch mirrors the panel status and switches via the satellite."""
+
+    def make(self):
+        class Entity:
+            async def async_added_to_hass(self):
+                pass
+
+        class Category:
+            CONFIG = "config"
+
+        written = []
+        scope = {"SwitchEntity": Entity, "EntityCategory": Category,
+                 "HomeAssistantError": FakeHomeAssistantError, "DOMAIN": "tab5_lvgl",
+                 "ASSIST_SATELLITES_KEY": ASSIST.ASSIST_SATELLITES_KEY,
+                 "assist_status_topic": ASSIST.assist_status_topic,
+                 "assist_listen_switch_unique_id": ASSIST.assist_listen_switch_unique_id,
+                 "parse_assist_status": ASSIST.parse_status, "wake_choice": ASSIST.wake_choice,
+                 "entry_device_info": lambda entry: {}, "entry_device_id": lambda entry: "mac",
+                 "ConfigEntry": object}
+        tree = ast.parse((ROOT / "switch.py").read_text(encoding="utf-8"))
+        body = [node for node in tree.body
+                if getattr(node, "name", None) == "HomeTilesWakeListenSwitch"]
+        exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])),
+                     "switch.py", "exec"), scope)
+        switch = scope["HomeTilesWakeListenSwitch"](types.SimpleNamespace(entry_id="e1"), BASE)
+        switch.async_write_ha_state = lambda: written.append(switch._attr_is_on)
+        return switch, written
+
+    def test_mirrors_the_panel_status(self):
+        switch, _ = self.make()
+        self.assertEqual(switch._attr_unique_id, "mac_assist_wake_listen")
+        self.assertEqual(switch._attr_entity_category, "config")
+        self.assertFalse(switch._attr_available)
+        # Without wake words (older firmware, model failed) it stays unavailable.
+        self.assertTrue(switch.apply_status(json.dumps({"v": 1, "state": "idle"})))
+        self.assertFalse(switch._attr_available)
+        self.assertTrue(switch.apply_status(json.dumps(
+            {"v": 1, "state": "idle", "wake_words": [], "active_wake_words": []})))
+        self.assertFalse(switch._attr_available)
+        self.assertTrue(switch.apply_status(json.dumps(
+            {"v": 1, "state": "idle", "wake_words": ["okay_nabu"], "active_wake_words": [],
+             "chosen_wake_words": ["okay_nabu"], "wake_listen": False})))
+        self.assertTrue(switch._attr_available)
+        self.assertFalse(switch._attr_is_on)
+        # Older firmware: listening = an active word.
+        self.assertTrue(switch.apply_status(json.dumps(
+            {"v": 1, "state": "idle", "wake_words": ["okay_nabu"],
+             "active_wake_words": ["okay_nabu"]})))
+        self.assertTrue(switch._attr_is_on)
+        self.assertFalse(switch.apply_status("not json"))
+        self.assertTrue(switch.apply_status(""))
+        self.assertFalse(switch._attr_available)
+
+    async def test_switches_through_the_satellite(self):
+        switch, written = self.make()
+        sent = []
+
+        class Satellite:
+            async def async_set_wake_listen(self, enabled):
+                sent.append(enabled)
+
+        switch.hass = types.SimpleNamespace(data={"tab5_lvgl": {
+            ASSIST.ASSIST_SATELLITES_KEY: {"e1": Satellite()}}})
+        await switch.async_turn_on()
+        await switch.async_turn_off()
+        self.assertEqual(sent, [True, False])
+        self.assertEqual(written, [True, False])
+        switch.hass = types.SimpleNamespace(data={})
+        with self.assertRaises(FakeHomeAssistantError):
+            await switch.async_turn_on()
+
+    def test_created_with_the_microphone_switch(self):
+        source = (ROOT / "switch.py").read_text(encoding="utf-8")
+        self.assertRegex(source, r"entities\.append\(HomeTilesMicrophoneSwitch\(entry, base_topic\)\)"
+                                 r"\s*entities\.append\(HomeTilesWakeListenSwitch\(entry, base_topic\)\)")

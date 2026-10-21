@@ -184,7 +184,7 @@
   "entity": {
     "camera": {
       "local_camera": {
-        "name": "Camera"
+        "name": "Camerabeeld"
       }
     },
     "select": {
@@ -192,21 +192,7 @@
         "name": "Weergave"
       },
       "sleep_mains": {
-        "name": "Automatische slaap (netvoeding)",
-        "state": {
-          "5s": "5 s",
-          "15s": "15 s",
-          "30s": "30 s",
-          "60s": "60 s",
-          "5min": "5 min",
-          "15min": "15 min",
-          "30min": "30 min",
-          "60min": "60 min",
-          "never": "Nooit"
-        }
-      },
-      "sleep_battery": {
-        "name": "Automatische slaap (accu)",
+        "name": "Scherm-stand-by na",
         "state": {
           "5s": "5 s",
           "15s": "15 s",
@@ -222,7 +208,6 @@
       "wake_word": {
         "name": "Wekwoord",
         "state": {
-          "off": "Uit",
           "okay_nabu": "Okay Nabu",
           "hey_jarvis": "Hey Jarvis",
           "hey_mycroft": "Hey Mycroft",
@@ -251,6 +236,15 @@
       },
       "microphone": {
         "name": "Microfoon"
+      },
+      "wake_listen": {
+        "name": "Luisteren"
+      },
+      "display_rotation": {
+        "name": "Schermrotatie"
+      },
+      "display_standby": {
+        "name": "Scherm-stand-by"
       }
     },
     "binary_sensor": {
@@ -258,7 +252,7 @@
         "name": "Versleuteling"
       },
       "mqtt_connection": {
-        "name": "MQTT-verbinding"
+        "name": "Verbinding"
       }
     },
     "light": {
@@ -289,7 +283,7 @@
     },
     "button": {
       "assist": {
-        "name": "Assist"
+        "name": "Assist starten"
       }
     },
     "media_player": {

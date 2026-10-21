@@ -76,7 +76,9 @@ class SleepSelectOptionTests(unittest.TestCase):
         for name, never in (("strings.json", "Never"), ("translations/en.json", "Never"),
                             ("translations/de.json", "Nie")):
             select = _translations(name)
-            for key in ("sleep_mains", "sleep_battery"):
+            # Auto-sleep on battery was a leftover (no panel has a battery profile).
+            self.assertNotIn("sleep_battery", select, name)
+            for key in ("sleep_mains",):
                 states = select[key]["state"]
                 self.assertEqual(set(states), set(options), f"{name} {key}")
                 self.assertEqual(states["never"], never)

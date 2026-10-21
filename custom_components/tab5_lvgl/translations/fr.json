@@ -184,7 +184,7 @@
   "entity": {
     "camera": {
       "local_camera": {
-        "name": "Cam\u00e9ra"
+        "name": "Image de la cam\u00e9ra"
       }
     },
     "select": {
@@ -192,21 +192,7 @@
         "name": "Vue"
       },
       "sleep_mains": {
-        "name": "Veille auto (secteur)",
-        "state": {
-          "5s": "5 s",
-          "15s": "15 s",
-          "30s": "30 s",
-          "60s": "60 s",
-          "5min": "5 min",
-          "15min": "15 min",
-          "30min": "30 min",
-          "60min": "60 min",
-          "never": "Jamais"
-        }
-      },
-      "sleep_battery": {
-        "name": "Veille auto (batterie)",
+        "name": "Veille de l'\u00e9cran apr\u00e8s",
         "state": {
           "5s": "5 s",
           "15s": "15 s",
@@ -222,7 +208,6 @@
       "wake_word": {
         "name": "Mot d'activation",
         "state": {
-          "off": "Désactivé",
           "okay_nabu": "Okay Nabu",
           "hey_jarvis": "Hey Jarvis",
           "hey_mycroft": "Hey Mycroft",
@@ -251,6 +236,15 @@
       },
       "microphone": {
         "name": "Microphone"
+      },
+      "wake_listen": {
+        "name": "\u00c9coute"
+      },
+      "display_rotation": {
+        "name": "Rotation de l'\u00e9cran"
+      },
+      "display_standby": {
+        "name": "Veille de l'\u00e9cran"
       }
     },
     "binary_sensor": {
@@ -258,7 +252,7 @@
         "name": "Chiffrement"
       },
       "mqtt_connection": {
-        "name": "Connexion MQTT"
+        "name": "Connexion"
       }
     },
     "light": {
@@ -289,7 +283,7 @@
     },
     "button": {
       "assist": {
-        "name": "Assist"
+        "name": "Lancer Assist"
       }
     },
     "media_player": {

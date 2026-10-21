@@ -1101,9 +1101,13 @@ def _remove_stale_local_io_entities(hass: HomeAssistant, entry: ConfigEntry) -> 
       # The panel no longer announces its speaker (codec missing or older
       # firmware).
       stale.append(entity.entity_id)
-    elif (entity.domain in ("assist_satellite", "button", "select")
+    elif (entity.domain in ("assist_satellite", "button", "select", "switch")
           and stale_assist(unique_id, entity.domain, merged)):
       # The panel no longer announces its microphone.
+      stale.append(entity.entity_id)
+    elif entity.domain == "select" and unique_id.endswith("_sleep_battery"):
+      # Auto-sleep on battery was a leftover: no panel has a battery sleep
+      # profile, the firmware copies the one standby time (Bridge v0.9.4).
       stale.append(entity.entity_id)
     elif local_io_announced and (
       unique_id == legacy_temperature_id

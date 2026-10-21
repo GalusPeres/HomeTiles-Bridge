@@ -242,7 +242,8 @@ class BridgeSourceContractTest(unittest.TestCase):
             data = json.loads(path.read_text(encoding="utf-8"))
             names[path.name] = data["entity"]["camera"]["local_camera"]["name"]
         self.assertEqual(names["strings.json"], names["en.json"])
-        self.assertEqual(names["de.json"], "Kamera")
+        # The picture is "Kamerabild", the on/off switch keeps "Kamera".
+        self.assertEqual(names["de.json"], "Kamerabild")
         self.assertTrue(all(isinstance(name, str) and name.strip() for name in names.values()))
 
 

@@ -14,9 +14,11 @@ from homeassistant.helpers.entity import EntityCategory
 from . import link_mqtt as mqtt
 from .assist import (
     ASSIST_SATELLITES_KEY,
+    assist_listen_switch_unique_id,
     assist_microphone_switch_unique_id,
     assist_status_topic,
     parse_status as parse_assist_status,
+    wake_choice,
 )
 from .capabilities import merged_capabilities_data, supports
 from .command_channel import entry_pairing_key
@@ -68,16 +70,16 @@ async def async_setup_entry(
     # Same gate as the Assist satellite: the panel announced its microphone.
     if supports(merged_capabilities_data(entry), "audio_input"):
         entities.append(HomeTilesMicrophoneSwitch(entry, base_topic))
+        entities.append(HomeTilesWakeListenSwitch(entry, base_topic))
     async_add_entities(entities)
 
 
 class HomeTilesMicrophoneSwitch(SwitchEntity):
     """The panel's microphone privacy switch.
 
-    Off means the panel refuses every Assist session and runs no wake word.
-    The retained Assist status confirms every change. Turning it on from Home
-    Assistant needs the encrypted pairing; the panel's own Settings > Audio
-    page can always switch it.
+    Off means the panel refuses every Assist session and runs no wake word;
+    a new panel starts with it off. The retained Assist status confirms every
+    change. Turning it on from Home Assistant needs the encrypted pairing.
     """
 
     _attr_has_entity_name = True
@@ -148,6 +150,79 @@ class HomeTilesMicrophoneSwitch(SwitchEntity):
         await super().async_will_remove_from_hass()
 
 
+class HomeTilesWakeListenSwitch(SwitchEntity):
+    """Whether the panel listens for its wake word (off on a new panel).
+
+    The word itself is the Wake word select and stays while this is off. The
+    retained Assist status confirms every change.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "wake_listen"
+    _attr_icon = "mdi:ear-hearing"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_should_poll = False
+
+    def __init__(self, entry: ConfigEntry, base_topic: str) -> None:
+        self._entry_id = entry.entry_id
+        self._attr_device_info = entry_device_info(entry)
+        self._attr_unique_id = assist_listen_switch_unique_id(entry_device_id(entry))
+        self._base_topic = base_topic
+        self._unsubscribe = None
+        self._attr_is_on = None
+        # Firmware without wake words never reports them.
+        self._attr_available = False
+
+    def apply_status(self, payload) -> bool:
+        """Mirror the retained Assist status; False when ignored."""
+        if not payload:
+            self._attr_available = False
+            return True
+        status = parse_assist_status(payload)
+        if status is None:
+            return False
+        choice = wake_choice(status)
+        if choice is None or not status["wake_words"]:
+            self._attr_available = False
+        else:
+            self._attr_available = True
+            self._attr_is_on = choice[1]
+        return True
+
+    async def _async_set(self, enabled: bool) -> None:
+        satellite = (self.hass.data.get(DOMAIN, {})
+                     .get(ASSIST_SATELLITES_KEY, {}).get(self._entry_id))
+        if satellite is None:
+            raise HomeAssistantError(translation_domain=DOMAIN,
+                                     translation_key="assist_unavailable")
+        await satellite.async_set_wake_listen(enabled)
+        # The panel's retained status confirms it; until then show the request.
+        self._attr_is_on = enabled
+        self.async_write_ha_state()
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self._async_set(True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self._async_set(False)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        async def handle_status(msg: mqtt.ReceiveMessage) -> None:
+            if self.apply_status(msg.payload):
+                self.async_write_ha_state()
+
+        self._unsubscribe = await mqtt.async_subscribe(
+            self.hass, assist_status_topic(self._base_topic), handle_status, qos=0)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        await super().async_will_remove_from_hass()
+
+
 class HomeTilesLocalCameraSwitch(SwitchEntity):
     """Pause or resume the camera built into the panel.
 
@@ -158,6 +233,7 @@ class HomeTilesLocalCameraSwitch(SwitchEntity):
 
     _attr_has_entity_name = True
     _attr_translation_key = "local_camera"
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_icon = "mdi:camera"
     _attr_should_poll = False
 
@@ -336,7 +412,7 @@ class Tab5RotateSwitch(SwitchEntity):
     """Switch to rotate the display 180 degrees."""
 
     _attr_has_entity_name = True
-    _attr_name = "Display Rotation"
+    _attr_translation_key = "display_rotation"
     _attr_icon = "mdi:phone-rotate-portrait"
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -390,7 +466,7 @@ class Tab5DisplaySleepSwitch(SwitchEntity):
     """Switch to sleep/wake the display immediately."""
 
     _attr_has_entity_name = True
-    _attr_name = "Display Sleep"
+    _attr_translation_key = "display_standby"
     _attr_icon = "mdi:sleep"
     _attr_entity_category = EntityCategory.CONFIG
 

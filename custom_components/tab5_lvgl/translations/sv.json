@@ -184,7 +184,7 @@
   "entity": {
     "camera": {
       "local_camera": {
-        "name": "Kamera"
+        "name": "Kamerabild"
       }
     },
     "select": {
@@ -192,21 +192,7 @@
         "name": "Vy"
       },
       "sleep_mains": {
-        "name": "Automatiskt viloläge (nätström)",
-        "state": {
-          "5s": "5 s",
-          "15s": "15 s",
-          "30s": "30 s",
-          "60s": "60 s",
-          "5min": "5 min",
-          "15min": "15 min",
-          "30min": "30 min",
-          "60min": "60 min",
-          "never": "Aldrig"
-        }
-      },
-      "sleep_battery": {
-        "name": "Automatiskt viloläge (batteri)",
+        "name": "Skärmens viloläge efter",
         "state": {
           "5s": "5 s",
           "15s": "15 s",
@@ -222,7 +208,6 @@
       "wake_word": {
         "name": "Väckningsord",
         "state": {
-          "off": "Av",
           "okay_nabu": "Okay Nabu",
           "hey_jarvis": "Hey Jarvis",
           "hey_mycroft": "Hey Mycroft",
@@ -251,6 +236,15 @@
       },
       "microphone": {
         "name": "Mikrofon"
+      },
+      "wake_listen": {
+        "name": "Lyssna"
+      },
+      "display_rotation": {
+        "name": "Skärmrotation"
+      },
+      "display_standby": {
+        "name": "Skärmens viloläge"
       }
     },
     "binary_sensor": {
@@ -258,7 +252,7 @@
         "name": "Kryptering"
       },
       "mqtt_connection": {
-        "name": "MQTT-anslutning"
+        "name": "Anslutning"
       }
     },
     "light": {
@@ -289,7 +283,7 @@
     },
     "button": {
       "assist": {
-        "name": "Assist"
+        "name": "Starta Assist"
       }
     },
     "media_player": {
