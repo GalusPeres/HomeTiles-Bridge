@@ -186,7 +186,7 @@ class HomeTilesViewSelect(SelectEntity):
     @property
     def extra_state_attributes(self):
         return {"target_id": self._view.current, "display_mode": self._view.mode,
-                "view_targets": dict(self._view.targets)}
+                "view_targets": dict(self._view.shown)}
 
     async def _request_catalog(self) -> None:
         now = monotonic()
@@ -220,6 +220,7 @@ class HomeTilesViewSelect(SelectEntity):
             except (TypeError, ValueError):
                 return
             if self._view.catalog(payload):
+                self._view.publish(monotonic())
                 self.async_write_ha_state()
 
         async def handle_connected(msg: mqtt.ReceiveMessage) -> None:
@@ -237,6 +238,8 @@ class HomeTilesViewSelect(SelectEntity):
             if (self._view.online and not self._view.targets
                     and monotonic() - self._last_refresh >= 60):
                 await self._request_catalog()
+            # A list held back by the options interval (#17) shows here.
+            self._view.publish(monotonic())
             self.async_write_ha_state()
 
         for destination, handler in (

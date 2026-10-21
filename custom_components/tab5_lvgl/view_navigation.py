@@ -14,6 +14,12 @@ MAX_FULL_TARGETS_PER_PAGE = 64
 _TARGET = re.compile(r"(?:home|(?:folder|tile):[1-9][0-9]{0,4})\Z")
 _FULL_TARGET = re.compile(r"full:([1-9][0-9]{0,4})\Z")
 _SESSION = re.compile(r"[0-9a-f]{32}\Z")
+# Home Assistant warns when a select's options (its capabilities) change more
+# than 100 times an hour, and every change rewrites its entity registry. Each
+# tile added, renamed or deleted changes the list, so a backup import or a long
+# redesign passed that (#17). A new list shows at once when the shown one is
+# older than this; changes in between collect into the next one.
+OPTIONS_MIN_INTERVAL = 60.0
 
 
 class ViewNavigation:
@@ -25,9 +31,15 @@ class ViewNavigation:
         self.pages: dict[int, dict[str, str]] = {}
         self.page_count = 0
         self.targets: dict[str, str] = {}
-        # The labels of the last complete catalog. They stay while a new
-        # revision's catalog arrives (commands wait for it), so the select's
-        # options change only when the list itself changes (issue #17).
+        # The shown list: the select's options, its current option and the
+        # labels commands accept. It stays while a new revision's catalog
+        # arrives (commands wait for it) and follows the newest complete
+        # catalog through publish(), so the options change only when the list
+        # itself changes, at most once per OPTIONS_MIN_INTERVAL (issue #17).
+        # Target ids are stable, and the panel checks them against its own
+        # catalog.
+        self.shown: dict[str, str] = {}
+        self.shown_at: float | None = None
         self.options: list[str] = []
         self.current: str | None = None
         self.mode = "unknown"
@@ -120,14 +132,24 @@ class ViewNavigation:
         self.pages, self.page_count = pages, count
         if len(pages) == count and "home" in combined:
             self.targets = combined
-            self.options = list(combined.values())
+        return True
+
+    def publish(self, now: float) -> bool:
+        """Show the newest complete catalog when it differs and may change."""
+        if not self.targets or list(self.targets.items()) == list(self.shown.items()):
+            return False
+        if self.shown_at is not None and 0 <= now - self.shown_at < OPTIONS_MIN_INTERVAL:
+            return False
+        self.shown = dict(self.targets)
+        self.options = list(self.shown.values())
+        self.shown_at = now
         return True
 
     def current_label(self) -> str | None:
         """The shown view's option; a full screen not listed shows its tile."""
-        label = self.targets.get(self.current)
+        label = self.shown.get(self.current)
         if label is None and self.current is not None and self.current.startswith("full:"):
-            label = self.targets.get("tile:" + self.current[5:])
+            label = self.shown.get("tile:" + self.current[5:])
         return label
 
     def available(self, now: float) -> bool:
@@ -137,8 +159,9 @@ class ViewNavigation:
     def command(self, option: str, now: float) -> dict[str, Any]:
         if not self.available(now):
             raise ValueError("view_unavailable")
-        target = next((key for key, label in self.targets.items() if label == option), None)
-        if target is None:
+        target = next((key for key, label in self.shown.items() if label == option), None)
+        # A target deleted since the shown list was published is gone.
+        if target is None or target not in self.targets:
             raise ValueError("invalid_view")
         self.sequence += 1
         if self.sequence >= 2**32:
