@@ -50,7 +50,7 @@ FAILING_FFMPEG = textwrap.dedent("""
 
 
 def fake_command(script, *args):
-    def command(binary, url, rate, start_ms=0):
+    def command(binary, url, rate, start_ms=0, live=False):
         return [sys.executable, "-c", script, *map(str, args)]
     return command
 
@@ -84,6 +84,33 @@ class ContractTest(unittest.TestCase):
         seek = AUDIO.ffmpeg_audio_command("ffmpeg", URL, 22050, 90500)
         self.assertEqual(seek[seek.index("-ss") + 1], "90.500")
         self.assertLess(seek.index("-ss"), seek.index("-i"))
+
+    def test_camera_sound_command(self):
+        rtsp = "rtsp://user:pw@192.168.1.9:554/stream1"
+        command = AUDIO.ffmpeg_audio_command("ffmpeg", rtsp, 22050, live=True)
+        # A camera's RTSP source like the picture reads it, sound only.
+        self.assertEqual(command[command.index("-rtsp_transport") + 1], "tcp")
+        self.assertIn("rtsp", command[command.index("-protocol_whitelist") + 1].split(","))
+        self.assertNotIn("file", command[command.index("-protocol_whitelist") + 1].split(","))
+        self.assertEqual(command[command.index("-flush_packets") + 1], "1")
+        self.assertEqual(command[command.index("-map") + 1], "0:a:0")
+        # A clip from a service call never reads RTSP.
+        clip = AUDIO.ffmpeg_audio_command("ffmpeg", rtsp, 22050)
+        self.assertNotIn("rtsp", clip[clip.index("-protocol_whitelist") + 1].split(","))
+        probe = AUDIO.ffmpeg_probe_command("ffmpeg", rtsp)
+        self.assertEqual(probe[-5:], ["-t", "0", "-f", "null", "-"])
+
+    def test_audio_track_detection(self):
+        with_sound = (
+            "Input #0, rtsp, from 'rtsp://cam/stream1':\n"
+            "  Duration: N/A, start: 0.000000, bitrate: N/A\n"
+            "  Stream #0:0: Video: h264 (High), yuv420p, 2560x1440, 15 fps\n"
+            "  Stream #0:1: Audio: aac (LC), 16000 Hz, mono, fltp\n")
+        without = with_sound.rsplit("  Stream #0:1", 1)[0]
+        self.assertTrue(AUDIO.has_audio_stream(with_sound))
+        self.assertFalse(AUDIO.has_audio_stream(without))
+        self.assertFalse(AUDIO.has_audio_stream("    comment : Stream #0:1: Audio: x"))
+        self.assertTrue(AUDIO.has_audio_stream("  Stream #0:1[0x101](und): Audio: pcm_alaw, 8000 Hz"))
 
     def test_duration_line(self):
         parse = AUDIO.parse_duration_ms
@@ -265,6 +292,22 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(panel.format)
         self.assertIn("could not read the clip", logs.output[0])
         self.assertNotIn("authSig=x", logs.output[0])
+
+    async def test_finish_ends_a_live_clip_with_its_end_message(self):
+        # The camera closed: the panel plays out what it holds and reports the
+        # clip done, not a connection lost mid-clip.
+        session = self.manager.create_session(DEVICE, "rtsp://cam/stream1", 22050, live=True)
+        with mock.patch.object(AUDIO, "ffmpeg_audio_command",
+                               fake_command(FAKE_FFMPEG, 10_000_000)):
+            panel = await self.connect(session.token)
+            await panel.hello()
+            kind, sequence, payload = await panel.message()
+            self.assertEqual(kind, AUDIO.AUDIO_MESSAGE_FORMAT)
+            await panel.ack(sequence, len(payload))
+            self.assertIs(self.manager.current(DEVICE), session)
+            self.manager.finish_device(DEVICE)
+            self.assertIsNone(self.manager.current(DEVICE))
+            self.assertEqual(await panel.play(), "end")
 
     async def test_stop_ends_a_running_clip(self):
         session = self.manager.create_session(DEVICE, URL, 44100)

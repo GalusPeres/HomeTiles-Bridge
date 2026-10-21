@@ -99,10 +99,14 @@ def _encode(payload: dict[str, Any]) -> str:
     return json.dumps(payload, separators=(",", ":"))
 
 
-def build_play_command(request_id: str, url: str) -> str:
+def build_play_command(request_id: str, url: str, live: bool = False) -> str:
+    """Play url; live (a camera's sound) keeps the panel's buffer short."""
     if not valid_request_id(request_id):
         raise ValueError("invalid_request_id")
-    return _encode({"v": AUDIO_PROTOCOL_VERSION, "op": "play", "id": request_id, "url": url})
+    payload = {"v": AUDIO_PROTOCOL_VERSION, "op": "play", "id": request_id, "url": url}
+    if live:
+        payload["live"] = True
+    return _encode(payload)
 
 
 def build_stop_command() -> str:

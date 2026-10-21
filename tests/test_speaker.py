@@ -36,6 +36,9 @@ class SpeakerContractTest(unittest.TestCase):
                          {"v": 1, "op": "play", "id": ID, "url": "http://ha:8123/a.mp3"})
         with self.assertRaises(ValueError):
             SPEAKER.build_play_command("XYZ", "http://ha/a.mp3")
+        # A camera's sound: the panel keeps its buffer short.
+        self.assertEqual(json.loads(SPEAKER.build_play_command(ID, "tcp://ha:8124/t", live=True)),
+                         {"v": 1, "op": "play", "id": ID, "url": "tcp://ha:8124/t", "live": True})
         self.assertEqual(json.loads(SPEAKER.build_stop_command()), {"v": 1, "op": "stop"})
         self.assertEqual(json.loads(SPEAKER.build_volume_command(0.256)),
                          {"v": 1, "op": "volume", "volume": 0.256})

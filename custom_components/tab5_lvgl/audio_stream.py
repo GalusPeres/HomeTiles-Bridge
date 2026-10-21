@@ -9,6 +9,11 @@ The panel acknowledges a block once it lies in its PSRAM buffer, so at most
 internal network memory whatever the clip. Firmware side:
 ``src/audio/audio_stream_contract.h``; design: ``docs-dev/audio-stream.md``.
 
+Camera sound (live): while a panel shows a camera whose stream has an audio
+track, the Bridge plays that track the same way (``live`` sessions, started
+and ended with the camera popup in ``__init__.py``); the panel keeps only a
+fraction of a second of it so the sound stays close to the picture.
+
 Messages after the hello (frame header ``>4sB3xII`` as in camera_stream.py):
 
 - type 4 format, 16 bytes ``>IHHII``: sample rate, channels (1), bits (16),
@@ -75,24 +80,74 @@ AUDIO_PROBE_TIMEOUT_SECONDS: Final = 15.0
 AUDIO_END_WAIT_SECONDS: Final = 30.0
 # FFmpeg reads only network inputs: a playlist cannot point it at local files.
 AUDIO_FFMPEG_PROTOCOLS: Final = "http,https,tcp,tls,crypto"
+# A camera's stream source (Home Assistant's camera entity, not a service
+# call) may also be RTSP.
+AUDIO_FFMPEG_LIVE_PROTOCOLS: Final = "rtsp,rtsps,rtp,srtp,udp,tcp,tls,http,https,crypto"
+# How long the Bridge waits for FFmpeg to describe a camera's stream.
+AUDIO_CAMERA_PROBE_TIMEOUT_SECONDS: Final = 10.0
 
 _DURATION_RE = re.compile(r"^\s*Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)")
+_AUDIO_STREAM_RE = re.compile(r"^\s*Stream #\d+:\d+.*: Audio: ")
 _QUERY_RE = re.compile(r"\?[^\s'\"]*")
 
 
-def ffmpeg_audio_command(binary: str, url: str, rate: int, start_ms: int = 0) -> list[str]:
+def _live_input_options(url: str) -> list[str]:
+    """A camera's stream as the picture reads it (camera_stream.py), sound only."""
+    options = ["-protocol_whitelist", AUDIO_FFMPEG_LIVE_PROTOCOLS]
+    if url.lower().startswith("rtsp"):
+        options += ["-rtsp_transport", "tcp", "-fflags", "nobuffer", "-timeout", "5000000"]
+    return options
+
+
+def ffmpeg_audio_command(binary: str, url: str, rate: int, start_ms: int = 0,
+                         live: bool = False) -> list[str]:
     """FFmpeg reading url from start_ms and writing mono 16-bit PCM at rate."""
-    command = [
-        binary, "-hide_banner", "-nostdin", "-nostats", "-loglevel", "info",
-        "-protocol_whitelist", AUDIO_FFMPEG_PROTOCOLS,
-    ]
+    command = [binary, "-hide_banner", "-nostdin", "-nostats", "-loglevel", "info"]
+    if live:
+        command += _live_input_options(url)
+    else:
+        command += ["-protocol_whitelist", AUDIO_FFMPEG_PROTOCOLS]
     if start_ms > 0:
         command += ["-ss", f"{start_ms / 1000:.3f}"]
     command += [
         "-i", url, "-map", "0:a:0", "-vn", "-sn", "-dn",
-        "-ac", "1", "-ar", str(rate), "-c:a", "pcm_s16le", "-f", "s16le", "pipe:1",
+        "-ac", "1", "-ar", str(rate), "-c:a", "pcm_s16le",
     ]
+    if live:
+        # Each packet as soon as it is decoded: the panel keeps little.
+        command += ["-flush_packets", "1"]
+    command += ["-f", "s16le", "pipe:1"]
     return command
+
+
+def ffmpeg_probe_command(binary: str, url: str) -> list[str]:
+    """FFmpeg describing a camera's stream without decoding it."""
+    return [binary, "-hide_banner", "-nostdin", "-nostats", "-loglevel", "info",
+            *_live_input_options(url), "-i", url, "-t", "0", "-f", "null", "-"]
+
+
+def has_audio_stream(log: str) -> bool:
+    """Whether FFmpeg's description of an input names an audio stream."""
+    return any(_AUDIO_STREAM_RE.match(line) for line in log.splitlines())
+
+
+async def async_has_audio(binary: str, url: str,
+                          timeout: float = AUDIO_CAMERA_PROBE_TIMEOUT_SECONDS) -> bool:
+    """Whether a camera's stream carries sound; False when it cannot be read."""
+    process = await asyncio.create_subprocess_exec(
+        *ffmpeg_probe_command(binary, url),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
+    except TimeoutError:
+        with suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
+        return False
+    return has_audio_stream(stderr.decode("utf-8", errors="replace"))
 
 
 def parse_duration_ms(line: str) -> int | None:
@@ -132,6 +187,10 @@ class AudioStreamSession:
     expires_at: float
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     paused: bool = False
+    # A camera's sound: no end of its own, kept short on the panel.
+    live: bool = False
+    # finish_device ended FFmpeg; the panel plays out what it has.
+    finishing: bool = False
     # Set while the connection runs, so a stop ends it at once.
     process: Any = None
     writer: Any = None
@@ -155,7 +214,7 @@ class AudioStreamManager:
         return get_ffmpeg_manager(self.hass).binary
 
     def create_session(self, device_id: str, url: str, rate: int,
-                       start_ms: int = 0) -> AudioStreamSession:
+                       start_ms: int = 0, live: bool = False) -> AudioStreamSession:
         """A new clip for the panel; its previous clip ends."""
         if rate not in AUDIO_RATES:
             raise ValueError("audio_invalid_rate")
@@ -168,10 +227,34 @@ class AudioStreamManager:
             rate=rate,
             start_ms=max(0, int(start_ms)),
             expires_at=time.monotonic() + AUDIO_SESSION_TTL_SECONDS,
+            live=live,
         )
         self._sessions[session.token] = session
         self._current[device_id] = session
         return session
+
+    def current(self, device_id: str) -> AudioStreamSession | None:
+        """The panel's newest clip, pending or streaming, unless it is ending."""
+        session = self._current.get(device_id)
+        return None if session is None or session.finishing else session
+
+    def finish_device(self, device_id: str) -> None:
+        """End the panel's clip gently: FFmpeg stops, the end message follows.
+
+        The panel plays out what it holds and reports the clip done, instead
+        of a connection lost mid-clip.
+        """
+        session = self._current.get(device_id)
+        if session is None:
+            return
+        process = session.process
+        if process is None:
+            self.stop_device(device_id)
+            return
+        session.finishing = True
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.terminate()
 
     def set_paused(self, device_id: str, paused: bool) -> None:
         session = self._current.get(device_id)
@@ -281,7 +364,7 @@ class AudioStreamConnection:
         try:
             process = await asyncio.create_subprocess_exec(
                 *ffmpeg_audio_command(self._manager.binary(), session.url, session.rate,
-                                      session.start_ms),
+                                      session.start_ms, session.live),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

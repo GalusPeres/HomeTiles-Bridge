@@ -214,6 +214,7 @@ from .media_controls import (
   build_media_control_call,
   media_control_fields,
 )
+from .audio_stream import async_has_audio
 from .camera_stream import (
   CAMERA_BRIDGE_PROTOCOL_VERSION,
   CAMERA_STREAM_FPS,
@@ -257,7 +258,13 @@ from .announcement_guard import (
 from .local_camera import is_local_camera_self_loop, local_camera_command_topic
 from . import entity_icons
 from . import entity_search
-from .speaker import audio_command_topic
+from .speaker import (
+  AUDIO_RATE_SPEECH,
+  AUDIO_STREAM_TRANSPORT,
+  audio_command_topic,
+  build_play_command,
+  new_request_id,
+)
 from .assist import assist_command_topic
 from .numeric_history import fetch_numeric_history_values
 from .request_limits import (
@@ -293,6 +300,10 @@ from .sensor_selection import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# A camera's stream source keeps its sound or silence; popup, full screen and
+# reopening within this time reuse the answer instead of asking FFmpeg again.
+CAMERA_SOUND_PROBE_CACHE_SECONDS = 600.0
 
 PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor", "camera", "media_player",
              "button"]
@@ -1583,6 +1594,11 @@ class Tab5Bridge:
     )
     self._unsub_state = None
     self._device_ip: str | None = None
+    # Camera sound (audio_stream.py): the camera whose sound is wanted, the
+    # task that starts it and whether a stream source has sound (cached).
+    self._camera_sound_entity: str | None = None
+    self._camera_sound_task: asyncio.Task | None = None
+    self._camera_sound_probes: dict[str, tuple[bool, float]] = {}
     self._unsub_connected = None
     self._unsub_ip = None
     self._unsub_scene = None
@@ -3461,11 +3477,12 @@ class Tab5Bridge:
       self.hass, audio_command_topic(self.base_topic), text, qos=0, retain=False,
     )
 
-  async def async_create_audio_stream(self, url: str, rate: int, start_ms: int = 0) -> str:
+  async def async_create_audio_stream(self, url: str, rate: int, start_ms: int = 0,
+                                      live: bool = False) -> str:
     """A clip decoded by the Bridge (audio_stream.py): the tcp:// URL for the panel.
 
     The panel connects to the camera listener with the URL's one-time token
-    and receives the clip as PCM, from start_ms on.
+    and receives the clip as PCM, from start_ms on; live is a camera's sound.
     """
     manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
     if manager is None or manager.tcp_port is None or not self.device_id:
@@ -3474,7 +3491,7 @@ class Tab5Bridge:
       source_ip = await ha_network.async_get_source_ip(self.hass, target_ip=self._device_ip)
     else:
       source_ip = await ha_network.async_get_source_ip(self.hass)
-    session = manager.audio_streams.create_session(self.device_id, url, rate, start_ms)
+    session = manager.audio_streams.create_session(self.device_id, url, rate, start_ms, live)
     return manager.stream_url(source_ip, session.token)
 
   def set_audio_stream_paused(self, paused: bool) -> None:
@@ -3488,6 +3505,71 @@ class Tab5Bridge:
     manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
     if manager is not None and self.device_id:
       manager.audio_streams.stop_device(self.device_id)
+
+  def _camera_sound_session(self, source: str | None = None):
+    """The panel's running camera sound (of source, when given), if any."""
+    manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
+    if manager is None or not self.device_id:
+      return None
+    session = manager.audio_streams.current(self.device_id)
+    if session is None or not session.live or (source is not None and session.url != source):
+      return None
+    return session
+
+  def _start_camera_sound(self, entity_id: str, source: str) -> None:
+    """The camera's sound with its picture, when its stream has an audio track.
+
+    The panel announces it can play it ("audio" in its camera open). Popup
+    and full screen each send an open; a sound already running for the same
+    stream keeps running.
+    """
+    self._camera_sound_entity = entity_id
+    if self._camera_sound_session(source) is not None:
+      return
+    if self._camera_sound_task is not None:
+      self._camera_sound_task.cancel()
+    self._camera_sound_task = self.hass.async_create_background_task(
+      self._async_start_camera_sound(entity_id, source),
+      f"HomeTiles camera sound {entity_id}",
+    )
+
+  async def _async_start_camera_sound(self, entity_id: str, source: str) -> None:
+    manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
+    if manager is None:
+      return
+    now = monotonic()
+    cached = self._camera_sound_probes.get(source)
+    if cached is not None and now - cached[1] < CAMERA_SOUND_PROBE_CACHE_SECONDS:
+      has_audio = cached[0]
+    else:
+      has_audio = await async_has_audio(manager.audio_streams.binary(), source)
+      self._camera_sound_probes[source] = (has_audio, now)
+    if self._camera_sound_entity != entity_id:
+      return
+    if not has_audio:
+      # Another camera's sound must not run under this picture.
+      if self._camera_sound_session() is not None:
+        manager.audio_streams.finish_device(self.device_id)
+      _LOGGER.debug("HomeTiles camera %s has no sound", entity_id)
+      return
+    try:
+      url = await self.async_create_audio_stream(source, AUDIO_RATE_SPEECH, 0, live=True)
+    except ValueError as err:
+      _LOGGER.debug("HomeTiles camera sound for %s not started: %s", entity_id, err)
+      return
+    await self.async_publish_audio_command(
+      build_play_command(new_request_id(), url, live=True))
+    _LOGGER.info("HomeTiles camera sound for %s started on the panel", entity_id)
+
+  def _finish_camera_sound(self) -> None:
+    """The camera closed: its sound ends after what the panel still holds."""
+    self._camera_sound_entity = None
+    if self._camera_sound_task is not None:
+      self._camera_sound_task.cancel()
+      self._camera_sound_task = None
+    if self._camera_sound_session() is not None:
+      manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
+      manager.audio_streams.finish_device(self.device_id)
 
   async def async_publish_assist_command(self, text: str) -> None:
     """Start and stop commands for the panel's own microphone."""
@@ -4823,6 +4905,7 @@ class Tab5Bridge:
     manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
 
     if command in ("close", "stop"):
+      self._finish_camera_sound()
       if manager and self.device_id:
         await manager.async_stop_device(self.device_id)
       await self._async_publish_camera_status({
@@ -4927,6 +5010,10 @@ class Tab5Bridge:
         response_payload["fit"] = session.fit
       if session.jpeg_quality is not None:
         response_payload["quality"] = session.jpeg_quality
+      if parsed.get("audio") == AUDIO_STREAM_TRANSPORT and session.source:
+        self._start_camera_sound(entity_id, session.source)
+      elif self._camera_sound_session() is not None:
+        self._finish_camera_sound()
     except Exception as err:
       _LOGGER.warning("HomeTiles camera stream setup failed for %s: %s", entity_id, err)
       error_code = str(err)
