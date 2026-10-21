@@ -52,9 +52,11 @@ AUDIO_MESSAGE_END: Final = 3
 AUDIO_MESSAGE_FORMAT: Final = 4
 AUDIO_HELLO_ACCEPTED: Final = 0
 AUDIO_HELLO_UNKNOWN_TOKEN: Final = 1
-# Two 8 KB blocks in flight: 16 KB of the panel's internal network memory,
-# 0.19 s of music, far more than the Wi-Fi round trip needs.
-AUDIO_STREAM_CHUNK_BYTES: Final = 8 * 1024
+# Two 4 KB blocks in flight: 8 KB of the panel's internal network memory,
+# 0.09 s of music, far more than the Wi-Fi round trip needs. With 8 KB blocks
+# (b8) a playing V2 had about 30 KB less free internal RAM, its I2S buffers
+# included; each block in flight takes more room there than its payload.
+AUDIO_STREAM_CHUNK_BYTES: Final = 4 * 1024
 AUDIO_STREAM_WINDOW: Final = 2
 AUDIO_RATES: Final = frozenset({AUDIO_RATE_MUSIC, AUDIO_RATE_SPEECH})
 # A panel connects right after the play command; an unused token expires.

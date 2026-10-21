@@ -4,7 +4,7 @@ b501 let the panel download and decode every clip itself. While a song
 played, the download filled the TCP window and 64 KB waited in the panel's
 internal RAM for the whole song (free internal RAM 168 -> 80 KB on a V2); the
 UI and the link slowed down. The Bridge now decodes with FFmpeg and sends PCM
-over the camera's acknowledged transport: never more than two 8 KB blocks are
+over the camera's acknowledged transport: never more than two 4 KB blocks are
 unacknowledged, whatever the clip.
 """
 
@@ -68,7 +68,7 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(AUDIO.AUDIO_STREAM_ACK_MAGIC, constants["CAMERA_STREAM_ACK_MAGIC"].value)
         self.assertEqual(AUDIO.AUDIO_STREAM_FORMAT_STRUCT.size, 16)
         # The panel's internal network memory holds at most this much.
-        self.assertEqual(AUDIO.AUDIO_STREAM_CHUNK_BYTES * AUDIO.AUDIO_STREAM_WINDOW, 16 * 1024)
+        self.assertEqual(AUDIO.AUDIO_STREAM_CHUNK_BYTES * AUDIO.AUDIO_STREAM_WINDOW, 8 * 1024)
 
     def test_ffmpeg_command(self):
         command = AUDIO.ffmpeg_audio_command("ffmpeg", URL, 44100)
@@ -228,7 +228,7 @@ class StreamTest(unittest.IsolatedAsyncioTestCase):
         session = self.manager.create_session(DEVICE, URL, 22050, 1500)
         with mock.patch.object(AUDIO, "ffmpeg_audio_command", fake_command(FAKE_FFMPEG, 50001)):
             panel = await self.connect(session.token)
-            self.assertEqual(await panel.hello(), (0, 8192))
+            self.assertEqual(await panel.hello(), (0, 4096))
             self.assertEqual(await panel.play(), "end")
         # Rate, mono, 16 bit, stream position and the clip's length.
         self.assertEqual(panel.format, (22050, 1, 16, 1500, 162120))
