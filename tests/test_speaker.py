@@ -63,7 +63,19 @@ class SpeakerContractTest(unittest.TestCase):
         parsed = SPEAKER.parse_status(json.dumps(status()))
         self.assertEqual(parsed, {"state": "idle", "volume": 0.5, "muted": False,
                                   "max_bytes": 4194304, "formats": ["mp3", "wav"],
-                                  "id": None, "error": None})
+                                  "id": None, "error": None, "pausable": False,
+                                  "position_ms": None, "duration_ms": None})
+        # Firmware v0.9.4: pause, position and length.
+        parsed = SPEAKER.parse_status(json.dumps(status(
+            state="paused", pausable=True, position_ms=61500, duration_ms=213000)))
+        self.assertEqual((parsed["state"], parsed["pausable"], parsed["position_ms"],
+                          parsed["duration_ms"]), ("paused", True, 61500, 213000))
+        for bad in ({"position_ms": -1}, {"position_ms": "5"}, {"duration_ms": 1.5},
+                    {"position_ms": True}, {"duration_ms": 0}, {"pausable": 1}):
+            parsed = SPEAKER.parse_status(json.dumps(status(state="playing", **bad)))
+            self.assertIsNone(parsed["duration_ms"], bad)
+            self.assertIsNone(parsed["position_ms"], bad)
+            self.assertFalse(parsed["pausable"], bad)
         parsed = SPEAKER.parse_status(json.dumps(status(
             state="playing", volume=1, id=ID, error="https_unsupported")).encode())
         self.assertEqual((parsed["state"], parsed["volume"], parsed["id"], parsed["error"]),
@@ -72,7 +84,7 @@ class SpeakerContractTest(unittest.TestCase):
         self.assertEqual(SPEAKER.parse_status(json.dumps(status(error="new_code")))["error"],
                          "unknown")
         self.assertIsNone(SPEAKER.parse_status(json.dumps(status(id="bad")))["id"])
-        for bad in (status(v=2), status(state="paused"), status(volume="x"),
+        for bad in (status(v=2), status(state="stopped"), status(volume="x"),
                     status(volume=True), status(muted=1), status(max_bytes=0),
                     status(formats="mp3")):
             self.assertIsNone(SPEAKER.parse_status(json.dumps(bad)), bad)
@@ -168,6 +180,8 @@ class Feature:
     VOLUME_MUTE = 16
     BROWSE_MEDIA = 32
     MEDIA_ANNOUNCE = 64
+    PAUSE = 128
+    PLAY = 256
 
 
 def fake_process_url(hass, media_id):
@@ -188,7 +202,8 @@ def load_media_player_module(fake_mqtt, fake_media_source):
     media_player.MediaPlayerEntity = FakeMediaPlayerEntity
     media_player.MediaPlayerEntityFeature = Feature
     media_player.MediaPlayerDeviceClass = types.SimpleNamespace(SPEAKER="speaker")
-    media_player.MediaPlayerState = types.SimpleNamespace(PLAYING="playing", IDLE="idle")
+    media_player.MediaPlayerState = types.SimpleNamespace(PLAYING="playing", IDLE="idle",
+                                                          PAUSED="paused")
     media_player.async_process_play_media_url = fake_process_url
     config_entries = types.ModuleType("homeassistant.config_entries")
     config_entries.ConfigEntry = object
@@ -198,6 +213,8 @@ def load_media_player_module(fake_mqtt, fake_media_source):
     exceptions = types.ModuleType("homeassistant.exceptions")
     exceptions.HomeAssistantError = FakeHomeAssistantError
     helpers = types.ModuleType("homeassistant.helpers")
+    util = types.ModuleType("homeassistant.util")
+    util.dt = types.SimpleNamespace(utcnow=lambda: "now")
     device_registry = types.ModuleType("homeassistant.helpers.device_registry")
     device_registry.DeviceInfo = dict
     stubs = {
@@ -212,6 +229,7 @@ def load_media_player_module(fake_mqtt, fake_media_source):
         "homeassistant.exceptions": exceptions,
         "homeassistant.helpers": helpers,
         "homeassistant.helpers.device_registry": device_registry,
+        "homeassistant.util": util,
     }
     with mock.patch.dict(sys.modules, stubs):
         return importlib.import_module(f"{package_name}.media_player")
@@ -271,7 +289,8 @@ class MediaPlayerPlatformTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player._attr_translation_key, "speaker")
         self.assertTrue(player._attr_has_entity_name)
         self.assertEqual(player._attr_device_class, "speaker")
-        self.assertEqual(player._attr_supported_features, 127)
+        # Pause and play only once the panel reports that it can pause.
+        self.assertEqual(player.supported_features, 127)
 
     async def test_state_follows_status_and_connection(self):
         player = await self.start()
@@ -310,6 +329,53 @@ class MediaPlayerPlatformTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["url"], "http://192.168.1.2:8123/api/tts_proxy/abc.mp3?authSig=x")
         self.assertTrue(SPEAKER.valid_request_id(payload["id"]))
         self.assertEqual(player._last_request_id, payload["id"])
+
+    async def test_player_bar_title_position_pause(self):
+        player = await self.start()
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status()))
+        self.assertEqual(player.supported_features, 127)
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status(pausable=True)))
+        self.assertEqual(player.supported_features, 127 | 128 | 256)
+        await player.async_play_media(
+            "music", "media-source://media_source/local/sounds/T%C3%BCrgong.mp3")
+        request_id = self.mqtt.published[-1][1]["id"]
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status(
+            state="playing", pausable=True, id=request_id, position_ms=0)))
+        self.assertEqual(player._attr_media_title, "T\u00fcrgong")
+        self.assertEqual((player._attr_media_position, player._attr_media_duration), (0, None))
+        self.assertEqual(player._attr_media_position_updated_at, "now")
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status(
+            state="playing", pausable=True, id=request_id, position_ms=120,
+            duration_ms=213400)))
+        self.assertEqual(player._attr_media_duration, 213)
+        await player.async_media_pause()
+        await player.async_media_play()
+        self.assertEqual([p for _, p, _, _ in self.mqtt.published[-2:]],
+                         [{"v": 1, "op": "pause"}, {"v": 1, "op": "resume"}])
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status(
+            state="paused", pausable=True, id=request_id, position_ms=61500,
+            duration_ms=213400)))
+        self.assertEqual((player._attr_state, player._attr_media_position), ("paused", 61))
+        # Another clip (an Assist answer) shows no title; idle clears everything.
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status(
+            state="playing", pausable=True, id="f" * 16, position_ms=0)))
+        self.assertIsNone(player._attr_media_title)
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status(pausable=True)))
+        self.assertEqual(player._attr_state, "idle")
+        self.assertIsNone(player._attr_media_position)
+        self.assertIsNone(player._attr_media_duration)
+        self.assertIsNone(player._attr_media_title)
+
+    def test_media_title(self):
+        title = SPEAKER.media_title
+        self.assertEqual(title("media-source://media_source/local/sounds/dong.mp3"), "dong")
+        self.assertEqual(title("media-source://tts/cloud?message=Hallo+Welt&language=de"),
+                         "Hallo Welt")
+        self.assertEqual(title("http://ha/x.mp3", {"title": " Song A "}), "Song A")
+        self.assertEqual(title("http://ha/x.mp3", {"title": ""}), "x")
+        self.assertIsNone(title("http://ha/"))
+        self.assertIsNone(title(None))
+        self.assertEqual(len(title("http://ha/" + "a" * 400 + ".mp3")), 255)
 
     async def test_play_sends_https_urls(self):
         player = await self.start()

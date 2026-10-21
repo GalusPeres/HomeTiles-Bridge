@@ -7,17 +7,19 @@ is ``src/audio/speaker_contract.h`` in the firmware.
 MQTT contract (base = the panel base topic):
 - ``{base}/cmnd/audio``: Bridge to panel, not retained, JSON
   ``{"v": 1, "op": "play", "id": "<hex>", "url": "http(s)://..."}``,
-  ``{"v": 1, "op": "stop"}``, ``{"v": 1, "op": "volume", "volume": 0.5}`` or
+  ``{"v": 1, "op": "stop"}``, ``{"v": 1, "op": "pause"}``,
+  ``{"v": 1, "op": "resume"}``, ``{"v": 1, "op": "volume", "volume": 0.5}`` or
   ``{"v": 1, "op": "mute", "muted": true}``. Sealed on the encrypted command
   channel (data name ``audio``) once the panel is paired, because play URLs
   carry Home Assistant's signed access tokens.
 - ``{base}/stat/audio``: panel to Bridge, retained JSON status
-  ``{"v": 1, "state": "idle"|"playing", "volume": 0.5, "muted": false,
-  "formats": ["mp3", "wav"], "max_bytes": N}`` plus ``"id"`` of the current
-  or last clip and ``"error"`` when that clip failed.
+  ``{"v": 1, "state": "idle"|"playing"|"paused", "volume": 0.5, "muted": false,
+  "formats": ["mp3", "wav"], "max_bytes": N, "pausable": true}`` plus ``"id"``
+  of the current or last clip and ``"error"`` when that clip failed. While a
+  clip plays or pauses: ``"position_ms"`` at the moment of the status and
+  ``"duration_ms"`` once the length is known (firmware from v0.9.4).
 
-The panel downloads the whole clip before playing it: short announcements,
-chimes and TTS, not endless streams.
+The panel plays while it downloads, MP3 at any sample rate and WAV.
 """
 
 from __future__ import annotations
@@ -26,13 +28,15 @@ import json
 import math
 import secrets
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 AUDIO_LEAF = "audio"
 AUDIO_PROTOCOL_VERSION = 1
 SPEAKER_UNIQUE_ID_SUFFIX = "_speaker"
 
-AUDIO_STATES = frozenset({"idle", "playing"})
+AUDIO_STATES = frozenset({"idle", "playing", "paused"})
+# Bound on a reported position or length: 100 hours.
+AUDIO_MAX_TIME_MS = 100 * 3600 * 1000
 AUDIO_ERRORS = frozenset({
     "invalid_url",
     "https_unsupported",
@@ -93,6 +97,41 @@ def build_play_command(request_id: str, url: str) -> str:
 
 def build_stop_command() -> str:
     return _encode({"v": AUDIO_PROTOCOL_VERSION, "op": "stop"})
+
+
+def build_pause_command(paused: bool) -> str:
+    """Pause or resume the playing clip."""
+    return _encode({"v": AUDIO_PROTOCOL_VERSION, "op": "pause" if paused else "resume"})
+
+
+def media_title(media_id: Any, extra: Any = None) -> str | None:
+    """A title for Home Assistant's player bar.
+
+    The caller's title when it sends one, the message of a TTS media source,
+    else the file name without its extension; None when nothing fits.
+    """
+    if isinstance(extra, dict):
+        title = extra.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()[:255]
+    if not isinstance(media_id, str) or not media_id:
+        return None
+    parts = urlsplit(media_id)
+    if parts.query:
+        for key, value in parse_qsl(parts.query):
+            if key == "message" and value.strip():
+                return value.strip()[:255]
+    name = unquote(parts.path.rstrip("/").rsplit("/", 1)[-1])
+    if "." in name:
+        name = name.rsplit(".", 1)[0]
+    name = name.strip()
+    return name[:255] or None
+
+
+def _time_ms(value: Any) -> int | None:
+    if type(value) is not int or not 0 <= value <= AUDIO_MAX_TIME_MS:
+        return None
+    return value
 
 
 def clamp_volume(volume: Any) -> float:
@@ -189,6 +228,10 @@ def parse_status(payload: Any) -> dict[str, Any] | None:
         "formats": [f for f in formats if f in AUDIO_FORMATS],
         "id": request_id,
         "error": error,
+        # Firmware before v0.9.4 reports neither.
+        "pausable": data.get("pausable") is True,
+        "position_ms": _time_ms(data.get("position_ms")),
+        "duration_ms": _time_ms(data.get("duration_ms")) or None,
     }
 
 

@@ -2,8 +2,10 @@
 
 Home Assistant hands the panel a URL (speaker.py); the panel downloads the
 clip and plays it, so TTS (``tts.speak``), media-source sounds and
-``media_player.play_media`` with an http URL work. Only panels that announce
-the ``audio_output`` capability get the entity.
+``media_player.play_media`` with an http URL work. A small player: title,
+position, length and pause for Home Assistant's player bar (firmware from
+v0.9.4), no queue. Only panels that announce the ``audio_output``
+capability get the entity.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from homeassistant.components.media_player import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util import dt as dt_util
 
 # MQTT calls also reach panels on the direct link (link_mqtt.py).
 from . import link_mqtt as mqtt
@@ -34,10 +37,12 @@ from .speaker import (
     async_publish_audio_command,
     audio_status_topic,
     build_mute_command,
+    build_pause_command,
     build_play_command,
     build_stop_command,
     build_volume_command,
     clamp_volume,
+    media_title,
     new_request_id,
     parse_status,
     playable_url_error,
@@ -66,7 +71,7 @@ class HomeTilesSpeaker(MediaPlayerEntity):
     _attr_translation_key = "speaker"
     _attr_should_poll = False
     _attr_device_class = MediaPlayerDeviceClass.SPEAKER
-    _attr_supported_features = (
+    _BASE_FEATURES = (
         MediaPlayerEntityFeature.PLAY_MEDIA
         | MediaPlayerEntityFeature.STOP
         | MediaPlayerEntityFeature.VOLUME_SET
@@ -86,22 +91,54 @@ class HomeTilesSpeaker(MediaPlayerEntity):
         self._status: dict | None = None
         self._panel_online: bool | None = None
         self._last_request_id: str | None = None
+        # Title of the clip this entity started, shown while that clip plays.
+        self._title: tuple[str, str | None] | None = None
         self._warnings = RateLimitedWarnings(_WARNING_INTERVAL_S)
         self._subscriptions = []
         self._attr_available = False
 
     # State ---------------------------------------------------------------
 
+    @property
+    def supported_features(self) -> MediaPlayerEntityFeature:
+        features = self._BASE_FEATURES
+        if self._status is not None and self._status["pausable"]:
+            features |= MediaPlayerEntityFeature.PAUSE | MediaPlayerEntityFeature.PLAY
+        return features
+
     def _refresh(self) -> None:
         status = self._status
         self._attr_available = self._panel_online is not False and status is not None
         if status is None:
             self._attr_state = None
+            self._clear_media()
             return
-        self._attr_state = (MediaPlayerState.PLAYING if status["state"] == "playing"
-                            else MediaPlayerState.IDLE)
+        self._attr_state = {
+            "playing": MediaPlayerState.PLAYING,
+            "paused": MediaPlayerState.PAUSED,
+        }.get(status["state"], MediaPlayerState.IDLE)
         self._attr_volume_level = status["volume"]
         self._attr_is_volume_muted = status["muted"]
+        if status["state"] == "idle":
+            self._clear_media()
+            return
+        # The panel reports the position with a status change only; Home
+        # Assistant moves it on from the update time while playing.
+        position = status["position_ms"]
+        if position is not None:
+            self._attr_media_position = position // 1000
+            self._attr_media_position_updated_at = dt_util.utcnow()
+        duration = status["duration_ms"]
+        self._attr_media_duration = duration // 1000 if duration else None
+        title = self._title
+        self._attr_media_title = (title[1] if title is not None and status["id"] == title[0]
+                                  else None)
+
+    def _clear_media(self) -> None:
+        self._attr_media_position = None
+        self._attr_media_position_updated_at = None
+        self._attr_media_duration = None
+        self._attr_media_title = None
 
     @property
     def extra_state_attributes(self):
@@ -165,6 +202,7 @@ class HomeTilesSpeaker(MediaPlayerEntity):
                                      translation_key="speaker_not_connected")
 
     async def async_play_media(self, media_type, media_id: str, **kwargs) -> None:
+        title = media_title(media_id, kwargs.get("extra"))
         if media_source.is_media_source_id(media_id):
             item = await media_source.async_resolve_media(self.hass, media_id, self.entity_id)
             media_id = item.url
@@ -179,10 +217,18 @@ class HomeTilesSpeaker(MediaPlayerEntity):
                                      translation_key=f"speaker_{error}")
         request_id = new_request_id()
         self._last_request_id = request_id
+        self._title = (request_id, title)
         await self._async_send(build_play_command(request_id, url))
 
     async def async_media_stop(self) -> None:
         await self._async_send(build_stop_command())
+
+    async def async_media_pause(self) -> None:
+        await self._async_send(build_pause_command(True))
+
+    async def async_media_play(self) -> None:
+        # Resumes the paused clip; the panel has no queue to start from.
+        await self._async_send(build_pause_command(False))
 
     async def async_set_volume_level(self, volume: float) -> None:
         level = clamp_volume(volume)
