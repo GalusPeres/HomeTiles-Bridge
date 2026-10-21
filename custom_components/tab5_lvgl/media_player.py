@@ -1,11 +1,12 @@
 """Media player entity for the speaker built into a HomeTiles panel.
 
-Home Assistant hands the panel a URL (speaker.py); the panel downloads the
-clip and plays it, so TTS (``tts.speak``), media-source sounds and
-``media_player.play_media`` with an http URL work. A small player: title,
-position, length and pause for Home Assistant's player bar (firmware from
-v0.9.4), no queue. Only panels that announce the ``audio_output``
-capability get the entity.
+TTS (``tts.speak``), media-source sounds and ``media_player.play_media``
+with an http(s) URL work. A panel that announces Bridge streams (firmware
+from b502) gets the clip from the Bridge's FFmpeg as PCM (audio_stream.py),
+any format, with seeking; older firmware downloads the URL itself
+(speaker.py). A small player: title, position, length and pause for Home
+Assistant's player bar, no queue. Only panels that announce the
+``audio_output`` capability get the entity.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ from .speaker import (
     parse_status,
     playable_url_error,
     speaker_unique_id,
+    stream_rate,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -93,6 +95,9 @@ class HomeTilesSpeaker(MediaPlayerEntity):
         self._last_request_id: str | None = None
         # Title of the clip this entity started, shown while that clip plays.
         self._title: tuple[str, str | None] | None = None
+        # (url, title, rate) of the Bridge-decoded clip this entity started,
+        # for seeking: a seek starts the same clip at the new position.
+        self._stream_clip: tuple[str, str | None, int] | None = None
         self._warnings = RateLimitedWarnings(_WARNING_INTERVAL_S)
         self._subscriptions = []
         self._attr_available = False
@@ -102,8 +107,12 @@ class HomeTilesSpeaker(MediaPlayerEntity):
     @property
     def supported_features(self) -> MediaPlayerEntityFeature:
         features = self._BASE_FEATURES
-        if self._status is not None and self._status["pausable"]:
+        status = self._status
+        if status is not None and status["pausable"]:
             features |= MediaPlayerEntityFeature.PAUSE | MediaPlayerEntityFeature.PLAY
+        if (status is not None and status["stream"] and status["duration_ms"]
+                and self._stream_clip is not None):
+            features |= MediaPlayerEntityFeature.SEEK
         return features
 
     def _refresh(self) -> None:
@@ -190,13 +199,15 @@ class HomeTilesSpeaker(MediaPlayerEntity):
 
     # Commands ------------------------------------------------------------
 
-    async def _async_send(self, payload: str) -> None:
-        # Commands, never retained state; sealed when the panel is paired.
+    def _bridge(self):
         data = getattr(self.hass, "data", None)
         domain = data.get(DOMAIN, {}) if isinstance(data, dict) else {}
-        bridge = domain.get("entries", {}).get(self._entry_id)
+        return domain.get("entries", {}).get(self._entry_id)
+
+    async def _async_send(self, payload: str) -> None:
+        # Commands, never retained state; sealed when the panel is paired.
         sent = await async_publish_audio_command(
-            self.hass, bridge, self._paired, self._base, payload, mqtt.async_publish)
+            self.hass, self._bridge(), self._paired, self._base, payload, mqtt.async_publish)
         if not sent:
             raise HomeAssistantError(translation_domain=DOMAIN,
                                      translation_key="speaker_not_connected")
@@ -215,20 +226,53 @@ class HomeTilesSpeaker(MediaPlayerEntity):
         if error is not None:
             raise HomeAssistantError(translation_domain=DOMAIN,
                                      translation_key=f"speaker_{error}")
+        await self._async_start(url, title, stream_rate(media_id, kwargs.get("announce")), 0)
+
+    async def _async_start(self, url: str, title: str | None, rate: int, start_ms: int) -> None:
+        """Play url from start_ms: decoded by the Bridge when the panel takes it."""
+        bridge = self._bridge()
+        create_stream = getattr(bridge, "async_create_audio_stream", None)
+        play_url = url
+        self._stream_clip = None
+        if self._status is not None and self._status["stream"] and create_stream is not None:
+            try:
+                play_url = await create_stream(url, rate, start_ms)
+                self._stream_clip = (url, title, rate)
+            except ValueError as err:
+                # No camera listener: the panel downloads the clip itself.
+                _LOGGER.debug("HomeTiles speaker on %s plays without the Bridge stream: %s",
+                              self._base, err)
         request_id = new_request_id()
         self._last_request_id = request_id
         self._title = (request_id, title)
-        await self._async_send(build_play_command(request_id, url))
+        await self._async_send(build_play_command(request_id, play_url))
+
+    def _bridge_call(self, name: str, *args) -> None:
+        method = getattr(self._bridge(), name, None)
+        if method is not None:
+            method(*args)
 
     async def async_media_stop(self) -> None:
         await self._async_send(build_stop_command())
+        self._stream_clip = None
+        self._bridge_call("stop_audio_stream")
 
     async def async_media_pause(self) -> None:
         await self._async_send(build_pause_command(True))
+        self._bridge_call("set_audio_stream_paused", True)
 
     async def async_media_play(self) -> None:
         # Resumes the paused clip; the panel has no queue to start from.
         await self._async_send(build_pause_command(False))
+        self._bridge_call("set_audio_stream_paused", False)
+
+    async def async_media_seek(self, position: float) -> None:
+        """Start the Bridge-decoded clip again at position (seconds)."""
+        clip = self._stream_clip
+        if clip is None:
+            return
+        url, title, rate = clip
+        await self._async_start(url, title, rate, max(0, int(position * 1000)))
 
     async def async_set_volume_level(self, volume: float) -> None:
         level = clamp_volume(volume)

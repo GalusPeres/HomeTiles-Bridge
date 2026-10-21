@@ -4,7 +4,8 @@ Tap to talk: the Bridge picks a session id, asks the panel to capture
 (assist.py), feeds the panel's PCM frames into Home Assistant's Assist
 pipeline from the speech-to-text stage, asks the panel to stop once voice
 activity ended, and plays the spoken answer on the panel's own speaker with
-the existing speaker play command (speaker.py). Only panels that announce the
+the existing speaker play command (speaker.py), decoded by the Bridge when the
+panel takes Bridge streams (audio_stream.py). Only panels that announce the
 ``audio_input`` capability get the entity.
 
 Wake word: the panel detects microWakeWord models itself and reports them on
@@ -122,6 +123,8 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
         self._tts_started = False
         self._tts_request_id: str | None = None
         self._tts_timer: asyncio.TimerHandle | None = None
+        # The panel's speaker takes Bridge-decoded clips (its retained status).
+        self._speaker_streams = False
         self._warnings = RateLimitedWarnings(_WARNING_INTERVAL_S)
         self._subscriptions = []
         self._attr_available = True
@@ -236,9 +239,13 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
             self.async_write_ha_state()
 
         async def handle_speaker_status(msg: mqtt.ReceiveMessage) -> None:
-            if self._tts_request_id is None or not msg.payload:
+            if not msg.payload:
                 return
             status = speaker.parse_status(msg.payload)
+            if status is not None:
+                self._speaker_streams = status["stream"]
+            if self._tts_request_id is None:
+                return
             if (status is not None and status["id"] == self._tts_request_id
                     and status["state"] == "idle"):
                 if status["error"]:
@@ -482,13 +489,22 @@ class HomeTilesAssistSatellite(AssistSatelliteEntity):
         request_id = speaker.new_request_id()
         self._tts_request_id = request_id
         self._arm_tts_timer(request_id)
-        self.hass.async_create_task(
-            self._async_send_answer(request_id, speaker.build_play_command(request_id, url)))
+        self.hass.async_create_task(self._async_send_answer(request_id, url))
 
-    async def _async_send_answer(self, request_id: str, payload: str) -> None:
+    async def _async_send_answer(self, request_id: str, url: str) -> None:
+        bridge = self._bridge()
         try:
+            create_stream = getattr(bridge, "async_create_audio_stream", None)
+            if self._speaker_streams and create_stream is not None:
+                try:
+                    url = await create_stream(url, speaker.AUDIO_RATE_SPEECH)
+                except ValueError as err:
+                    # No camera listener: the panel downloads the answer itself.
+                    _LOGGER.debug("HomeTiles Assist answer for %s without the Bridge stream: %s",
+                                  self._base, err)
             sent = await speaker.async_publish_audio_command(
-                self.hass, self._bridge(), self._paired, self._base, payload, mqtt.async_publish)
+                self.hass, bridge, self._paired, self._base,
+                speaker.build_play_command(request_id, url), mqtt.async_publish)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("HomeTiles Assist answer for %s failed: %s", self._base, err)
             sent = False

@@ -1031,6 +1031,29 @@ class AssistSatellitePlatformTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bridge.audio[0]["url"],
                          "http://192.168.1.2:8123/api/tts_proxy/abc.mp3?authSig=x")
 
+    async def test_streaming_panel_gets_the_answer_from_the_bridge(self):
+        class StreamingBridge(SealingBridge):
+            def __init__(self):
+                super().__init__()
+                self.streams = []
+
+            async def async_create_audio_stream(self, url, rate, start_ms=0):
+                self.streams.append((url, rate, start_ms))
+                return "tcp://192.168.1.2:8124/token"
+
+        bridge = StreamingBridge()
+        satellite = await self.start(bridge=bridge)
+        # Firmware b502 announces Bridge streams in the speaker status.
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(
+            {"v": 1, "state": "idle", "volume": 0.5, "stream": "tcp-ack-v1"}))
+        await satellite.async_start_tap_to_talk()
+        await self.send_frames(bridge.assist[0]["id"], 2)
+        await asyncio.wait_for(self.pipeline_done.wait(), 1)
+        await settle()
+        self.assertEqual(bridge.streams, [
+            ("http://192.168.1.2:8123/api/tts_proxy/abc.mp3?authSig=x", 22050, 0)])
+        self.assertEqual(bridge.audio[0]["url"], "tcp://192.168.1.2:8124/token")
+
     async def test_paired_panel_without_bridge_never_gets_plaintext(self):
         satellite = await self.start()
         satellite._paired = True

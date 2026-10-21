@@ -64,7 +64,11 @@ class SpeakerContractTest(unittest.TestCase):
         self.assertEqual(parsed, {"state": "idle", "volume": 0.5, "muted": False,
                                   "max_bytes": 4194304, "formats": ["mp3", "wav"],
                                   "id": None, "error": None, "pausable": False,
-                                  "position_ms": None, "duration_ms": None})
+                                  "position_ms": None, "duration_ms": None, "stream": False})
+        # Firmware b502: Bridge-decoded clips; any other value is not that.
+        self.assertTrue(SPEAKER.parse_status(json.dumps(status(stream="tcp-ack-v1")))["stream"])
+        for other in ("tcp-ack-v2", True, 1):
+            self.assertFalse(SPEAKER.parse_status(json.dumps(status(stream=other)))["stream"])
         # Firmware v0.9.4: pause, position and length.
         parsed = SPEAKER.parse_status(json.dumps(status(
             state="paused", pausable=True, position_ms=61500, duration_ms=213000)))
@@ -92,6 +96,14 @@ class SpeakerContractTest(unittest.TestCase):
         self.assertIsNone(SPEAKER.parse_status("[]"))
         self.assertIsNone(SPEAKER.parse_status(b"\xff"))
         self.assertIsNone(SPEAKER.parse_status("{" + " " * 2000 + "}"))
+
+    def test_stream_rate(self):
+        rate = SPEAKER.stream_rate
+        self.assertEqual(rate("http://ha/song.mp3"), 44100)
+        self.assertEqual(rate("http://ha/song.mp3", announce=True), 22050)
+        self.assertEqual(rate("media-source://tts/cloud?message=hi"), 22050)
+        self.assertEqual(rate("/api/tts_proxy/abc.mp3"), 22050)
+        self.assertEqual(rate(None), 44100)
 
     def test_capability_is_never_inferred(self):
         self.assertEqual(CAPABILITIES.normalise_capabilities({"audio_output": True}),
@@ -182,6 +194,7 @@ class Feature:
     MEDIA_ANNOUNCE = 64
     PAUSE = 128
     PLAY = 256
+    SEEK = 512
 
 
 def fake_process_url(hass, media_id):
@@ -253,6 +266,26 @@ class SealingBridge:
 
     async def async_publish_audio_command(self, text):
         self.sent.append(json.loads(text))
+
+
+class StreamingBridge(SealingBridge):
+    """A Bridge whose panel takes Bridge-decoded clips (audio_stream.py)."""
+
+    def __init__(self):
+        super().__init__()
+        self.streams = []
+        self.paused = []
+        self.stopped = 0
+
+    async def async_create_audio_stream(self, url, rate, start_ms=0):
+        self.streams.append((url, rate, start_ms))
+        return f"tcp://192.168.1.2:8124/token{len(self.streams)}"
+
+    def set_audio_stream_paused(self, paused):
+        self.paused.append(paused)
+
+    def stop_audio_stream(self):
+        self.stopped += 1
 
 
 class MediaPlayerPlatformTest(unittest.IsolatedAsyncioTestCase):
@@ -417,6 +450,47 @@ class MediaPlayerPlatformTest(unittest.IsolatedAsyncioTestCase):
             await player.async_play_media("music", "http://192.168.1.2:8123/local/chime.mp3")
         self.assertEqual(raised.exception.translation_key, "speaker_not_connected")
         self.assertEqual(self.mqtt.published, [])
+
+    async def test_streaming_panel_gets_the_clip_from_the_bridge(self):
+        bridge = StreamingBridge()
+        player = await self.start(entry({"audio_output": True}), bridge=bridge)
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status(
+            pausable=True, stream="tcp-ack-v1")))
+        await player.async_play_media("music", "http://192.168.1.2:8123/local/song.mp3")
+        self.assertEqual(bridge.streams, [("http://192.168.1.2:8123/local/song.mp3", 44100, 0)])
+        self.assertEqual(bridge.sent[-1]["url"], "tcp://192.168.1.2:8124/token1")
+        request_id = bridge.sent[-1]["id"]
+        # Seek once the length is known: the same clip again from there.
+        self.assertFalse(player.supported_features & 512)
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status(
+            state="playing", pausable=True, stream="tcp-ack-v1", id=request_id,
+            position_ms=1000, duration_ms=162000)))
+        self.assertTrue(player.supported_features & 512)
+        await player.async_media_seek(90.5)
+        self.assertEqual(bridge.streams[-1], ("http://192.168.1.2:8123/local/song.mp3", 44100, 90500))
+        self.assertEqual(bridge.sent[-1]["url"], "tcp://192.168.1.2:8124/token2")
+        self.assertEqual(player._title, (bridge.sent[-1]["id"], "song"))
+        await player.async_media_pause()
+        await player.async_media_play()
+        self.assertEqual(bridge.paused, [True, False])
+        await player.async_media_stop()
+        self.assertEqual(bridge.stopped, 1)
+        # Announcements and spoken text at the speech rate.
+        await player.async_play_media("music", "media-source://tts/cloud?message=hi")
+        self.assertEqual(bridge.streams[-1][1], 22050)
+        await player.async_play_media("music", "http://ha.example/ding.mp3", announce=True)
+        self.assertEqual(bridge.streams[-1][1], 22050)
+
+    async def test_older_panel_downloads_the_url_itself(self):
+        bridge = StreamingBridge()
+        player = await self.start(entry({"audio_output": True}), bridge=bridge)
+        await self.deliver(f"{BASE}/stat/audio", json.dumps(status(pausable=True)))
+        await player.async_play_media("music", "http://192.168.1.2:8123/local/song.mp3")
+        self.assertEqual(bridge.streams, [])
+        self.assertEqual(bridge.sent[-1]["url"], "http://192.168.1.2:8123/local/song.mp3")
+        self.assertFalse(player.supported_features & 512)
+        await player.async_media_seek(10)
+        self.assertEqual(len(bridge.sent), 1)
 
     async def test_browse_filters_audio(self):
         player = await self.start()

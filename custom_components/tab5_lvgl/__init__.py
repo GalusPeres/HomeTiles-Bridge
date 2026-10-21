@@ -3461,6 +3461,34 @@ class Tab5Bridge:
       self.hass, audio_command_topic(self.base_topic), text, qos=0, retain=False,
     )
 
+  async def async_create_audio_stream(self, url: str, rate: int, start_ms: int = 0) -> str:
+    """A clip decoded by the Bridge (audio_stream.py): the tcp:// URL for the panel.
+
+    The panel connects to the camera listener with the URL's one-time token
+    and receives the clip as PCM, from start_ms on.
+    """
+    manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
+    if manager is None or manager.tcp_port is None or not self.device_id:
+      raise ValueError("audio_stream_unavailable")
+    if self._device_ip:
+      source_ip = await ha_network.async_get_source_ip(self.hass, target_ip=self._device_ip)
+    else:
+      source_ip = await ha_network.async_get_source_ip(self.hass)
+    session = manager.audio_streams.create_session(self.device_id, url, rate, start_ms)
+    return manager.stream_url(source_ip, session.token)
+
+  def set_audio_stream_paused(self, paused: bool) -> None:
+    """A paused panel acknowledges nothing; its clip may wait (audio_stream.py)."""
+    manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
+    if manager is not None and self.device_id:
+      manager.audio_streams.set_paused(self.device_id, paused)
+
+  def stop_audio_stream(self) -> None:
+    """End the panel's Bridge-decoded clip and its FFmpeg."""
+    manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
+    if manager is not None and self.device_id:
+      manager.audio_streams.stop_device(self.device_id)
+
   async def async_publish_assist_command(self, text: str) -> None:
     """Start and stop commands for the panel's own microphone."""
     channel = self._command_channel

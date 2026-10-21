@@ -17,6 +17,7 @@ from homeassistant.components.camera import async_get_image, async_get_stream_so
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.core import HomeAssistant
 
+from .audio_stream import AUDIO_STREAM_REQUEST_PREFIX, AudioStreamManager
 from .local_camera_stream import (
   LIVE_FRAME_WAIT_S,
   STREAM_FPS as LIVE_STREAM_FPS,
@@ -601,6 +602,8 @@ class CameraStreamManager:
     # Uploads from a panel's own camera share this listener (reverse
     # direction, see local_camera_stream.py).
     self.local_camera_uploads = LocalCameraUploadRegistry()
+    # Clips for the panels' speakers share it too (audio_stream.py).
+    self.audio_streams = AudioStreamManager(hass)
     # HomeTiles panel cameras with a live upload, one entry per entity.
     self._live_cameras: list[Any] = []
     # Running direct streams shared by every panel with the same camera,
@@ -762,6 +765,7 @@ class CameraStreamManager:
         with suppress(asyncio.CancelledError, Exception):
           await broadcast.task
     self.local_camera_uploads.close_all()
+    await self.audio_streams.async_shutdown()
     if self._tcp_server is not None:
       server = self._tcp_server
       self._tcp_server = None
@@ -1043,6 +1047,15 @@ class CameraStreamConnection:
         # A panel uploading its own camera; the registry validates the
         # session/token and runs the acknowledged receive loop.
         await self._manager.local_camera_uploads.async_handle_upload(
+          request,
+          reader,
+          writer,
+          peer,
+        )
+        return
+      if request.startswith(AUDIO_STREAM_REQUEST_PREFIX):
+        # A panel's speaker fetching its clip as PCM.
+        await self._manager.audio_streams.async_handle(
           request,
           reader,
           writer,

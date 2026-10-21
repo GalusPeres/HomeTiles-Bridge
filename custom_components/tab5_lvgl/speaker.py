@@ -17,9 +17,13 @@ MQTT contract (base = the panel base topic):
   "formats": ["mp3", "wav"], "max_bytes": N, "pausable": true}`` plus ``"id"``
   of the current or last clip and ``"error"`` when that clip failed. While a
   clip plays or pauses: ``"position_ms"`` at the moment of the status and
-  ``"duration_ms"`` once the length is known (firmware from v0.9.4).
+  ``"duration_ms"`` once the length is known (firmware from v0.9.4), and
+  ``"stream": "tcp-ack-v1"`` when the panel takes clips decoded by the Bridge.
 
-The panel plays while it downloads, MP3 at any sample rate and WAV.
+Such a panel gets a ``tcp://`` play URL: the Bridge's FFmpeg reads the clip
+and sends PCM over the camera transport (audio_stream.py), so the panel
+neither downloads nor decodes. Other panels download the http(s) URL
+themselves and play MP3 at any sample rate and WAV.
 """
 
 from __future__ import annotations
@@ -49,6 +53,12 @@ AUDIO_ERRORS = frozenset({
 })
 AUDIO_UNKNOWN_ERROR = "unknown"
 AUDIO_FORMATS = frozenset({"mp3", "wav"})
+# Bridge-decoded clips (audio_stream.py): the transport a panel announces and
+# the PCM rates. Music keeps its full range; speech, Assist answers and
+# announcements need no more than 22.05 kHz and halve the traffic.
+AUDIO_STREAM_TRANSPORT = "tcp-ack-v1"
+AUDIO_RATE_MUSIC = 44100
+AUDIO_RATE_SPEECH = 22050
 
 AUDIO_STATUS_MAX_PAYLOAD = 1024
 # Matches the panel's kMaxUrlLength; longer URLs are refused before sending.
@@ -126,6 +136,16 @@ def media_title(media_id: Any, extra: Any = None) -> str | None:
         name = name.rsplit(".", 1)[0]
     name = name.strip()
     return name[:255] or None
+
+
+def stream_rate(media_id: Any, announce: Any = False) -> int:
+    """The Bridge's PCM rate for a clip: speech at 22.05 kHz, music at 44.1 kHz."""
+    if announce is True:
+        return AUDIO_RATE_SPEECH
+    if isinstance(media_id, str) and (media_id.startswith("media-source://tts/")
+                                      or "/api/tts_proxy/" in media_id):
+        return AUDIO_RATE_SPEECH
+    return AUDIO_RATE_MUSIC
 
 
 def _time_ms(value: Any) -> int | None:
@@ -232,6 +252,8 @@ def parse_status(payload: Any) -> dict[str, Any] | None:
         "pausable": data.get("pausable") is True,
         "position_ms": _time_ms(data.get("position_ms")),
         "duration_ms": _time_ms(data.get("duration_ms")) or None,
+        # Firmware from b502 takes Bridge-decoded clips (audio_stream.py).
+        "stream": data.get("stream") == AUDIO_STREAM_TRANSPORT,
     }
 
 
