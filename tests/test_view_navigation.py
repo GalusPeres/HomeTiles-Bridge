@@ -43,6 +43,7 @@ class ViewNavigationTest(unittest.TestCase):
         self.view.online = True
         self.assertTrue(self.view.state(state(), 10))
         self.assertTrue(self.view.catalog(catalog()))
+        self.assertTrue(self.view.publish(10))
 
     def test_automation_camera_then_home_requires_device_feedback(self):
         command = self.view.command("Home / Room / Door [t:12]", 11)
@@ -62,6 +63,7 @@ class ViewNavigationTest(unittest.TestCase):
         full = {"id": "full:12", "label": "Home / Room / Door (Full screen) [t:12]"}
         self.assertTrue(self.view.catalog(catalog(full_targets=[full])))
         self.assertEqual(self.view.targets["full:12"], full["label"])
+        self.assertTrue(self.view.publish(100))  # a minute later (#17)
         command = self.view.command(full["label"], 11)
         self.assertEqual(command["target"], "full:12")
         # The panel reports its full screen next to the tile's target.
@@ -73,6 +75,7 @@ class ViewNavigationTest(unittest.TestCase):
         self.assertEqual(self.view.current_label(), "Home / Room / Door [t:12]")
         # A full screen without its option listed shows the tile's option.
         self.view.catalog(catalog())
+        self.assertTrue(self.view.publish(200))
         self.view.state(state(current="tile:12", mode="popup", full=True, sequence=1), 11)
         self.assertEqual(self.view.current_label(), "Home / Room / Door [t:12]")
         self.assertFalse(self.view.state(state(full="yes"), 11))
@@ -111,12 +114,61 @@ class ViewNavigationTest(unittest.TestCase):
             {"id": "home", "label": "Home"},
             {"id": "tile:12", "label": "Home / Upstairs / Door [t:12]"},
             {"id": "tile:13", "label": "Home / Upstairs / Door [t:13]"}]))
+        self.assertTrue(self.view.publish(100))
         self.assertEqual(self.view.command("Home / Upstairs / Door [t:12]", 10)["target"], "tile:12")
         with self.assertRaises(ValueError):
             self.view.command("Home / Room / Door [t:12]", 10)
         self.view.state(state(revision=3), 10)
         self.view.catalog(catalog(revision=3, targets=[{"id": "home", "label": "Home"}]))
         self.assertNotIn("tile:12", self.view.targets)
+
+    def test_options_change_only_with_the_list_and_at_most_once_a_minute(self):
+        # Issue #17: Home Assistant warns when a select's options change more
+        # than 100 times an hour, and each change rewrites its registry entry.
+        shown = list(self.view.options)
+        self.view.state(state(revision=2), 20)
+        self.assertTrue(self.view.catalog(catalog(revision=2)))
+        self.assertFalse(self.view.publish(500))  # the same list
+        self.assertEqual(self.view.shown_at, 10)
+        lamp = {"id": "tile:13", "label": "Home / Room / Lamp [t:13]"}
+        self.view.state(state(revision=3), 80)
+        self.view.catalog(catalog(revision=3, targets=catalog()["targets"] + [lamp]))
+        self.assertTrue(self.view.publish(80))  # the shown list is older than a minute
+        self.assertEqual(self.view.options, shown + [lamp["label"]])
+        renamed = {"id": "tile:13", "label": "Home / Room / Desk lamp [t:13]"}
+        self.view.state(state(revision=4), 90)
+        self.view.catalog(catalog(revision=4, targets=catalog()["targets"] + [renamed]))
+        self.assertFalse(self.view.publish(90))  # within a minute: held back
+        self.assertEqual(self.view.options, shown + [lamp["label"]])
+        self.assertEqual(self.view.current_label(), "Home")
+        # The shown labels keep working: the ids are stable, the panel checks them.
+        command = self.view.command(lamp["label"], 90)
+        self.assertEqual((command["target"], command["revision"]), ("tile:13", 4))
+        with self.assertRaises(ValueError):
+            self.view.command(renamed["label"], 90)
+        self.assertTrue(self.view.publish(140))
+        self.assertEqual(self.view.options, shown + [renamed["label"]])
+        self.assertEqual(self.view.command(renamed["label"], 100)["target"], "tile:13")
+        # A tile deleted since the shown list was published is refused.
+        self.view.state(state(revision=5), 150)
+        self.view.catalog(catalog(revision=5))
+        self.assertFalse(self.view.publish(150))
+        with self.assertRaises(ValueError):
+            self.view.command(renamed["label"], 150)
+
+    def test_backup_import_stays_below_home_assistants_limit(self):
+        # An import or a long redesign changes the list every few seconds.
+        changes, now, label = 0, 10, ""
+        for step in range(720):  # a renamed tile every 5 s for an hour
+            now += 5
+            label = f"Home / Room / Door {step} [t:12]"
+            targets = catalog()["targets"][:2] + [{"id": "tile:12", "label": label}]
+            self.view.state(state(revision=step + 2), now)
+            self.assertTrue(self.view.catalog(catalog(revision=step + 2, targets=targets)))
+            changes += self.view.publish(now)
+        self.assertLessEqual(changes, 60)
+        self.view.publish(now + 60)  # the newest list shows a minute later at most
+        self.assertEqual(self.view.options[-1], label)
 
     def test_reboot_reconnect_retained_offline_and_expired_state(self):
         self.view.state(state(session="b" * 32), 11, retained=True)
@@ -155,6 +207,10 @@ class SelectLifecycleTest(unittest.IsolatedAsyncioTestCase):
         subscriptions = {}
         removed = []
         now = [10.0]
+        timers = []
+        def track_time_interval(hass, action, interval):
+            timers.append(action)
+            return lambda: removed.append("timer")
         async def subscribe(hass, topic, callback, **kwargs):
             subscriptions[topic] = callback
             return lambda: removed.append(topic)
@@ -174,7 +230,7 @@ class SelectLifecycleTest(unittest.IsolatedAsyncioTestCase):
                  "command_topic": lambda base, leaf: f"{base}/cmnd/{leaf}",
                  "state_topic": lambda base, leaf: f"{base}/stat/{leaf}",
                  "timedelta": lambda **kwargs: kwargs,
-                 "async_track_time_interval": lambda *args: lambda: removed.append("timer")}
+                 "async_track_time_interval": track_time_interval}
         tree = ast.parse((ROOT / "select.py").read_text())
         cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "HomeTilesViewSelect")
         module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), cls], type_ignores=[])
@@ -208,6 +264,20 @@ class SelectLifecycleTest(unittest.IsolatedAsyncioTestCase):
         mqtt.async_publish.reset_mock()
         await subscriptions["panel/a/stat/view"](message(json.dumps(state(current="tile:12", mode="popup"))))
         await subscriptions["panel/a/stat/view"](message(json.dumps(state(current="folder:1"))))
+        mqtt.async_publish.assert_not_called()
+        # A changed list within a minute of the shown one waits for the
+        # select's 10 s refresh after that minute.
+        lamp = {"id": "tile:13", "label": "Home / Room / Lamp [t:13]"}
+        await subscriptions["panel/a/stat/view"](message(json.dumps(state(revision=3))))
+        await subscriptions["panel/a/view/catalog/+"](message(json.dumps(
+            catalog(revision=3, targets=catalog()["targets"] + [lamp]))))
+        self.assertTrue(entity.available)
+        self.assertEqual(entity.options, shown)
+        self.assertNotIn("tile:13", entity.extra_state_attributes["view_targets"])
+        now[0] = 75.0
+        await timers[0](None)
+        self.assertEqual(entity.options, shown + [lamp["label"]])
+        self.assertEqual(entity.extra_state_attributes["view_targets"]["tile:13"], lamp["label"])
         mqtt.async_publish.assert_not_called()
         await subscriptions["panel/a/stat/connected"](message("OFF"))
         self.assertFalse(entity.available)
