@@ -208,6 +208,23 @@
       }
     },
     "select": {
+      "display_theme": {
+        "name": "Design",
+        "state": {
+          "dark": "Dunkel",
+          "light": "Hell",
+          "auto": "Automatisch"
+        }
+      },
+      "display_rotation": {
+        "name": "Display Rotation",
+        "state": {
+          "0": "0°",
+          "90": "90°",
+          "180": "180°",
+          "270": "270°"
+        }
+      },
       "view": {
         "name": "Ansicht"
       },

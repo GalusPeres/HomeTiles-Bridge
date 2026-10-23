@@ -208,6 +208,23 @@
       }
     },
     "select": {
+      "display_theme": {
+        "name": "Theme",
+        "state": {
+          "dark": "Dark",
+          "light": "Light",
+          "auto": "Automatic"
+        }
+      },
+      "display_rotation": {
+        "name": "Display Rotation",
+        "state": {
+          "0": "0°",
+          "90": "90°",
+          "180": "180°",
+          "270": "270°"
+        }
+      },
       "view": {
         "name": "View"
       },

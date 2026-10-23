@@ -54,10 +54,11 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities
 ) -> None:
     base_topic = entry_base_topic(entry)
-    entities = [
-        Tab5RotateSwitch(entry, base_topic),
-        Tab5DisplaySleepSwitch(entry, base_topic),
-    ]
+    entities = [Tab5DisplaySleepSwitch(entry, base_topic)]
+    # The old 180 degree switch only for panels without the rotation select
+    # (select.py HomeTilesRotationSelect offers the panel's own steps).
+    if not supports(merged_capabilities_data(entry), "display_rotation"):
+        entities.insert(0, Tab5RotateSwitch(entry, base_topic))
     entities.extend(
         HomeTilesLocalRelay(entry, base_topic, descriptor)
         for descriptor in entry_local_io(entry)

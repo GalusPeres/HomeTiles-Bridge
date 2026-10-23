@@ -231,6 +231,7 @@ class WithdrawnCameraSwitchTest(unittest.TestCase):
                  "stale_internal_sensor": caps.stale_internal_sensor,
                  "stale_local_camera": caps.stale_local_camera,
                  "stale_assist": caps.stale_assist,
+                 "stale_display_controls": caps.stale_display_controls,
                  "stale_speaker": caps.stale_speaker,
                  "entry_local_io": lambda entry: entry.data.get("local_io", []),
                  "local_io_unique_id": lambda device_id, item: f"{device_id}_local_io_{item['type']}_{item['id']}",

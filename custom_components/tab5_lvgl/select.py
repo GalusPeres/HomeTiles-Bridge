@@ -30,6 +30,8 @@ from .const import (
     DOMAIN,
     SLEEP_OPTION_LABELS,
     SLEEP_OPTIONS,
+    TOPIC_DISPLAY_ROTATION,
+    TOPIC_DISPLAY_THEME,
     TOPIC_SLEEP_MAINS,
 )
 from .device_helpers import (
@@ -61,7 +63,42 @@ async def async_setup_entry(
     if supports(capabilities, "audio_input"):
         entities.append(HomeTilesWakeWordSelect(entry, base_topic))
         entities.extend(_assist_selects(hass, entry))
+    if supports(capabilities, "display_theme"):
+        entities.append(HomeTilesThemeSelect(entry, base_topic))
+    if supports(capabilities, "display_rotation"):
+        entities.append(HomeTilesRotationSelect(entry, base_topic))
     async_add_entities(entities)
+
+
+# The panel's theme setting: its stable ids on {base}/cmnd|stat/display_theme.
+DISPLAY_THEMES = ["dark", "light", "auto"]
+# Every rotation a panel can offer, in degrees from its own upright turn.
+DISPLAY_ROTATIONS = (0, 90, 180, 270)
+
+
+def theme_option_from_payload(payload) -> str | None:
+    """The theme option of the panel's retained state, or None."""
+    raw = str(payload or "").strip().lower()
+    return raw if raw in DISPLAY_THEMES else None
+
+
+def rotation_from_payload(payload) -> tuple[str, list[str]] | None:
+    """The panel's rotation and its steps from {"degrees":90,"options":[0,90,180,270]}."""
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    degrees = data.get("degrees")
+    options = data.get("options")
+    if type(degrees) is not int or not isinstance(options, list) or not options:
+        return None
+    if any(type(step) is not int or step not in DISPLAY_ROTATIONS for step in options):
+        return None
+    if len(set(options)) != len(options) or degrees not in options:
+        return None
+    return str(degrees), [str(step) for step in options]
 
 
 def sleep_option_from_payload(payload) -> str | None:
@@ -151,6 +188,96 @@ class Tab5SleepSelect(SelectEntity):
         if label is None:
             return
         await mqtt.async_publish(self.hass, self._topic_cmd, label, qos=0, retain=False)
+        self._attr_current_option = option
+        self.async_write_ha_state()
+
+
+class HomeTilesThemeSelect(SelectEntity):
+    """The panel's theme: dark, light, or automatic (light by day)."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "display_theme"
+    _attr_icon = "mdi:theme-light-dark"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = DISPLAY_THEMES
+    _attr_should_poll = False
+
+    def __init__(self, entry: ConfigEntry, base_topic: str) -> None:
+        self._attr_device_info = entry_device_info(entry)
+        self._attr_unique_id = f"{entry_device_id(entry)}_display_theme"
+        self._topic_cmd = command_topic(base_topic, TOPIC_DISPLAY_THEME)
+        self._topic_state = state_topic(base_topic, TOPIC_DISPLAY_THEME)
+        self._unsub_state = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        async def _handle_state(msg: mqtt.ReceiveMessage) -> None:
+            option = theme_option_from_payload(msg.payload)
+            if option is not None:
+                self._attr_current_option = option
+                self.async_write_ha_state()
+
+        self._unsub_state = await mqtt.async_subscribe(self.hass, self._topic_state, _handle_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_state:
+            self._unsub_state()
+            self._unsub_state = None
+        await super().async_will_remove_from_hass()
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in DISPLAY_THEMES:
+            return
+        await mqtt.async_publish(self.hass, self._topic_cmd, option, qos=0, retain=False)
+        self._attr_current_option = option
+        self.async_write_ha_state()
+
+
+class HomeTilesRotationSelect(SelectEntity):
+    """The panel's rotation in the steps it offers (0/90/180/270 or 0/180).
+
+    The steps come with the panel's retained state; the old 180 degree switch
+    (switch.py Tab5RotateSwitch) remains for panels without this capability.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "display_rotation"
+    _attr_icon = "mdi:screen-rotation"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_should_poll = False
+
+    def __init__(self, entry: ConfigEntry, base_topic: str) -> None:
+        self._attr_device_info = entry_device_info(entry)
+        self._attr_unique_id = f"{entry_device_id(entry)}_display_rotation"
+        # Every panel turns at least 0 and 180 until its state names its steps.
+        self._attr_options = ["0", "180"]
+        self._topic_cmd = command_topic(base_topic, TOPIC_DISPLAY_ROTATION)
+        self._topic_state = state_topic(base_topic, TOPIC_DISPLAY_ROTATION)
+        self._unsub_state = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        async def _handle_state(msg: mqtt.ReceiveMessage) -> None:
+            parsed = rotation_from_payload(msg.payload)
+            if parsed is None:
+                return
+            self._attr_current_option, self._attr_options = parsed
+            self.async_write_ha_state()
+
+        self._unsub_state = await mqtt.async_subscribe(self.hass, self._topic_state, _handle_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_state:
+            self._unsub_state()
+            self._unsub_state = None
+        await super().async_will_remove_from_hass()
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+        await mqtt.async_publish(self.hass, self._topic_cmd, option, qos=0, retain=False)
         self._attr_current_option = option
         self.async_write_ha_state()
 

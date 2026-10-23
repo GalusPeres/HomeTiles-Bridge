@@ -232,6 +232,7 @@ from .capabilities import (
   merged_capabilities_data,
   normalise_capabilities,
   stale_assist,
+  stale_display_controls,
   stale_internal_sensor,
   stale_local_camera,
   stale_speaker,
@@ -1116,6 +1117,11 @@ def _remove_stale_local_io_entities(hass: HomeAssistant, entry: ConfigEntry) -> 
     elif (entity.domain in ("assist_satellite", "button", "select", "switch")
           and stale_assist(unique_id, entity.domain, merged)):
       # The panel no longer announces its microphone.
+      stale.append(entity.entity_id)
+    elif (entity.domain in ("select", "switch")
+          and stale_display_controls(unique_id, entity.domain, merged)):
+      # The theme and rotation selects follow the panel's announcement; the
+      # old 180 degree switch goes once the panel offers its rotation steps.
       stale.append(entity.entity_id)
     elif entity.domain == "select" and unique_id.endswith("_sleep_battery"):
       # Auto-sleep on battery was a leftover: no panel has a battery sleep

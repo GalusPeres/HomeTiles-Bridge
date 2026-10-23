@@ -12,8 +12,8 @@ def normalise_capabilities(value: Any) -> dict[str, bool]:
     if not isinstance(value, dict):
         raise ValueError("invalid_capabilities")
     result = {}
-    for key in ("audio_input", "audio_output", "battery_soc", "legacy_external_temperature", "local_camera",
-                "local_camera_stream", "view_navigation"):
+    for key in ("audio_input", "audio_output", "battery_soc", "display_rotation", "display_theme",
+                "legacy_external_temperature", "local_camera", "local_camera_stream", "view_navigation"):
         if key in value:
             if type(value[key]) is not bool:
                 raise ValueError("invalid_capabilities")
@@ -34,7 +34,7 @@ def supports(data: Mapping[str, Any], capability: str) -> bool:
     if capability in explicit:
         return explicit[capability] is True
     if capability in ("view_navigation", "local_camera", "local_camera_stream", "audio_output",
-                      "audio_input"):
+                      "audio_input", "display_theme", "display_rotation"):
         # Never inferred: only firmware that announces it can answer requests.
         return False
     # No fixed external channel exists once firmware announces local I/O,
@@ -62,6 +62,18 @@ def stale_local_camera(unique_id: str, data: Mapping[str, Any]) -> bool:
 
 def stale_speaker(unique_id: str, data: Mapping[str, Any]) -> bool:
     return unique_id.endswith("_speaker") and not supports(data, "audio_output")
+
+
+def stale_display_controls(unique_id: str, domain: str, data: Mapping[str, Any]) -> bool:
+    """The theme and rotation selects without their capability, and the old
+    180 degree rotation switch once the panel offers the rotation select."""
+    if domain == "select" and unique_id.endswith("_display_theme"):
+        return not supports(data, "display_theme")
+    if domain == "select" and unique_id.endswith("_display_rotation"):
+        return not supports(data, "display_rotation")
+    if domain == "switch" and unique_id.endswith("_display_rotate"):
+        return supports(data, "display_rotation")
+    return False
 
 
 def stale_assist(unique_id: str, domain: str, data: Mapping[str, Any]) -> bool:

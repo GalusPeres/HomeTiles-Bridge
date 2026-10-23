@@ -208,6 +208,23 @@
       }
     },
     "select": {
+      "display_theme": {
+        "name": "Thema",
+        "state": {
+          "dark": "Donker",
+          "light": "Licht",
+          "auto": "Automatisch"
+        }
+      },
+      "display_rotation": {
+        "name": "Schermrotatie",
+        "state": {
+          "0": "0°",
+          "90": "90°",
+          "180": "180°",
+          "270": "270°"
+        }
+      },
       "view": {
         "name": "Weergave"
       },

@@ -231,6 +231,7 @@ class SensorCapabilitiesTest(unittest.IsolatedAsyncioTestCase):
                  "stale_internal_sensor": CAPS.stale_internal_sensor,
                  "stale_local_camera": CAPS.stale_local_camera,
                  "stale_speaker": CAPS.stale_speaker, "stale_assist": CAPS.stale_assist,
+                 "stale_display_controls": CAPS.stale_display_controls,
                  "entry_local_io": lambda entry: entry.data.get("local_io", []),
                  "local_io_unique_id": lambda device_id, descriptor: f"{device_id}_local_io_{descriptor['id']}",
                  "_LOGGER": logging.getLogger(__name__)}
