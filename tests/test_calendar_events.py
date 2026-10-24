@@ -8,6 +8,7 @@ import logging
 import types
 import unittest
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from test_announcement_guard import extract
 from test_view_navigation import ROOT, load_module
@@ -16,6 +17,7 @@ CAL = load_module("calendar_events")
 CONTROL = load_module("control_helpers")
 SEARCH_SOURCE = (ROOT / "entity_search.py").read_text(encoding="utf-8")
 BERLIN_SUMMER = timezone(timedelta(hours=2))
+BERLIN = ZoneInfo("Europe/Berlin")
 
 
 class PayloadTest(unittest.TestCase):
@@ -39,6 +41,31 @@ class PayloadTest(unittest.TestCase):
       {"s": "2026-10-24", "e": "2026-10-25", "t": "Bio waste"},
       {"s": "2026-10-24T00:30", "e": "2026-10-24T02:15", "t": "Night"},
       {"s": "2026-10-24T10:00", "e": "2026-10-24T11:30", "t": "Long ride", "l": "Pool"},
+    ])
+
+  def test_live_local_calendar_response_across_the_dst_change(self):
+    # Shape of a real local_calendar get_events response (2026-10-24, titles and
+    # places replaced): offsets follow the event's own date, extra keys are ignored.
+    response = {"calendar.waste": {"events": [
+      {"start": "2026-10-23", "end": "2026-10-24", "summary": "Paper", "description": "",
+       "location": "Musterstraße 1", "status": "confirmed"},
+      {"start": "2026-10-24T08:00:00+02:00", "end": "2026-10-24T10:00:00+02:00", "summary": "Mobile collection",
+       "description": "x", "location": "Market square", "status": "confirmed"},
+      {"start": "2026-11-19T08:00:00+01:00", "end": "2026-11-19T14:15:00+01:00", "summary": "Mobile collection",
+       "description": "x", "location": "Market square", "status": "confirmed"},
+      {"start": "2026-12-23", "end": "2026-12-27", "summary": "Holidays", "description": "", "location": "",
+       "status": "confirmed"},
+      {"start": "2026-10-24T23:30:00+02:00", "end": "2026-10-25T01:30:00+02:00", "summary": "Night",
+       "description": "", "location": "", "status": "confirmed"},
+    ]}}
+    events = CAL.events_of_response(response, "calendar.waste")
+    payload = json.loads(CAL.build_payload(events, date(2026, 9, 24), date(2027, 1, 7), "off", BERLIN))
+    self.assertEqual(payload["e"], [
+      {"s": "2026-10-23", "e": "2026-10-24", "t": "Paper", "l": "Musterstraße 1"},
+      {"s": "2026-10-24T08:00", "e": "2026-10-24T10:00", "t": "Mobile collection", "l": "Market square"},
+      {"s": "2026-10-24T23:30", "e": "2026-10-25T01:30", "t": "Night"},
+      {"s": "2026-11-19T08:00", "e": "2026-11-19T14:15", "t": "Mobile collection", "l": "Market square"},
+      {"s": "2026-12-23", "e": "2026-12-27", "t": "Holidays"},
     ])
 
   def test_text_is_clipped_by_utf8_bytes_without_breaking_characters(self):
