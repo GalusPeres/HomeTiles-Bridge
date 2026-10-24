@@ -157,6 +157,7 @@
           "selects": "Selezioni / aiutanti a discesa",
           "datetimes": "Data / ora / aiutanti",
           "fans": "Ventilatori",
+          "calendars": "Calendari",
           "locks": "Serrature",
           "alarm_panels": "Pannelli di allarme",
           "open_without_code": "Consenti l'apertura senza codice"

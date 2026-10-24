@@ -56,7 +56,7 @@ Detailed instructions: [bridge documentation](https://galusperes.github.io/HomeT
 Configure via the Home Assistant UI:
 
 - **Panel Settings** - MQTT base topic, HA prefix, device metadata
-- **Entity Configuration** - Sensors, binary sensors, weather, lights, switchable entities, covers, fans, locks, alarm panels, climate devices, media players, scenes/scripts/buttons
+- **Entity Configuration** - Sensors, binary sensors, weather, lights, switchable entities, covers, fans, locks, alarm panels, calendars, climate devices, media players, scenes/scripts/buttons
 - **Energy Dashboard** - Electricity, gas and water from the HA Energy Dashboard
 - **Security (encrypted commands)** - Optional. Encryption is set up on the display (Settings > System > Security > Encrypt). Home Assistant then shows a card under Discovered with a six-digit number; confirm it there and on the display if both show the same number. The Bridge then runs only encrypted, authenticated commands from that display and sends camera stream tokens encrypted; states and camera images stay unencrypted. A diagnostic sensor "Encryption" shows the state, and Configure > Security turns encryption off again. Without encryption, and with older firmware, everything works unencrypted as before. Protocol: [command-encryption.md](https://github.com/GalusPeres/HomeTiles/blob/main/docs-dev/command-encryption.md)
 
@@ -101,6 +101,10 @@ Locks and alarm panels follow the rules of Home Assistant's own Google Assistant
 
 Fan tiles control on/off, speed, preset, oscillation and direction, each only when the entity supports it. Fans also remain selectable as switchable entities.
 
+### Calendars
+
+Select them under **Calendars** in the entity configuration. A Calendar tile shows up to four of them. The Bridge reads their events with Home Assistant's `calendar.get_events` (the current month from a week before the 1st up to the two months after it) and publishes them retained on `ha_prefix/calendar/<object>/events`, in Home Assistant's local time: again when an event starts or ends, every 15 minutes (for edited future events and the new day), and on a snapshot. The list is bounded (96 events, 16 KB); when it has to drop events it drops the latest and shortens the window the panel shows, so a dropped day never looks free. Requires firmware with the Calendar tile; older firmware ignores the topic.
+
 ## MQTT Topics
 
 The integration and the display exchange these topics over MQTT, or, for a display on the direct link (HomeTiles v0.9.0 or newer), with the same topics over the display's own connection to the Bridge (TCP port 8140, or up to 8147 when it is taken):
@@ -123,6 +127,7 @@ The integration and the display exchange these topics over MQTT, or, for a displ
 | `base_topic/cmnd/fan` | Display > HA | Fan on/off, speed, preset, oscillation and direction commands |
 | `base_topic/stat/lock`, `base_topic/stat/alarm` | HA > Display | Result of an encrypted lock or alarm command (`ok`, `wrong_code`, `locked_out`, `busy`, ...; not retained) |
 | `ha_prefix/<domain>/<object>/detail` | HA > Display | Retained lock, alarm panel and fan tile state |
+| `ha_prefix/calendar/<object>/events` | HA > Display | Retained Calendar tile events |
 | `base_topic/cmnd/camera` | Display > HA | Open or close an experimental camera stream |
 | `base_topic/stat/camera` | HA > Display | Camera stream endpoint, protocol and status |
 | `base_topic/secure/panel` | Display > HA | Encrypted commands, session requests and unpair once encrypted (replaces the `cmnd/*` topics above) |

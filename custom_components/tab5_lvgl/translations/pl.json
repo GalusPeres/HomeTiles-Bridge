@@ -157,6 +157,7 @@
           "selects": "Listy wyboru / pomocnicy list rozwijanych",
           "datetimes": "Data / czas / pomocnicy",
           "fans": "Wentylatory",
+          "calendars": "Kalendarze",
           "locks": "Zamki",
           "alarm_panels": "Centrale alarmowe",
           "open_without_code": "Zezw\u00f3l na otwieranie bez kodu"

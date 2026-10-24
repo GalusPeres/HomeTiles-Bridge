@@ -42,6 +42,8 @@ LIST_DOMAINS: Dict[str, Tuple[str, ...]] = {
   "locks": ("lock",),
   "alarm_panels": ("alarm_control_panel",),
   "fans": ("fan",),
+  # The Calendar tile: calendars whose events the Bridge publishes.
+  "calendars": ("calendar",),
   # The Scene tile: scenes, scripts and buttons it runs or presses.
   "scenes": ACTION_DOMAINS,
 }
@@ -59,7 +61,8 @@ LIST_ATTRS: Dict[str, Tuple[str, ...]] = {
   "switches": ("lights", "switches"), "media": ("media_players",), "climates": ("climates",),
   "covers": ("covers",), "cameras": ("cameras",), "images": ("images", "cameras"),
   "locks": ("locks",),
-  "alarm_panels": ("alarm_panels",), "fans": ("fans",), "scenes": ("scenes",),
+  "alarm_panels": ("alarm_panels",), "fans": ("fans",), "calendars": ("calendars",),
+  "scenes": ("scenes",),
 }
 
 MAX_QUERY = 64

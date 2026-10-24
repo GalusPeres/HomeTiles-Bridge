@@ -63,6 +63,8 @@ CONF_IMAGES = "images"
 CONF_LOCKS = "locks"
 CONF_ALARM_PANELS = "alarm_panels"
 CONF_FANS = "fans"
+# Calendars a Calendar tile may show (calendar_events.py).
+CONF_CALENDARS = "calendars"
 # Locks and alarm panels that may be unlocked, opened or disarmed from a panel
 # without a code Home Assistant checks (only settable in the Bridge options).
 CONF_OPEN_WITHOUT_CODE = "open_without_code"

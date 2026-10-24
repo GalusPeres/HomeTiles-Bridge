@@ -157,6 +157,7 @@
           "selects": "S\u00e9lections / listes d\u00e9roulantes",
           "datetimes": "Date / heure / entr\u00e9es",
           "fans": "Ventilateurs",
+          "calendars": "Calendriers",
           "locks": "Serrures",
           "alarm_panels": "Panneaux d'alarme",
           "open_without_code": "Autoriser l'ouverture sans code"

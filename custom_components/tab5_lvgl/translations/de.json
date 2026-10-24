@@ -157,6 +157,7 @@
           "selects": "Auswahl / Auswahlhelfer",
           "datetimes": "Datum / Uhrzeit / Helfer",
           "fans": "Ventilatoren",
+          "calendars": "Kalender",
           "locks": "Schl\u00f6sser",
           "alarm_panels": "Alarmanlagen",
           "open_without_code": "Ohne Code \u00f6ffnen erlauben"

@@ -61,7 +61,11 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import discovery_flow
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.event import (
+  async_call_later,
+  async_track_state_change_event,
+  async_track_time_interval,
+)
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.sun import get_astral_event_date
@@ -92,6 +96,8 @@ from .binary_sensor_helpers import (
   migrate_binary_sensor_config,
   split_binary_sensor_entities,
 )
+from . import calendar_events
+from .calendar_events import CALENDAR_DOMAIN, REFRESH_S as CALENDAR_REFRESH_S
 from .control_helpers import (
   ACTION_DOMAINS,
   SWITCH_DOMAINS,
@@ -130,6 +136,7 @@ from .const import (
   CONF_ENERGY_ELECTRICITY,
   CONF_ENERGY_GAS,
   CONF_ENERGY_WATER,
+  CONF_CALENDARS,
   CONF_FANS,
   CONF_HA_PREFIX,
   CONF_LIGHTS,
@@ -1560,6 +1567,9 @@ class Tab5Bridge:
     self.locks: List[str] = _unique_entities(list(data.get(CONF_LOCKS, [])))
     self.alarm_panels: List[str] = _unique_entities(list(data.get(CONF_ALARM_PANELS, [])))
     self.fans: List[str] = _unique_entities(list(data.get(CONF_FANS, [])))
+    # Calendars a Calendar tile shows; their events travel on the retained
+    # `events` topic (calendar_events.py, _async_publish_calendar_events).
+    self.calendars: List[str] = _unique_entities(list(data.get(CONF_CALENDARS, [])))
     # Scenes, scripts and buttons a Scene tile may run by its entity id
     # (released ones and, with a Web Admin password, declared ones).
     self.scenes: List[str] = []
@@ -1687,6 +1697,11 @@ class Tab5Bridge:
     self._unsub_weather_started = None
     self._unsub_weather_stop = None
     self._weather_last_payload: Dict[str, str] = {}
+    self._calendar_pending: set = set()
+    self._calendar_refresh_handle = None
+    self._calendar_task = None
+    self._unsub_calendar_interval = None
+    self._calendar_last_payload: Dict[str, str] = {}
     self._weather_revision: Dict[str, int] = {}
     self._refresh_runtime_entity_lists()
 
@@ -1745,6 +1760,7 @@ class Tab5Bridge:
     all_locks: List[str] = []
     all_alarm_panels: List[str] = []
     all_fans: List[str] = []
+    all_calendars: List[str] = []
     all_open_without_code: List[str] = []
     all_access_codes: Dict[str, List[str]] = {}
     all_scene_map: Dict[str, str] = {}
@@ -1779,6 +1795,7 @@ class Tab5Bridge:
       all_locks.extend(list(data.get(CONF_LOCKS, [])))
       all_alarm_panels.extend(list(data.get(CONF_ALARM_PANELS, [])))
       all_fans.extend(list(data.get(CONF_FANS, [])))
+      all_calendars.extend(list(data.get(CONF_CALENDARS, [])))
       all_open_without_code.extend(list(data.get(CONF_OPEN_WITHOUT_CODE, [])))
       for entity_id, codes in _access_codes_of(data).items():
         all_access_codes.setdefault(entity_id, codes)
@@ -1805,6 +1822,7 @@ class Tab5Bridge:
         item for item in _unique_entities(all_alarm_panels) if entity_domain(item) == ALARM_DOMAIN
       ],
       "fans": [item for item in _unique_entities(all_fans) if entity_domain(item) == FAN_DOMAIN],
+      "calendars": [item for item in _unique_entities(all_calendars) if entity_domain(item) == CALENDAR_DOMAIN],
       "open_without_code": _unique_entities(all_open_without_code),
       "access_codes": all_access_codes,
       "scene_map": all_scene_map,
@@ -1831,6 +1849,7 @@ class Tab5Bridge:
         "covers": source["covers"], "cameras": source["cameras"], "images": source["images"],
         "weathers": source["weathers"],
         "locks": source["locks"], "alarm_panels": source["alarm_panels"], "fans": source["fans"],
+        "calendars": source["calendars"],
         "scenes": _unique_entities(list(source["scene_map"].values())),
       }
 
@@ -1860,6 +1879,7 @@ class Tab5Bridge:
       + self.locks
       + self.alarm_panels
       + self.fans
+      + self.calendars
       + list(self.scene_map.values())
     )
     if self._runtime_setup_complete and tuple(self.tracked_entities) != previous_tracked:
@@ -2067,6 +2087,7 @@ class Tab5Bridge:
     """Cleanup subscriptions."""
     self._runtime_setup_complete = False
     await self._async_stop_weather_updates()
+    self._stop_calendar_updates()
     # Release any state-publish ownership so a surviving entry can reclaim it.
     owners = self.hass.data.get(DOMAIN, {}).get("state_owners")
     if owners:
@@ -2198,13 +2219,16 @@ class Tab5Bridge:
           "alarm_panel_meta": self._build_entity_meta(self.alarm_panels),
           CONF_FANS: self.fans,
           "fan_meta": self._build_entity_meta(self.fans),
+          CONF_CALENDARS: self.calendars,
+          "calendar_meta": self._build_entity_meta(self.calendars),
           "scene_meta": self._build_scene_meta(),
           "scene_map": self.scene_map,
           # The picker searches through this Bridge, and the panel declares
           # its tiles' entities (entity_search.py): 2 = declarations, 3 = also
           # the Energy dashboard's sources (entity_search.ENERGY_LIST), 4 =
-          # also scenes, scripts and buttons for the Scene tile.
-          "entity_search": 4,
+          # also scenes, scripts and buttons for the Scene tile, 5 = also
+          # calendars and their retained `events` topic (Calendar tile).
+          "entity_search": 5,
           # This Bridge sends name, unit and icon changes by itself
           # (_handle_state_event), so a panel that reads this flag needs no
           # refresh every minute, only after a reconnect or a lost message.
@@ -2262,6 +2286,10 @@ class Tab5Bridge:
           await self._async_publish_detail_state(entity_id, None)
         continue
       await self._async_publish_entity_state(entity_id, state)
+    calendars = getattr(self, "calendars", [])
+    targets = calendars if entity_ids is None else [e for e in entity_ids if e in calendars]
+    if targets:
+      self._schedule_calendar_refresh(targets)
 
   def _editable_payload(self, entity_id, state):
     payload = build_editable_payload(
@@ -2331,6 +2359,91 @@ class Tab5Bridge:
     await mqtt.async_publish(
       self.hass, self._ha_topic_for_entity(entity_id, "detail"), payload, qos=0, retain=True,
     )
+
+  @callback
+  def _schedule_calendar_refresh(self, entity_ids: Iterable[str]) -> None:
+    """Fetch and publish the events of `entity_ids` shortly (coalesced)."""
+    if not self._runtime_setup_complete:
+      return
+    self._calendar_pending.update(e for e in entity_ids if e in self.calendars)
+    if self._calendar_pending and self._unsub_calendar_interval is None:
+      # Started with the first calendar: edits of future events do not change
+      # the state, and the window moves at midnight.
+      self._unsub_calendar_interval = async_track_time_interval(
+        self.hass, self._calendar_interval_tick, timedelta(seconds=CALENDAR_REFRESH_S)
+      )
+    if not self._calendar_pending or self._calendar_refresh_handle is not None:
+      return
+
+    @callback
+    def _due(_now) -> None:
+      self._calendar_refresh_handle = None
+      if self._calendar_task is None:
+        self._calendar_task = self.hass.async_create_task(self._async_process_calendar_updates())
+
+    self._calendar_refresh_handle = async_call_later(self.hass, calendar_events.DEBOUNCE_S, _due)
+
+  @callback
+  def _calendar_interval_tick(self, _now=None) -> None:
+    self._schedule_calendar_refresh(self.calendars)
+
+  async def _async_process_calendar_updates(self) -> None:
+    try:
+      while self._runtime_setup_complete and self._calendar_pending:
+        entity_id = self._calendar_pending.pop()
+        try:
+          await self._async_publish_calendar_events(entity_id)
+        except Exception:
+          _LOGGER.debug("Tab5 calendar update failed for %s", entity_id, exc_info=True)
+    finally:
+      self._calendar_task = None
+
+  async def _async_publish_calendar_events(self, entity_id: str) -> None:
+    """The Calendar tile's events of one calendar on its retained `events` topic."""
+    if entity_id not in self.calendars or entity_domain(entity_id) != CALENDAR_DOMAIN:
+      return
+    if not self._owns_state_publish(entity_id):
+      return
+    start, end = calendar_events.fetch_window(dt_util.now().date())
+    state = self.hass.states.get(entity_id)
+    if state is None or state.state == "unavailable":
+      payload = calendar_events.unavailable_payload(start, end)
+    else:
+      zone = getattr(dt_util, "get_default_time_zone", lambda: dt_util.DEFAULT_TIME_ZONE)()
+      begin = datetime.combine(start, datetime.min.time(), tzinfo=zone)
+      finish = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=zone)
+      try:
+        response = await self.hass.services.async_call(
+          CALENDAR_DOMAIN, "get_events",
+          {"entity_id": entity_id, "start_date_time": begin.isoformat(), "end_date_time": finish.isoformat()},
+          blocking=True, return_response=True,
+        )
+      except Exception as err:
+        # Keep the last retained events rather than publishing an empty list.
+        _LOGGER.debug("Tab5 calendar.get_events failed for %s (%s)", entity_id, err)
+        return
+      events = calendar_events.events_of_response(response, entity_id)
+      if events is None:
+        return
+      payload = calendar_events.build_payload(events, start, end, state.state, zone)
+    if self._calendar_last_payload.get(entity_id) == payload:
+      return
+    self._calendar_last_payload[entity_id] = payload
+    await mqtt.async_publish(
+      self.hass, self._ha_topic_for_entity(entity_id, "events"), payload, qos=0, retain=True,
+    )
+
+  def _stop_calendar_updates(self) -> None:
+    for name in ("_unsub_calendar_interval", "_calendar_refresh_handle"):
+      unsubscribe = getattr(self, name, None)
+      if unsubscribe is not None:
+        unsubscribe()
+        setattr(self, name, None)
+    getattr(self, "_calendar_pending", set()).clear()
+    task = getattr(self, "_calendar_task", None)
+    if task is not None:
+      task.cancel()
+      self._calendar_task = None
 
   def _access_secured(self, msg: Any, command: Dict[str, Any]) -> bool:
     """Lock and Alarm need a sealed command from a paired panel with a Web Admin password.
@@ -5360,6 +5473,10 @@ class Tab5Bridge:
       return
     if entity_id.startswith("weather.") and entity_id in self.weathers:
       self._sync_weather_subscriptions()
+    if entity_id in getattr(self, "calendars", []):
+      # The state turns on and off when an event starts or ends; edits of
+      # future events show up through the periodic refresh.
+      self._schedule_calendar_refresh([entity_id])
     if new_state is None:
       if entity_id in getattr(self, "numbers", []) + getattr(self, "selects", []) + getattr(self, "datetimes", []):
         self.hass.async_create_task(self._async_publish_editable_state(entity_id, None))

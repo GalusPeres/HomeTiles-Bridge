@@ -157,6 +157,7 @@
           "selects": "Selects / dropdown helpers",
           "datetimes": "Date / Time / helpers",
           "fans": "Fans",
+          "calendars": "Calendars",
           "locks": "Locks",
           "alarm_panels": "Alarm panels",
           "open_without_code": "Allow opening without a code"

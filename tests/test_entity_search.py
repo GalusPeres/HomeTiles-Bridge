@@ -438,7 +438,7 @@ class WiringTests(BridgeHarness):
                       "scene aliases stay from every entry, served Scene tile ids join them")
         self.assertIn('"scenes": _unique_entities(list(source["scene_map"].values())),', refresh,
                       "the released scenes are a picker list like the others")
-        self.assertIn('"entity_search": 4,', text)
+        self.assertIn('"entity_search": 5,', text)
         self.assertIn('"entities": self._async_handle_entities_command,', text)
         self.assertIn('"tiles": self._async_handle_tiles_command,', text)
         setup = text[text.index("  async def async_setup(self) -> None:"):]

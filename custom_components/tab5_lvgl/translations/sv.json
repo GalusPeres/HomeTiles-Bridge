@@ -157,6 +157,7 @@
           "selects": "Val / rullgardinshjälpare",
           "datetimes": "Datum / tid / hjälpare",
           "fans": "Fläktar",
+          "calendars": "Kalendrar",
           "locks": "Lås",
           "alarm_panels": "Larmpaneler",
           "open_without_code": "Tillåt öppning utan kod"
