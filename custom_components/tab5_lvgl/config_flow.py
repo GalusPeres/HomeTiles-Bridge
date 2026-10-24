@@ -23,6 +23,7 @@ from homeassistant.helpers.network import get_url
 
 from . import link_mqtt
 from .access_helpers import parse_access_codes
+from .advertise_host import advertised_host
 from .binary_sensor_helpers import split_binary_sensor_entities
 from .panel_auth import ERROR_CANNOT_CONNECT, async_link_info, async_push_credentials, async_push_link
 from .capabilities import CAPABILITIES
@@ -1393,6 +1394,9 @@ def _ha_url_host(hass: HomeAssistant, prefer_external: bool) -> str:
 
 
 def _source_ip_for_target(target_host: str | None) -> str:
+  override = advertised_host(None)
+  if override:
+    return override
   try:
     target_ip = ipaddress.ip_address(str(target_host or "").strip())
   except ValueError:

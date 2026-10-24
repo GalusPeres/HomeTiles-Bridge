@@ -78,6 +78,7 @@ from homeassistant.util import dt as dt_util, slugify
 # Every MQTT call also reaches panels on the direct link (link_mqtt.py).
 from . import link_mqtt as mqtt
 from .link_runtime import LinkRuntime
+from .advertise_host import advertised_host
 from .images import CAMERA_REFRESH_S, ImageService, content_key, render_jpeg
 from .images import Source as ImageSource
 from .binary_history import (
@@ -3611,6 +3612,7 @@ class Tab5Bridge:
       source_ip = await ha_network.async_get_source_ip(self.hass, target_ip=self._device_ip)
     else:
       source_ip = await ha_network.async_get_source_ip(self.hass)
+    source_ip = advertised_host(source_ip)
     session = manager.audio_streams.create_session(self.device_id, url, rate, start_ms, live)
     return manager.stream_url(source_ip, session.token)
 
@@ -5106,6 +5108,7 @@ class Tab5Bridge:
         )
       else:
         source_ip = await ha_network.async_get_source_ip(self.hass)
+      source_ip = advertised_host(source_ip)
       stream_url = manager.stream_url(source_ip, session.token)
       _LOGGER.info(
         "HomeTiles camera LAN endpoint ready (host=%s, port=%d, panel=%s)",

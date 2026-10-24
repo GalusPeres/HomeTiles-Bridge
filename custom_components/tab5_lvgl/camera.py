@@ -23,6 +23,7 @@ from homeassistant.core import HomeAssistant, callback
 
 # MQTT calls also reach panels on the direct link (link_mqtt.py).
 from . import link_mqtt as mqtt
+from .advertise_host import advertised_host
 from .capabilities import merged_capabilities_data, supports
 from .command_channel import entry_pairing_key
 from .const import (
@@ -326,6 +327,7 @@ class HomeTilesLocalCamera(Camera):
             host = await ha_network.async_get_source_ip(self.hass, target_ip=device_ip)
         else:
             host = await ha_network.async_get_source_ip(self.hass)
+        host = advertised_host(host)
         return (host, port) if valid_ipv4(host) else None
 
     async def handle_async_mjpeg_stream(self, request):

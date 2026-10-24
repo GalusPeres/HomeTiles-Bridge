@@ -56,6 +56,7 @@ class CameraSoundTest(unittest.IsolatedAsyncioTestCase):
             "_LOGGER": logging.getLogger(__name__),
             "is_local_camera_self_loop": LOCAL_CAMERA.is_local_camera_self_loop,
             "ha_network": types.SimpleNamespace(async_get_source_ip=source_ip),
+            "advertised_host": load_module("advertise_host").advertised_host,
             "async_probe_camera": probe_camera,
             "camera_sound_lead_ms": AUDIO.camera_sound_lead_ms,
             "CAMERA_STREAM_DECODE_THREADS": 4,
