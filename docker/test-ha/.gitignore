@@ -2,3 +2,4 @@
 config/*
 !config/configuration.yaml
 .secrets/
+.env

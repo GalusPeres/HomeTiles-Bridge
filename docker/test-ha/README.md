@@ -50,12 +50,37 @@ docker exec hometiles-test-mqtt mosquitto_sub -t 'ha/statestream/calendar/+/even
 
 ## A test panel
 
-mDNS does not reach the container, so add the panel by IP: Settings → Devices
-→ Add integration → HomeTiles Bridge → by IP address. When the panel asks for
-the MQTT broker, give this Mac's LAN address and port `11883` (the panel cannot
-resolve `mosquitto`). Then add a Calendar tile and choose the test calendars.
+The panel pairs over the Bridge's direct link (ports 8140–8147, camera
+8124–8131), so it needs no MQTT broker for pairing. Inside Docker the Bridge
+would hand the panel the container's address; `HOMETILES_ADVERTISE_HOST`
+(set from `.env`) makes it send this Mac's LAN address instead. Before the
+first start, and whenever the Mac's address changes:
+
+```bash
+echo "HOST_LAN_IP=$(ipconfig getifaddr en0)" > .env && docker compose up -d
+```
+
+1. Unpair the panel from the production Home Assistant first: on the panel,
+   Settings → System → Security → Pairing → Unpair. If the production Home
+   Assistant then shows "Panel found" for it, choose Ignore there.
+2. Tap Pair on the panel. It accepts a link address for two minutes.
+3. Within those two minutes, add it by its IP address (mDNS does not reach the
+   container):
+
+   ```bash
+   python3 testha.py pair 192.168.20.88
+   ```
+
+   or in the web UI: Settings → Devices → Add integration → HomeTiles Bridge
+   → by IP address.
+4. Compare the number with the one on the panel, then accept it on the panel
+   and here (`python3 testha.py accept <flow-id>` or the web UI).
+5. Run `python3 testha.py setup` again so the new entry gets the test
+   calendars, then add a Calendar tile on the panel.
+
 The Bridge announces `calendars` in its configuration only once a panel is
-paired.
+paired. The macOS firewall must let incoming connections reach Docker
+(it is off on this Mac).
 
 ## Tear down
 

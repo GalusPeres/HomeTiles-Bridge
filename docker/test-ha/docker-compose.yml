@@ -8,11 +8,14 @@ services:
     restart: "no"
     environment:
       TZ: Europe/Berlin
+      # The address the Bridge hands a panel: this Mac's LAN address (.env,
+      # README.md). Inside Docker it would otherwise send the container's.
+      HOMETILES_ADVERTISE_HOST: ${HOST_LAN_IP:-}
     ports:
       - "18123:8123"
       # The Bridge's direct link and camera servers, for a test panel.
-      - "8140:8140"
-      - "8124:8124"
+      - "8140-8147:8140-8147"
+      - "8124-8131:8124-8131"
     volumes:
       - ./config:/config
       - ../../custom_components/tab5_lvgl:/config/custom_components/tab5_lvgl:ro

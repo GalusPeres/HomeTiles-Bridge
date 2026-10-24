@@ -6,6 +6,7 @@ Standard library only. Credentials of the test instance live in .secrets/
 
   python3 testha.py all       # onboard + setup + seed + check
   python3 testha.py onboard | setup | seed | check
+  python3 testha.py pair <panel-ip>   # then: accept <flow-id>
 """
 
 from __future__ import annotations
@@ -189,9 +190,10 @@ def setup() -> None:
     })
     print(f"setup: Bridge entry (base {BASE_TOPIC}, prefix {HA_PREFIX})")
     bridge = _entries(access, "tab5_lvgl")
-  _drive_flow(access, "options/flow", {"handler": bridge[0]["entry_id"]}, {
-    "init": "entities", "entities": {"calendars": calendars},
-  })
+  for entry in bridge:
+    _drive_flow(access, "options/flow", {"handler": entry["entry_id"]}, {
+      "init": "entities", "entities": {"calendars": calendars},
+    })
   print(f"setup: Bridge calendars {calendars}")
 
 
@@ -370,9 +372,49 @@ def check() -> int:
   return 1 if failures else 0
 
 
+# --- pairing a test panel over the direct link ----------------------------
+
+def pair(panel_host: str) -> None:
+  """Adds a panel by IP (tap Pair on it first); prints the number to compare."""
+  access = token()
+  flows = "/api/config/config_entries/flow"
+  result = _request("POST", flows, {"handler": "tab5_lvgl"}, token=access)
+  result = _request("POST", f"{flows}/{result['flow_id']}", {"next_step_id": "link_ip"}, token=access)
+  result = _request("POST", f"{flows}/{result['flow_id']}", {"panel_host": panel_host}, token=access)
+  if result.get("errors"):
+    raise SystemExit(f"panel at {panel_host}: {result['errors']}")
+  flow_id = result["flow_id"]
+  if result.get("step_id") in ("link_confirm", "link_switch"):
+    result = _request("POST", f"{flows}/{flow_id}", {}, token=access)
+  if result.get("errors"):
+    raise SystemExit(f"link to {panel_host}: {result['errors']} (was Pair tapped on the panel?)")
+  print(f"link address sent to {panel_host}; waiting for the panel ...")
+  for _ in range(60):
+    if result.get("type") == "menu" and result.get("step_id") == "link_number":
+      print(f"number: {result['description_placeholders']['number']}  (flow {flow_id})")
+      print(f"same number on the panel? then: python3 testha.py accept {flow_id}")
+      return
+    if result.get("type") in ("abort", "create_entry") or result.get("step_id") == "link_failed":
+      raise SystemExit(f"pairing ended: {result.get('step_id') or result.get('reason')}")
+    time.sleep(2)
+    result = _request("GET", f"{flows}/{flow_id}", token=access)
+  raise SystemExit("the panel did not answer")
+
+
+def accept(flow_id: str) -> None:
+  access = token()
+  result = _request("POST", f"/api/config/config_entries/flow/{flow_id}", {"next_step_id": "link_accept"},
+                    token=access)
+  print(f"pairing: {result.get('type')} {result.get('title') or result.get('step_id') or result.get('reason')}")
+
+
 def main(argv: list[str]) -> int:
   command = argv[1] if len(argv) > 1 else "all"
-  if command == "onboard":
+  if command == "pair" and len(argv) > 2:
+    pair(argv[2])
+  elif command == "accept" and len(argv) > 2:
+    accept(argv[2])
+  elif command == "onboard":
     onboard()
   elif command == "setup":
     setup()
