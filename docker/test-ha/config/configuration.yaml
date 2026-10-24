@@ -1,0 +1,17 @@
+# Test instance only (docker/test-ha/README.md). Not a production config.
+default_config:
+
+homeassistant:
+  name: HomeTiles Test
+  time_zone: Europe/Berlin
+  country: DE
+  unit_system: metric
+  currency: EUR
+  latitude: 52.52
+  longitude: 13.40
+  elevation: 34
+
+logger:
+  default: warning
+  logs:
+    custom_components.tab5_lvgl: debug
