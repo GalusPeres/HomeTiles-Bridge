@@ -267,6 +267,17 @@
           "aggressive": "Agressivo",
           "relaxed": "Relaxado"
         }
+      },
+      "timer_sound": {
+        "name": "Som do timer",
+        "state": {
+          "rising_three": "Três ascendentes",
+          "kitchen_beep": "Bipe de cozinha",
+          "soft_bell": "Sino suave",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "Desligado"
+        }
       }
     },
     "switch": {
@@ -305,6 +316,9 @@
     "number": {
       "display_brightness": {
         "name": "Brilho da tela"
+      },
+      "timer_volume": {
+        "name": "Volume do timer"
       }
     },
     "sensor": {

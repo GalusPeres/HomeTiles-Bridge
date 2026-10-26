@@ -267,6 +267,17 @@
           "aggressive": "Agressif",
           "relaxed": "Détendu"
         }
+      },
+      "timer_sound": {
+        "name": "Son du minuteur",
+        "state": {
+          "rising_three": "Trois montantes",
+          "kitchen_beep": "Bip de cuisine",
+          "soft_bell": "Cloche douce",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "D\u00e9sactiv\u00e9"
+        }
       }
     },
     "switch": {
@@ -305,6 +316,9 @@
     "number": {
       "display_brightness": {
         "name": "Luminosit\u00e9 de l'\u00e9cran"
+      },
+      "timer_volume": {
+        "name": "Volume du minuteur"
       }
     },
     "sensor": {

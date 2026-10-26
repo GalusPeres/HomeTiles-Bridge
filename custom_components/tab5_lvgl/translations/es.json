@@ -267,6 +267,17 @@
           "aggressive": "Agresivo",
           "relaxed": "Relajado"
         }
+      },
+      "timer_sound": {
+        "name": "Sonido del temporizador",
+        "state": {
+          "rising_three": "Tres ascendentes",
+          "kitchen_beep": "Pitido de cocina",
+          "soft_bell": "Campana suave",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "Apagado"
+        }
       }
     },
     "switch": {
@@ -305,6 +316,9 @@
     "number": {
       "display_brightness": {
         "name": "Brillo de la pantalla"
+      },
+      "timer_volume": {
+        "name": "Volumen del temporizador"
       }
     },
     "sensor": {

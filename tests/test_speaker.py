@@ -47,6 +47,11 @@ class SpeakerContractTest(unittest.TestCase):
         self.assertNotIn("restart", json.loads(SPEAKER.build_play_command(ID, "tcp://ha:8124/t")))
         self.assertNotIn("restart", json.loads(SPEAKER.build_play_command(
             ID, "tcp://ha:8124/t", live=True, restart=True)))
+        # A voice timer's own sound plays at the panel's timer volume; never live.
+        self.assertTrue(json.loads(SPEAKER.build_play_command(ID, "tcp://ha:8124/t", timer=True))["timer_sound"])
+        self.assertNotIn("timer_sound", json.loads(SPEAKER.build_play_command(ID, "tcp://ha:8124/t")))
+        self.assertNotIn("timer_sound", json.loads(SPEAKER.build_play_command(
+            ID, "tcp://ha:8124/t", live=True, timer=True)))
         self.assertEqual(json.loads(SPEAKER.build_stop_command()), {"v": 1, "op": "stop"})
         self.assertEqual(json.loads(SPEAKER.build_volume_command(0.256)),
                          {"v": 1, "op": "volume", "volume": 0.256})

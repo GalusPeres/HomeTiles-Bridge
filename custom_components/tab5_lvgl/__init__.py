@@ -330,8 +330,9 @@ CAMERA_SOUND_PROBE_CACHE_SECONDS = 600.0
 PLATFORMS = ["light", "select", "switch", "sensor", "binary_sensor", "camera", "media_player",
              "button"]
 # Forwarded only for panels that announce a microphone, so Home Assistant
-# loads Assist (STT, TTS, conversation) only where it can be used.
-ASSIST_PLATFORMS = ["assist_satellite"]
+# loads Assist (STT, TTS, conversation) only where it can be used. The number
+# platform holds only the voice timers' Timer volume.
+ASSIST_PLATFORMS = ["assist_satellite", "number"]
 
 MEDIA_COVER_MAX_BYTES = 14000
 # Home Assistant sends SUBSCRIBE packets batched, a moment after async_subscribe
@@ -3780,11 +3781,12 @@ class Tab5Bridge:
     )
 
   async def async_create_audio_stream(self, url: str, rate: int, start_ms: int = 0,
-                                      live: bool = False) -> str:
+                                      live: bool = False, local: bool = False) -> str:
     """A clip decoded by the Bridge (audio_stream.py): the tcp:// URL for the panel.
 
     The panel connects to the camera listener with the URL's one-time token
-    and receives the clip as PCM, from start_ms on; live is a camera's sound.
+    and receives the clip as PCM, from start_ms on; live is a camera's sound,
+    local a file path the Bridge chose itself (a timer's own sound).
     """
     manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
     if manager is None or manager.tcp_port is None or not self.device_id:
@@ -3794,8 +3796,16 @@ class Tab5Bridge:
     else:
       source_ip = await ha_network.async_get_source_ip(self.hass)
     source_ip = advertised_host(source_ip)
-    session = manager.audio_streams.create_session(self.device_id, url, rate, start_ms, live)
+    session = manager.audio_streams.create_session(self.device_id, url, rate, start_ms, live, local)
     return manager.stream_url(source_ip, session.token)
+
+  def audio_stream_url(self) -> str | None:
+    """The source of the panel's Bridge-decoded clip while one plays or waits."""
+    manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
+    if manager is None or not self.device_id:
+      return None
+    session = manager.audio_streams.current(self.device_id)
+    return session.url if session is not None else None
 
   def set_audio_stream_paused(self, paused: bool) -> None:
     """A paused panel acknowledges nothing; its clip may wait (audio_stream.py)."""

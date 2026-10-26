@@ -40,6 +40,8 @@ def load_select_module(published):
     core = types.ModuleType("homeassistant.core")
     core.HomeAssistant = object
     core.callback = lambda func: func
+    restore_state = types.ModuleType("homeassistant.helpers.restore_state")
+    restore_state.RestoreEntity = type("RestoreEntity", (), {})
     stubs = {
         package_name: package,
         "homeassistant": types.ModuleType("homeassistant"),
@@ -53,6 +55,7 @@ def load_select_module(published):
         "homeassistant.helpers.entity": entity,
         "homeassistant.helpers.event": event,
         "homeassistant.helpers.device_registry": device_registry,
+        "homeassistant.helpers.restore_state": restore_state,
     }
     with mock.patch.dict(sys.modules, stubs):
         return importlib.import_module(f"{package_name}.select")

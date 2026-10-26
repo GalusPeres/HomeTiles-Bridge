@@ -106,13 +106,16 @@ def _encode(payload: dict[str, Any]) -> str:
 
 
 def build_play_command(request_id: str, url: str, live: bool = False,
-                       lead_ms: int | None = None, restart: bool = False) -> str:
+                       lead_ms: int | None = None, restart: bool = False,
+                       timer: bool = False) -> str:
     """Play url; live (a camera's sound) keeps the panel's buffer short.
 
     lead_ms: how much earlier this sound leaves the Bridge than the camera's
     picture; the panel holds the picture back by its sound delay less that.
     restart: the Bridge plays this clip again from the paused point to
     resume, so the panel may close the stream on a pause (never live).
+    timer: a finished voice timer's own sound; the panel plays it at its
+    timer volume, unmuted (never live).
     """
     if not valid_request_id(request_id):
         raise ValueError("invalid_request_id")
@@ -123,6 +126,8 @@ def build_play_command(request_id: str, url: str, live: bool = False,
             payload["lead_ms"] = max(0, min(1000, int(lead_ms)))
     elif restart:
         payload["restart"] = True
+    if timer and not live:
+        payload["timer_sound"] = True
     return _encode(payload)
 
 

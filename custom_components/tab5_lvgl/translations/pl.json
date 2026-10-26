@@ -267,6 +267,17 @@
           "aggressive": "Agresywny",
           "relaxed": "Swobodny"
         }
+      },
+      "timer_sound": {
+        "name": "D\u017awi\u0119k minutnika",
+        "state": {
+          "rising_three": "Trzy rosn\u0105ce",
+          "kitchen_beep": "Kuchenny sygna\u0142",
+          "soft_bell": "Delikatny dzwonek",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "Wy\u0142\u0105czony"
+        }
       }
     },
     "switch": {
@@ -305,6 +316,9 @@
     "number": {
       "display_brightness": {
         "name": "Jasno\u015b\u0107 wy\u015bwietlacza"
+      },
+      "timer_volume": {
+        "name": "G\u0142o\u015bno\u015b\u0107 minutnika"
       }
     },
     "sensor": {
