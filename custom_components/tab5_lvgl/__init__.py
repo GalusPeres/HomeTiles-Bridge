@@ -4135,8 +4135,10 @@ class Tab5Bridge:
       _LOGGER.debug("Tab5 history request ignored (entity not configured): %s", entity_id)
       return
 
-    hours = _coerce_int(parsed.get("hours"), 24, 1, 168)
-    period_minutes = _coerce_int(parsed.get("period_minutes"), 5, 1, 60)
+    # Up to 30 days (720 h) in steps of up to a day: the panel graphs 1H by
+    # the minute and 30D in three-hour steps (firmware b613).
+    hours = _coerce_int(parsed.get("hours"), 24, 1, 720)
+    period_minutes = _coerce_int(parsed.get("period_minutes"), 5, 1, 1440)
     points = _coerce_int(parsed.get("points"), int(hours * 60 / period_minutes), 1, 720)
     stat = str(parsed.get("stat") or "mean").strip().lower() or "mean"
 

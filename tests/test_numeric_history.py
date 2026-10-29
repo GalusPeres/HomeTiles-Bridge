@@ -154,27 +154,63 @@ class StatisticsTest(unittest.TestCase):
         self.assertEqual(recorder.calls[0]["start"], first + timedelta(hours=24))
         self.assertFalse(recorder.calls[0]["include_start_time_state"])
 
-    def test_hourly_statistics_fill_in_for_purged_5_minute_ones(self):
+    def test_hour_buckets_take_the_hourly_statistics(self):
+        # 7D: the hourly statistics, the Recorder's own sums of its 5-minute
+        # ones, and 5-minute periods only after the newest hour (687 ms with
+        # a week of 5-minute rows, 2026-10-29).
         start = END - timedelta(hours=168)
         first_hour = grid(start, 3600)
         hourly = [period(first_hour + timedelta(hours=j), 60, mean=1000 + j, min=900 + j, max=1100 + j)
                   for j in range(168)]
-        # purge_keep_days = 3: the 5-minute statistics of the last three days remain.
-        kept_from = first_hour + timedelta(hours=96, minutes=5)
-        short = [period(kept_from + timedelta(minutes=5 * k), 5, mean=k, min=k - 1, max=k + 2)
-                 for k in range(864)]
+        newest_hour = first_hour + timedelta(hours=168)
+        # The 5-minute statistics of the whole week; only those after the newest hour are read.
+        first_short = grid(start, 300)
+        short = [period(first_short + timedelta(minutes=5 * k), 5, mean=7, min=7, max=7)
+                 for k in range(int((END - first_short).total_seconds() // 300))]
         stats = FakeStatistics(MEAN_META, short=short, hourly=hourly)
         mean, _, complete = self.fetch(stats, FakeRecorder([]), 168, 60, "mean")
         self.assertTrue(complete)
-        self.assertEqual(mean[:96], [1000.0 + j for j in range(96)])
-        # Twelve 5-minute periods per hour bucket.
-        self.assertEqual((mean[96], mean[-1]), (5.5, 857.5))
-        low, _, _ = self.fetch(stats, FakeRecorder([]), 168, 60, "min")
-        high, _, _ = self.fetch(stats, FakeRecorder([]), 168, 60, "max")
-        self.assertEqual((low[0], low[95], low[96], low[-1]), (900.0, 995.0, -1.0, 851.0))
-        self.assertEqual((high[0], high[95], high[96], high[-1]), (1100.0, 1195.0, 13.0, 865.0))
-        self.assertEqual([call[:3] for call in stats.calls[:2]],
-                         [("5minute", grid(start, 300), END), ("hour", first_hour, kept_from)])
+        reference = NUMERIC.NumericBuckets(start, 168, 60)
+        for item in hourly:
+            for index in reference.indices(NUMERIC._stat_time(item["start"]), NUMERIC._stat_time(item["end"])):
+                reference.put(index, NUMERIC._stat_time(item["end"]), item["mean"], item["min"], item["max"],
+                              3600.0)
+        self.assertEqual(mean[:167], reference.values("mean")[:167])
+        self.assertEqual(stats.calls[0][:3], ("hour", first_hour, END))
+        self.assertEqual(stats.calls[1][:3], ("5minute", newest_hour, END))
+        self.assertEqual(len(stats.calls), 2)
+
+    def test_30_days_in_three_hour_steps(self):
+        # 30D: 720 hours of hourly statistics folded into 240 three-hour points.
+        start = END - timedelta(hours=720)
+        first_hour = grid(start, 3600)
+        hourly = [period(first_hour + timedelta(hours=j), 60, mean=float(j % 24), min=0.0, max=24.0)
+                  for j in range(720)]
+        stats = FakeStatistics(MEAN_META, hourly=hourly)
+        values, _, _ = self.fetch(stats, FakeRecorder([]), 720, 180, "mean")
+        self.assertEqual(len(values), 240)
+        reference = NUMERIC.NumericBuckets(start, 240, 180)
+        for item in hourly:
+            begin, finish = NUMERIC._stat_time(item["start"]), NUMERIC._stat_time(item["end"])
+            for index in reference.indices(begin, finish):
+                reference.put(index, finish, item["mean"], item["min"], item["max"], 3600.0)
+        self.assertEqual(values[:239], reference.values("mean")[:239])
+        self.assertEqual([call[0] for call in stats.calls], ["hour", "5minute"])
+
+    def test_hour_buckets_without_hourly_statistics_keep_the_5_minute_ones(self):
+        first = grid(END - timedelta(hours=24), 300)
+        short = [period(first + timedelta(minutes=5 * k), 5, mean=k, min=k, max=k) for k in range(288)]
+        stats = FakeStatistics(MEAN_META, short=short)
+        values, _, complete = self.fetch(stats, FakeRecorder([]), 24, 60, "mean")
+        self.assertTrue(complete)
+        reference = NUMERIC.NumericBuckets(END - timedelta(hours=24), 24, 60)
+        for item in short:
+            begin, finish = NUMERIC._stat_time(item["start"]), NUMERIC._stat_time(item["end"])
+            for index in reference.indices(begin, finish):
+                reference.put(index, finish, item["mean"], item["min"], item["max"], 300.0)
+        self.assertEqual(values, reference.values("mean"))
+        self.assertEqual(stats.calls[0][0], "hour")
+        self.assertIn(("5minute", first, END), [call[:3] for call in stats.calls])
 
     def test_total_increasing_sensor_graphs_its_state(self):
         first = grid(END - timedelta(hours=24), 300)
@@ -295,6 +331,21 @@ class StateRowsTest(unittest.TestCase):
         self.assertEqual(read, 600)
         self.assertEqual(values[0], 29.5)
         self.assertEqual(values[-1], 569.5)
+
+    def test_minute_buckets_read_the_newest_hour_first(self):
+        # 6H by the minute took nine queries from one bucket on (518 ms,
+        # 2026-10-29); the newest hour first makes three, 1H one.
+        for hours, queries in ((6, 3), (1, 1)):
+            start = END - timedelta(hours=hours)
+            rows = [state_at(start + timedelta(seconds=30 * n + 15), str(n)) for n in range(hours * 120)]
+            recorder = FakeRecorder(rows)
+            values, read, complete = NUMERIC.fetch_numeric_history_values(
+                None, ENTITY, start, END, hours * 60, 1, "mean", state_changes_during_period=recorder)
+            self.assertEqual((read, complete, len(recorder.calls)), (hours * 120, True, queries))
+            reference = NUMERIC.NumericBuckets(start, hours * 60, 1)
+            for item in rows:
+                reference.add(item)
+            self.assertEqual(values, reference.values("mean"))
 
     def test_pv_sensor_stays_complete_for_a_week(self):
         # About 4,100 changes a day for 14 hours of daylight: 29,001 in 7 days.

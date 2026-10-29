@@ -1,14 +1,15 @@
 """Numeric Sensor graph values from Recorder statistics or state rows.
 
-The panel asks for up to 168 hours in ``points`` buckets of ``period_minutes``
+The panel asks for up to 720 hours in ``points`` buckets of ``period_minutes``
 and plots the mean, min, max or last value of each bucket; it fills an empty
 bucket with the value before it.
 
 Buckets of 5 minutes or more come from the Recorder statistics when the sensor
 has them: 5-minute statistics while the Recorder keeps them
 (``purge_keep_days``), hourly statistics for older periods, and state rows after
-the newest compiled period. A measurement sensor's statistics carry the mean,
-min and max of each period. A ``total`` or ``total_increasing`` sensor's
+the newest compiled period. Buckets of whole hours take the hourly statistics
+first and 5-minute ones only after the newest hour. A measurement sensor's
+statistics carry the mean, min and max of each period. A ``total`` or ``total_increasing`` sensor's
 statistics carry its state at the end of each period, the value its graph
 shows; their ``sum`` starts at zero and is not used.
 
@@ -269,6 +270,21 @@ def _read_statistics(
 ) -> Optional[datetime]:
   """Fold the statistics in; returns the end of the newest period, if any."""
   types = {"state"} if kind == "state" else {"mean", "min", "max"}
+  if buckets.bucket_seconds % HOUR_SECONDS == 0:
+    # Buckets of whole hours (7D, 30D) take the hourly statistics, the
+    # Recorder's own sums of its 5-minute ones, and 5-minute periods only
+    # after the newest hour: 168 or 720 rows instead of about 2,000 or 8,600
+    # (7D answered after 687 ms, 2026-10-29).
+    hourly = statistics_during_period(
+      hass, _floor(buckets.start, HOUR_SECONDS), end, {entity_id}, "hour", None, set(types)
+    )
+    _, newest = _add_statistics_rows(buckets, (hourly or {}).get(entity_id, []), kind)
+    if newest is not None:
+      if newest < end:
+        short = statistics_during_period(hass, newest, end, {entity_id}, "5minute", None, set(types))
+        _, short_newest = _add_statistics_rows(buckets, (short or {}).get(entity_id, []), kind)
+        newest = short_newest or newest
+      return newest
   # Periods start on the 5-minute grid; the one around the graph's start
   # belongs to bucket 0 when its middle is inside the graph.
   short_start = _floor(buckets.start, SHORT_TERM_SECONDS)
@@ -292,9 +308,9 @@ class UnpagedRecorder(Exception):
   """The Recorder does not accept the paging arguments."""
 
 
-def _ranges_newest_first(first: int, last: int) -> Iterator[Tuple[int, int]]:
-  """Bucket ranges of 1, 2, 4, ... buckets from ``last`` back to ``first``."""
-  high, size = last, 1
+def _ranges_newest_first(first: int, last: int, size: int = 1) -> Iterator[Tuple[int, int]]:
+  """Bucket ranges of size, 2 * size, ... buckets from ``last`` back to ``first``."""
+  high = last
   while high >= first:
     low = max(first, high - size + 1)
     yield low, high
@@ -321,7 +337,12 @@ def _read_state_rows(
   first = buckets.index(since) or 0
   last = buckets.points - 1
   rows_read = 0
-  for low, high in _ranges_newest_first(first, last):
+  # The newest hour first, then twice as much each time: from one bucket on,
+  # 6H's 360 minutes took nine queries (answered after 518 ms, 2026-10-29),
+  # now three, 1H's one. Hourly buckets start with one as before, so a capped
+  # week of a busy sensor still keeps its newest hours.
+  first_range = max(1, HOUR_SECONDS // buckets.bucket_seconds)
+  for low, high in _ranges_newest_first(first, last, first_range):
     range_end = end if high == last else buckets.bucket_start(high + 1)
     # The Recorder reads strictly after the cursor and before the end, so a
     # range starts 1 us before its first bucket: a change exactly on the
