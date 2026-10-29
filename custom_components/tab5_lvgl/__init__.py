@@ -4275,8 +4275,14 @@ class Tab5Bridge:
       parsed = {}
 
     period = str(parsed.get("period") or "day").strip().lower()
-    if period not in {"day", "week", "month"}:
+    if period not in {"day", "week", "month", "year"}:
       period = "day"
+    # The panel's first day of the week (tm_wday: 0 Sunday, 1 Monday, 6
+    # Saturday): with it the week runs from that day like the calendar's
+    # weeks; firmware without it gets the last seven days as before.
+    week_start = parsed.get("week_start")
+    if isinstance(week_start, bool) or not isinstance(week_start, int) or not 0 <= week_start <= 6:
+      week_start = None
 
     # Without data the panel still gets an answer: every firmware stops
     # waiting on any response, while a missing one made it ask again every
@@ -4437,17 +4443,26 @@ class Tab5Bridge:
         cost_stat_ids.add(e["stat_cost"])
         all_stat_ids.add(e["stat_cost"])
 
-    # Determine time range
+    # Determine time range: today by the hour, the week and the month by the
+    # day, the year by the month, each from its start up to now.
     now = dt_util.now()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if period == "day":
-      start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+      start = midnight
       stat_period = "hour"
+    elif period == "week" and week_start is not None:
+      weekday = (now.weekday() + 1) % 7  # Python counts from Monday, tm_wday from Sunday
+      start = midnight - timedelta(days=(weekday - week_start) % 7)
+      stat_period = "day"
     elif period == "week":
       start = (now - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
       stat_period = "day"
-    else:  # month
-      start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif period == "month":
+      start = midnight.replace(day=1)
       stat_period = "day"
+    else:  # year
+      start = midnight.replace(month=1, day=1)
+      stat_period = "month"
     start_utc = dt_util.as_utc(start)
     end_utc = dt_util.as_utc(now)
 
@@ -4551,12 +4566,53 @@ class Tab5Bridge:
     def _has_numeric_change(changes: list[float | None]) -> bool:
       return any(change is not None for change in changes)
 
+    def _slot_of(row: dict[str, Any]) -> int | None:
+      """The bar of a statistics row, counted from `start`: its local hour of
+      the day, its day or its month. None for a row without a start."""
+      row_start = row.get("start")
+      if row_start is None:
+        return None
+      if isinstance(row_start, (int, float)):
+        local = datetime.fromtimestamp(row_start, start.tzinfo)
+      elif isinstance(row_start, datetime):
+        local = row_start.astimezone(start.tzinfo)
+      else:
+        return None
+      if stat_period == "hour":
+        # The clock hour: the hour repeated when the clocks go back adds to
+        # its bar, the hour skipped in spring stays empty.
+        return local.hour if local.date() == start.date() else -1
+      if stat_period == "day":
+        return (local.date() - start.date()).days
+      return (local.year - start.year) * 12 + local.month - start.month
+
+    def _aligned(rows: list[dict[str, Any]], changes: list[float | None],
+                 precision: int) -> list[float | None]:
+      """Each change in its own bar. A period the statistics lack (a sensor
+      added in March, a gap) stays empty instead of moving the later bars
+      forward; rows without a start keep their order."""
+      slots: dict[int, float | None] = {}
+      for row, change in zip(rows, changes):
+        slot = _slot_of(row)
+        if slot is None:
+          return changes
+        if not 0 <= slot < 32:
+          continue
+        if change is None:
+          slots.setdefault(slot, None)
+        else:
+          slots[slot] = round((slots.get(slot) or 0.0) + change, precision)
+      if not slots:
+        return []
+      return [slots.get(slot) for slot in range(max(slots) + 1)]
+
     # Build response per entry
     result_entries: list[dict[str, Any]] = []
     for entry in entries:
       stat_id = entry["stat_id"]
       stat_data = stats.get(stat_id, [])
       changes, total = _changes_from_statistics(stat_data, 3)
+      changes = _aligned(stat_data, changes, 3)
 
       state = self.hass.states.get(stat_id)
       name = entry.get("device_name") or (
@@ -4586,6 +4642,7 @@ class Tab5Bridge:
 
       if cost_stat and (cost_rows := stats.get(cost_stat)):
         cost_changes, cost_total = _changes_from_statistics(cost_rows, 4)
+        cost_changes = _aligned(cost_rows, cost_changes, 4)
         if not _has_numeric_change(cost_changes):
           cost_changes = None
           cost_total = 0.0
