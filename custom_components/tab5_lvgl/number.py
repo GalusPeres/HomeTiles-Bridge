@@ -11,10 +11,10 @@ from homeassistant.helpers.entity import EntityCategory
 
 # MQTT calls also reach panels on the direct link (link_mqtt.py).
 from . import link_mqtt as mqtt
+from .capabilities import merged_capabilities_data, supports
 from .const import TOPIC_DISPLAY_BRIGHTNESS
 from .device_helpers import (
     command_topic,
-    entry_base_topic,
     entry_device_info,
     entry_device_id,
     state_topic,
@@ -49,8 +49,13 @@ def _percent_to_legacy_raw(percent: int) -> int:
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities
 ) -> None:
-    base_topic = entry_base_topic(entry)
-    async_add_entities([Tab5BrightnessNumber(entry, base_topic)])
+    # Forwarded only with the panel's Assist (ASSIST_PLATFORMS): the Timer
+    # volume. Display brightness is the light platform's; this number class
+    # stays for reference and is not created.
+    if supports(merged_capabilities_data(entry), "audio_input"):
+        from .timer_volume_number import HomeTilesTimerVolumeNumber
+
+        async_add_entities([HomeTilesTimerVolumeNumber(entry)])
 
 
 class Tab5BrightnessNumber(NumberEntity):

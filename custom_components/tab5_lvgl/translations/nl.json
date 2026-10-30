@@ -267,6 +267,17 @@
           "aggressive": "Agressief",
           "relaxed": "Ontspannen"
         }
+      },
+      "timer_sound": {
+        "name": "Timergeluid",
+        "state": {
+          "rising_three": "Drie oplopend",
+          "kitchen_beep": "Keukenpiep",
+          "soft_bell": "Zachte bel",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "Uit"
+        }
       }
     },
     "switch": {
@@ -305,6 +316,9 @@
     "number": {
       "display_brightness": {
         "name": "Schermhelderheid"
+      },
+      "timer_volume": {
+        "name": "Timervolume"
       }
     },
     "sensor": {
