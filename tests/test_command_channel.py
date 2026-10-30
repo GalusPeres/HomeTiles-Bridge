@@ -505,7 +505,7 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
         bridge._async_setup_requests = noop
         bridge._async_load_panel_entities = noop
         for leaf in ("scene", "light", "switch", "value", "media", "climate", "cover", "camera",
-                     "fan", "lock", "alarm", "entities", "tiles"):
+                     "fan", "vacuum", "lock", "alarm", "entities", "tiles"):
             async def handler(msg, leaf=leaf):
                 self.handled.append((leaf, msg.topic, msg.payload, msg.retain))
             setattr(bridge, f"_async_handle_{leaf}_command", handler)

@@ -189,6 +189,11 @@ class SourceContractTest(unittest.TestCase):
     self.assertIn("_refresh_vacuum_companions()", refresh)
     self.assertIn("vacuum_maps", self.source[self.source.index("def allowed(session"):][:600])
 
+  def test_sealed_vacuum_commands_are_accepted(self) -> None:
+    channel = load_module("command_channel")
+    self.assertIn("vacuum", channel.SEALED_COMMANDS)
+    self.assertNotIn("vacuum", channel.SEALED_ONLY_COMMANDS)
+
   def test_panel_list_and_options_form(self) -> None:
     self.assertEqual(CONTROL.panel_entity_list(["vacuum.robo"], "vacuums"), ["vacuum.robo"])
     with self.assertRaises(ValueError):

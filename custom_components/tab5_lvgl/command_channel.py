@@ -52,8 +52,8 @@ CONF_LEGACY_CODE = "command_pairing_code"
 
 # Panel command topics that arrive sealed once pairing is active.
 SEALED_COMMANDS = frozenset({
-  "scene", "light", "switch", "media", "climate", "cover", "camera", "value", "fan", "lock", "alarm",
-  "entities", "tiles",
+  "scene", "light", "switch", "media", "climate", "cover", "camera", "value", "fan", "vacuum", "lock",
+  "alarm", "entities", "tiles",
 })
 # Commands that exist only sealed: Lock and Alarm, the entity search and the
 # tiles' entities (entity_search.py) never have a plain topic.
