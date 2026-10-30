@@ -4647,8 +4647,16 @@ class Tab5Bridge:
     start_utc = dt_util.as_utc(start)
     end_utc = dt_util.as_utc(now)
 
+    def _row_start(row: dict[str, Any]) -> datetime | None:
+      value = row.get("start")
+      if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, start.tzinfo)
+      if isinstance(value, datetime):
+        return value
+      return None
+
     def _fetch_energy_statistics() -> dict[str, list[dict[str, Any]]]:
-      return statistics_during_period(
+      stats = statistics_during_period(
         self.hass,
         start_utc,
         end_utc,
@@ -4657,6 +4665,41 @@ class Tab5Bridge:
         None,
         {"change", "sum"},
       )
+      if stat_period != "hour":
+        return stats
+      # Today by the hour: the Recorder writes an hour's statistics only once
+      # the hour is over, so the running hour (and an hour not compiled yet)
+      # comes from the 5-minute statistics after each source's newest hour;
+      # _aligned adds them into their hour's bar, and the panel's tile follows
+      # every five minutes (user 2026-10-30: the bars stood still). The same
+      # join as numeric_history's.
+      stats = {stat_id: list(rows) for stat_id, rows in (stats or {}).items()}
+      covered: dict[str, datetime] = {}
+      for stat_id in all_stat_ids:
+        newest = start_utc
+        for row in stats.get(stat_id, []):
+          row_start = _row_start(row)
+          if row_start is not None and row_start + timedelta(hours=1) > newest:
+            newest = row_start + timedelta(hours=1)
+        covered[stat_id] = newest
+      short_start = min(covered.values(), default=end_utc)
+      if short_start >= end_utc:
+        return stats
+      short = statistics_during_period(
+        self.hass,
+        short_start,
+        end_utc,
+        all_stat_ids,
+        "5minute",
+        None,
+        {"change", "sum"},
+      )
+      for stat_id, rows in (short or {}).items():
+        after = covered.get(stat_id, short_start)
+        stats.setdefault(stat_id, []).extend(
+          row for row in rows if (_row_start(row) or after) >= after
+        )
+      return stats
 
     try:
       stats = await get_instance(self.hass).async_add_executor_job(

@@ -43,7 +43,12 @@ class EnergyPeriodTest(unittest.IsolatedAsyncioTestCase):
 
     def statistics(hass, start, end, ids, period, units, kinds):
       self.queries.append((start, end, period))
-      rows = self.rows if self.rows is not None else [{"change": 1.0, "sum": 1.0}]
+      if isinstance(self.rows, dict):
+        rows = self.rows.get(period, [])
+      elif period == "5minute":
+        rows = []
+      else:
+        rows = self.rows if self.rows is not None else [{"change": 1.0, "sum": 1.0}]
       return {stat_id: rows for stat_id in ids}
 
     async def run_job(job):
@@ -81,8 +86,33 @@ class EnergyPeriodTest(unittest.IsolatedAsyncioTestCase):
   async def test_today_by_the_hour_from_midnight(self):
     answer = await self.request({"period": "day"})
     self.assertEqual(answer["period"], "day")
-    self.assertEqual(self.queries[-1][0], self.local(2026, 10, 29).astimezone(datetime.timezone.utc))
-    self.assertEqual(self.queries[-1][2], "hour")
+    self.assertEqual(self.queries[0][0], self.local(2026, 10, 29).astimezone(datetime.timezone.utc))
+    self.assertEqual(self.queries[0][2], "hour")
+
+  async def test_the_running_hour_from_the_five_minute_statistics(self):
+    # User 2026-10-30: the tile's bars stood still. The Recorder has written
+    # the hours up to 12:00; 13:00 is over but not compiled yet and 14:00 is
+    # running (14:30): both come from the 5-minute statistics after 13:00.
+    hours = [{"start": self.local(2026, 10, 29, hour), "change": 1.0, "sum": hour + 1.0} for hour in range(13)]
+    short = [{"start": self.local(2026, 10, 29, 12, 55), "change": 9.0, "sum": 13.0}]
+    short += [{"start": self.local(2026, 10, 29, 13 + minute // 60, minute % 60), "change": 0.25,
+               "sum": 13.0 + 0.25 * (index + 1)} for index, minute in enumerate(range(0, 90, 5))]
+    self.rows = {"hour": hours, "5minute": short}
+    answer = await self.request({"period": "day"})
+    self.assertEqual([query[2] for query in self.queries], ["hour", "5minute"])
+    self.assertEqual(self.queries[1][:2], (self.local(2026, 10, 29, 13).astimezone(datetime.timezone.utc),
+                                           NOW.astimezone(datetime.timezone.utc)))
+    pv = next(entry for entry in answer["entries"] if entry["id"] == "sensor.pv")
+    # The 12:55 row belongs to an hour the hourly statistics already hold.
+    self.assertEqual(pv["values"], [1.0] * 13 + [3.0, 1.5])
+    self.assertEqual(pv["total"], 17.5)
+
+  async def test_the_five_minute_statistics_only_for_today(self):
+    # The week, month and year keep their own statistics alone.
+    for period in ("week", "month", "year"):
+      self.queries.clear()
+      await self.request({"period": period})
+      self.assertNotIn("5minute", [query[2] for query in self.queries], period)
 
   async def test_the_week_starts_on_the_panels_first_weekday(self):
     # tm_wday: Monday 1, Sunday 0, Saturday 6; today is a Thursday.
@@ -126,9 +156,9 @@ class EnergyPeriodTest(unittest.IsolatedAsyncioTestCase):
 
   async def test_hours_by_the_clock(self):
     # Datetime starts too; the hour before midnight belongs to no bar.
-    self.rows = [{"start": self.local(2026, 10, 28, 23), "change": 9.0, "sum": 9.0},
-                 {"start": self.local(2026, 10, 29, 0), "change": 0.5, "sum": 9.5},
-                 {"start": self.local(2026, 10, 29, 2), "change": 0.25, "sum": 9.75}]
+    self.rows = {"hour": [{"start": self.local(2026, 10, 28, 23), "change": 9.0, "sum": 9.0},
+                          {"start": self.local(2026, 10, 29, 0), "change": 0.5, "sum": 9.5},
+                          {"start": self.local(2026, 10, 29, 2), "change": 0.25, "sum": 9.75}]}
     answer = await self.request({"period": "day"})
     pv = next(entry for entry in answer["entries"] if entry["id"] == "sensor.pv")
     self.assertEqual(pv["values"], [0.5, None, 0.25])
