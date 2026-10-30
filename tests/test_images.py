@@ -44,21 +44,29 @@ class Session:
 
 class TopicsAndKeysTest(unittest.TestCase):
     def test_picture_topics(self):
-        self.assertEqual(IMAGES.parse_image_topic(TOPIC), ("media_player.tv", 480, 480, "fill", None))
+        self.assertEqual(IMAGES.parse_image_topic(TOPIC), ("media_player.tv", 480, 480, "fill", None, (0, 0, 0)))
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/media_player/tv/image/1280x800"),
-                         ("media_player.tv", 1280, 800, "fill", None))
+                         ("media_player.tv", 1280, 800, "fill", None, (0, 0, 0)))
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/image/frame/image/1280x800"),
-                         ("image.frame", 1280, 800, "fill", None))
+                         ("image.frame", 1280, 800, "fill", None, (0, 0, 0)))
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/camera/door/image/800x480"),
-                         ("camera.door", 800, 480, "fill", None))
+                         ("camera.door", 800, 480, "fill", None, (0, 0, 0)))
         # Options after the size: how the picture is placed, a camera's interval.
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/image/frame/image/1280x800/fit"),
-                         ("image.frame", 1280, 800, "fit", None))
+                         ("image.frame", 1280, 800, "fit", None, (0, 0, 0)))
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/camera/door/image/800x1280/original/5s"),
-                         ("camera.door", 800, 1280, "original", 5))
+                         ("camera.door", 800, 1280, "original", 5, (0, 0, 0)))
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/camera/door/image/800x480/3s"),
-                         ("camera.door", 800, 480, "fill", 3))
+                         ("camera.door", 800, 480, "fill", 3, (0, 0, 0)))
         self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/camera/door/image/800x480/60s").every, 60)
+        # The color the panel shows behind the picture (a vacuum map's surface).
+        self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/camera/robo_map/image/400x400/fit/on-1a2b3c/3s"),
+                         ("camera.robo_map", 400, 400, "fit", 3, (0x1a, 0x2b, 0x3c)))
+        self.assertEqual(IMAGES.parse_image_topic(f"{PREFIX}/image/robo_map/image/400x400/on-ffffff").backdrop,
+                         (255, 255, 255))
+        for bad in (f"{PREFIX}/image/m/image/400x400/on-FFFFFF", f"{PREFIX}/image/m/image/400x400/on-12345",
+                    f"{PREFIX}/image/m/image/400x400/3s/on-123456", f"{PREFIX}/image/m/image/400x400/on-123456/fit"):
+            self.assertIsNone(IMAGES.parse_image_topic(bad), bad)
         for bad in (f"{PREFIX}/media_player/tv/image/8x8", f"{PREFIX}/media_player/tv/image/2000x480",
                     f"{PREFIX}/light/desk/image/480x480", f"{PREFIX}/media_player/TV/image/480x480",
                     f"{PREFIX}/media_player/tv/image/480", f"{PREFIX}/media_player/tv/state",
@@ -119,6 +127,18 @@ class RenderTest(unittest.TestCase):
         # Fill covers the whole screen instead.
         filled = self.decode(IMAGES.render_jpeg(jpeg_source(640, 320, (200, 40, 40)), 480, 480, 65535))
         self.assertGreater(filled.getpixel((240, 40))[0], 150)
+
+    def test_transparent_parts_and_bars_take_the_backdrop(self):
+        from PIL import Image
+        source = Image.new("RGBA", (200, 100), (0, 0, 0, 0))
+        source.paste((250, 250, 250, 255), (50, 25, 150, 75))
+        output = BytesIO()
+        source.save(output, format="PNG")
+        picture = self.decode(IMAGES.render_jpeg(output.getvalue(), 200, 200, 65535, "fit", (40, 80, 120)))
+        for point in ((100, 20), (10, 100), (100, 180)):
+            r, g, b = picture.getpixel(point)[:3]
+            self.assertTrue(abs(r - 40) < 12 and abs(g - 80) < 12 and abs(b - 120) < 12, (point, (r, g, b)))
+        self.assertGreater(min(picture.getpixel((100, 100))[:3]), 220, "the opaque part stays")
 
     def test_original_keeps_a_small_picture_at_its_size(self):
         picture = self.decode(IMAGES.render_jpeg(jpeg_source(100, 60, (200, 40, 40)), 480, 480, 65535, "original"))
@@ -183,7 +203,7 @@ class ImageServiceTest(unittest.IsolatedAsyncioTestCase):
                 return IMAGES.Source(None, load_still, 0.05)
             return None
 
-        async def render(data, width, height, budget, fit):
+        async def render(data, width, height, budget, fit, backdrop=(0, 0, 0)):
             self.budgets.append(budget)
             self.fits.append(fit)
             return IMAGES.render_jpeg(data, width, height, budget, fit)

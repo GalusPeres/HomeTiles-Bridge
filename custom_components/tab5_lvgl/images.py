@@ -5,8 +5,10 @@ A panel subscribes to the picture it shows in the size it shows it,
 an image entity, or a camera's still image (the screensaver picture). Two
 optional segments follow the size: ``/fit`` (the whole picture, black bars)
 or ``/original`` (its own size when smaller, else like fit) instead of
-filling w x h; and ``/<n>s``, a camera's still every n seconds (3..60)
-instead of every 10. While
+filling w x h; ``/on-rrggbb``, the color the panel shows behind the picture
+(transparent parts and the bars of fit take it instead of black: a vacuum
+map on its tile's surface); and ``/<n>s``, a camera's still every n seconds
+(3..60) instead of every 10. While
 at least one linked panel holds such a subscription and the Bridge serves
 that entity to it, this service loads the picture, cuts it to exactly w x h
 (centred, filling) and publishes it retained on that topic:
@@ -33,7 +35,7 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Awaitable, Callable, Dict, Iterable, NamedTuple, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterable, NamedTuple, Optional, Set, Tuple
 
 from .link_protocol import MAX_PAYLOAD
 
@@ -62,8 +64,9 @@ GRAPHIC_MAX_COLORS = 256
 _IMAGE_TOPIC = re.compile(
   r"(?P<prefix>.+)/(?P<domain>media_player|image|camera)/(?P<object_id>[a-z0-9_]+)/image/"
   r"(?P<w>[1-9][0-9]{1,3})x(?P<h>[1-9][0-9]{1,3})"
-  r"(?:/(?P<fit>fit|original))?(?:/(?P<every>[1-9][0-9]?)s)?\Z"
+  r"(?:/(?P<fit>fit|original))?(?:/on-(?P<on>[0-9a-f]{6}))?(?:/(?P<every>[1-9][0-9]?)s)?\Z"
 )
+BLACK = (0, 0, 0)
 
 
 class ImageTopic(NamedTuple):
@@ -72,6 +75,7 @@ class ImageTopic(NamedTuple):
   height: int
   fit: str = FILL
   every: Optional[int] = None
+  backdrop: Tuple[int, int, int] = BLACK
 
 
 def parse_image_topic(topic: str) -> Optional[ImageTopic]:
@@ -85,7 +89,9 @@ def parse_image_topic(topic: str) -> Optional[ImageTopic]:
   every = int(match["every"]) if match["every"] else None
   if every is not None and not CAMERA_REFRESH_MIN_S <= every <= CAMERA_REFRESH_MAX_S:
     return None
-  return ImageTopic(f"{match['domain']}.{match['object_id']}", width, height, match["fit"] or FILL, every)
+  on = match["on"]
+  backdrop = (int(on[0:2], 16), int(on[2:4], 16), int(on[4:6], 16)) if on else BLACK
+  return ImageTopic(f"{match['domain']}.{match['object_id']}", width, height, match["fit"] or FILL, every, backdrop)
 
 
 def build_payload(key: str, width: int, height: int, jpeg: bytes) -> bytes:
@@ -97,10 +103,11 @@ def content_key(data: bytes) -> str:
   return hashlib.sha256(data).hexdigest()[:16]
 
 
-def _place(picture: Any, width: int, height: int, fit: str) -> Any:
+def _place(picture: Any, width: int, height: int, fit: str, backdrop: Tuple[int, int, int] = BLACK) -> Any:
   """The picture on exactly width x height: filled and cut (fill), as large
-  as fits with black bars (fit), or 1:1 in the middle when it is smaller
-  (original, else like fit). Graphics are enlarged with hard edges."""
+  as fits with bars in the backdrop color (fit), or 1:1 in the middle when it
+  is smaller (original, else like fit). Graphics are enlarged with hard
+  edges."""
   from PIL import Image, ImageOps
 
   if fit == FILL:
@@ -117,14 +124,16 @@ def _place(picture: Any, width: int, height: int, fit: str) -> Any:
   size = (max(1, round(picture.width * scale)), max(1, round(picture.height * scale)))
   if size != picture.size:
     picture = picture.resize(size, resample)
-  canvas = Image.new("RGB", (width, height), (0, 0, 0))
+  canvas = Image.new("RGB", (width, height), backdrop)
   canvas.paste(picture, ((width - size[0]) // 2, (height - size[1]) // 2))
   return canvas
 
 
-def render_jpeg(data: bytes, width: int, height: int, max_bytes: int, fit: str = FILL) -> Optional[bytes]:
+def render_jpeg(data: bytes, width: int, height: int, max_bytes: int, fit: str = FILL,
+                backdrop: Tuple[int, int, int] = BLACK) -> Optional[bytes]:
   """The source picture placed on width x height (_place), as a baseline
-  JPEG within max_bytes (blocking: run it in an executor)."""
+  JPEG within max_bytes (blocking: run it in an executor). Transparent parts
+  take the backdrop color."""
   try:
     from PIL import Image, ImageFile, ImageOps
   except Exception as err:  # pragma: no cover - Pillow ships with Home Assistant
@@ -136,13 +145,13 @@ def render_jpeg(data: bytes, width: int, height: int, max_bytes: int, fit: str =
     with Image.open(BytesIO(data)) as source:
       picture = ImageOps.exif_transpose(source)
       if picture.mode in ("RGBA", "LA") or (picture.mode == "P" and "transparency" in picture.info):
-        background = Image.new("RGB", picture.size, (0, 0, 0))
+        background = Image.new("RGB", picture.size, backdrop)
         rgba = picture.convert("RGBA")
         background.paste(rgba, mask=rgba.split()[-1])
         picture = background
       else:
         picture = picture.convert("RGB")
-      picture = _place(picture, width, height, fit)
+      picture = _place(picture, width, height, fit, backdrop)
       for quality in JPEG_QUALITIES:
         output = BytesIO()
         picture.save(output, format="JPEG", quality=quality, optimize=False, progressive=False,
@@ -369,7 +378,7 @@ class ImageService:
     if self._published.get(topic) == key:
       return
     budget = self._budget(topic) - len(build_payload(key, width, height, b""))
-    jpeg = await self._render(data, width, height, budget, parsed.fit)
+    jpeg = await self._render(data, width, height, budget, parsed.fit, parsed.backdrop)
     if not jpeg:
       self._note(topic, "could not render the picture", f"{len(data)} source bytes, {budget} bytes room")
       return

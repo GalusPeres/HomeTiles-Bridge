@@ -758,8 +758,9 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
       _LOGGER.debug("HomeTiles pictures: fetch failed (%s)", err)
       return None
 
-  async def render(data: bytes, width: int, height: int, budget: int, fit: str) -> Optional[bytes]:
-    return await hass.async_add_executor_job(render_jpeg, data, width, height, budget, fit)
+  async def render(data: bytes, width: int, height: int, budget: int, fit: str,
+                   backdrop: Tuple[int, int, int] = (0, 0, 0)) -> Optional[bytes]:
+    return await hass.async_add_executor_job(render_jpeg, data, width, height, budget, fit, backdrop)
 
   def allowed(session: Any, entity_id: str) -> bool:
     lists = {
