@@ -17,6 +17,7 @@ COVER = "https://cdn.test/song.jpg"
 METHODS = {
   "_async_build_state_payload", "_gate_media_artwork", "_async_publish_entity_state",
   "_owns_state_publish", "_ha_topic_for_entity", "_add_media_group", "_media_group_candidates",
+  "_detail_entities",
 }
 
 

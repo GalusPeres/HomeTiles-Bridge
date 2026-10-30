@@ -131,7 +131,7 @@ class ListWiringTest(unittest.TestCase):
       CONTROL.panel_entity_list(["calendar.home", "script.x"], "calendars")
     source = (ROOT / "__init__.py").read_text(encoding="utf-8")
     self.assertIn('"calendar_meta": self._build_entity_meta(self.calendars),', source)
-    self.assertIn('"entity_search": 5,', source)
+    self.assertIn('"entity_search": 6,', source)
     self.assertIn("+ self.calendars\n", source, "calendar state changes reach the Bridge")
     flow = (ROOT / "config_flow.py").read_text(encoding="utf-8")
     self.assertIn('calendars = selected(CONF_CALENDARS, ("calendar",))', flow)

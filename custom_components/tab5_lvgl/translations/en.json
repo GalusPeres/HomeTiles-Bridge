@@ -157,6 +157,7 @@
           "selects": "Selects / dropdown helpers",
           "datetimes": "Date / Time / helpers",
           "fans": "Fans",
+          "vacuums": "Vacuums",
           "calendars": "Calendars",
           "locks": "Locks",
           "alarm_panels": "Alarm panels",

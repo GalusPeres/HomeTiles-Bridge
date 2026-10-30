@@ -416,7 +416,7 @@ class WiringTest(unittest.TestCase):
         self.assertRegex(source, r"async def _async_stop_link\(_event: Event\) -> None:\s*images\.stop\(\)")
         self.assertRegex(source, r"self\._gate_media_artwork\(entity_id, payload\)\s*# Linked panels show the picture with this key \(images\.py\)\.\s*key = image_key_field\(payload\)\s*if key is not None:\s*payload\[\"image_key\"\] = key")
         self.assertNotIn("artwork_changed", source)
-        self.assertIn('"camera": ("images", "cameras"),', source)
+        self.assertIn('"camera": ("images", "cameras", "vacuum_maps"),', source)
         self.assertIn("return ImageSource(None, lambda: camera_still(entity_id), CAMERA_REFRESH_S)", source)
         self.assertIn("return async_track_state_change_event(hass, list(entities), _changed)", source)
         # An image entity's picture comes from the entity, up to a full-size

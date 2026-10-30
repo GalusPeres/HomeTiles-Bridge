@@ -139,6 +139,7 @@ from .const import (
   CONF_ENERGY_WATER,
   CONF_CALENDARS,
   CONF_FANS,
+  CONF_VACUUMS,
   CONF_HA_PREFIX,
   CONF_LIGHTS,
   CONF_LOCAL_IO,
@@ -214,6 +215,17 @@ from .access_helpers import (
   plan_access_call,
 )
 from .fan_helpers import FAN_DOMAIN, build_fan_detail, build_fan_service_call, parse_fan_command
+from .vacuum_helpers import (
+  VACUUM_DOMAIN,
+  area_choices,
+  area_measure,
+  battery_level,
+  build_vacuum_detail,
+  build_vacuum_service_call,
+  parse_vacuum_command,
+  pick_companions,
+  time_measure,
+)
 from .media_artwork import ArtworkClearGate, artwork_url, image_key, image_key_field, is_ha_media_proxy
 from .media_browser import browse_arguments as media_browse_arguments, catalog_pages, normalize_result as normalize_browse_result
 from .media_controls import (
@@ -752,8 +764,8 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
   def allowed(session: Any, entity_id: str) -> bool:
     lists = {
       "media_player": ("media_players",),
-      "image": ("images",),
-      "camera": ("images", "cameras"),
+      "image": ("images", "vacuum_maps"),
+      "camera": ("images", "cameras", "vacuum_maps"),
     }.get(entity_domain(entity_id), ())
     for bridge in hass.data.get(DOMAIN, {}).get("entries", {}).values():
       if getattr(bridge, "device_id", None) == getattr(session, "device_id", None):
@@ -1568,6 +1580,15 @@ class Tab5Bridge:
     self.locks: List[str] = _unique_entities(list(data.get(CONF_LOCKS, [])))
     self.alarm_panels: List[str] = _unique_entities(list(data.get(CONF_ALARM_PANELS, [])))
     self.fans: List[str] = _unique_entities(list(data.get(CONF_FANS, [])))
+    self.vacuums: List[str] = _unique_entities(list(data.get(CONF_VACUUMS, [])))
+    # Entities of each vacuum's own device the Vacuum tile shows beside it
+    # (vacuum_helpers.pick_companions), the vacuum of each companion sensor,
+    # and the maps served with their vacuum (images.py).
+    self._vacuum_companions: Dict[str, Dict[str, Optional[str]]] = {}
+    self._vacuum_of_companion: Dict[str, str] = {}
+    self.vacuum_maps: List[str] = []
+    self._vacuum_refresh_cancel = None
+    self._unsub_vacuum_registry = None
     # Calendars a Calendar tile shows; their events travel on the retained
     # `events` topic (calendar_events.py, _async_publish_calendar_events).
     self.calendars: List[str] = _unique_entities(list(data.get(CONF_CALENDARS, [])))
@@ -1630,6 +1651,7 @@ class Tab5Bridge:
     self._unsub_cover = None
     self._unsub_camera = None
     self._unsub_fan = None
+    self._unsub_vacuum = None
     # Lock/Alarm command ids within their deadline (replay guard). The code
     # guard of this panel lives in hass.data (_code_guard).
     self._access_seen: Dict[str, float] = {}
@@ -1761,6 +1783,7 @@ class Tab5Bridge:
     all_locks: List[str] = []
     all_alarm_panels: List[str] = []
     all_fans: List[str] = []
+    all_vacuums: List[str] = []
     all_calendars: List[str] = []
     all_open_without_code: List[str] = []
     all_access_codes: Dict[str, List[str]] = {}
@@ -1796,6 +1819,7 @@ class Tab5Bridge:
       all_locks.extend(list(data.get(CONF_LOCKS, [])))
       all_alarm_panels.extend(list(data.get(CONF_ALARM_PANELS, [])))
       all_fans.extend(list(data.get(CONF_FANS, [])))
+      all_vacuums.extend(list(data.get(CONF_VACUUMS, [])))
       all_calendars.extend(list(data.get(CONF_CALENDARS, [])))
       all_open_without_code.extend(list(data.get(CONF_OPEN_WITHOUT_CODE, [])))
       for entity_id, codes in _access_codes_of(data).items():
@@ -1823,6 +1847,7 @@ class Tab5Bridge:
         item for item in _unique_entities(all_alarm_panels) if entity_domain(item) == ALARM_DOMAIN
       ],
       "fans": [item for item in _unique_entities(all_fans) if entity_domain(item) == FAN_DOMAIN],
+      "vacuums": [item for item in _unique_entities(all_vacuums) if entity_domain(item) == VACUUM_DOMAIN],
       "calendars": [item for item in _unique_entities(all_calendars) if entity_domain(item) == CALENDAR_DOMAIN],
       "open_without_code": _unique_entities(all_open_without_code),
       "access_codes": all_access_codes,
@@ -1831,7 +1856,7 @@ class Tab5Bridge:
 
   def _refresh_runtime_entity_lists(self) -> None:
     """Keep runtime sensor/tracked lists in sync — merges from all entries."""
-    previous_tracked = tuple(self.tracked_entities)
+    previous_tracked = tuple(self._state_watch_entities())
     merged = self._collect_all_entries_entities()
     internal_sensors = self._resolve_internal_sensor_entities()
     local_temperatures = self._resolve_local_io_entities(
@@ -1850,6 +1875,7 @@ class Tab5Bridge:
         "covers": source["covers"], "cameras": source["cameras"], "images": source["images"],
         "weathers": source["weathers"],
         "locks": source["locks"], "alarm_panels": source["alarm_panels"], "fans": source["fans"],
+        "vacuums": source["vacuums"],
         "calendars": source["calendars"],
         "scenes": _unique_entities(list(source["scene_map"].values())),
       }
@@ -1880,19 +1906,13 @@ class Tab5Bridge:
       + self.locks
       + self.alarm_panels
       + self.fans
+      + self.vacuums
       + self.calendars
       + list(self.scene_map.values())
     )
-    if self._runtime_setup_complete and tuple(self.tracked_entities) != previous_tracked:
-      if self._unsub_state:
-        self._unsub_state()
-        self._unsub_state = None
-      if self.tracked_entities:
-        self._unsub_state = async_track_state_change_event(
-          self.hass,
-          self.tracked_entities,
-          self._handle_state_event,
-        )
+    self._refresh_vacuum_companions()
+    if self._runtime_setup_complete and tuple(self._state_watch_entities()) != previous_tracked:
+      self._resubscribe_state_events()
 
     if self._runtime_setup_complete:
       self._sync_weather_subscriptions()
@@ -1903,6 +1923,112 @@ class Tab5Bridge:
     images = domain_data.get(DATA_IMAGES)
     if images is not None and domain_data.get("entries", {}).get(self.entry.entry_id) is self:
       images.recheck()
+
+  def _state_watch_entities(self) -> List[str]:
+    """Tracked entities plus the sensors a Vacuum tile shows beside its vacuum."""
+    return _unique_entities(list(self.tracked_entities) + list(getattr(self, "_vacuum_of_companion", {})))
+
+  def _resubscribe_state_events(self) -> None:
+    if self._unsub_state:
+      self._unsub_state()
+      self._unsub_state = None
+    watched = self._state_watch_entities()
+    if watched:
+      self._unsub_state = async_track_state_change_event(self.hass, watched, self._handle_state_event)
+
+  def _refresh_vacuum_companions(self) -> None:
+    """Find each vacuum's battery, cleaned area, cleaning time and map
+    entities on its own device (vacuum_helpers.pick_companions)."""
+    registry = er.async_get(self.hass)
+    companions: Dict[str, Dict[str, Optional[str]]] = {}
+    for vacuum in getattr(self, "vacuums", []):
+      entry = registry.async_get(vacuum)
+      rows: List[Dict[str, Any]] = []
+      if entry is not None and entry.device_id:
+        for item in er.async_entries_for_device(registry, entry.device_id):
+          if item.entity_id == vacuum:
+            continue
+          state = self.hass.states.get(item.entity_id)
+          attributes = state.attributes if state is not None else {}
+          rows.append({
+            "entity_id": item.entity_id,
+            "device_class": attributes.get("device_class") or item.device_class or item.original_device_class,
+            "unit": attributes.get("unit_of_measurement") or item.unit_of_measurement,
+            "state_class": attributes.get("state_class"),
+          })
+      companions[vacuum] = pick_companions(rows)
+    self._vacuum_companions = companions
+    self._vacuum_of_companion = {
+      companion: vacuum
+      for vacuum, picked in companions.items()
+      for key, companion in picked.items()
+      if companion and key != "map"
+    }
+    maps = _unique_entities([picked["map"] for picked in companions.values() if picked.get("map")])
+    changed = maps != self.vacuum_maps
+    self.vacuum_maps = maps
+    if changed and self._runtime_setup_complete:
+      images = self.hass.data.get(DOMAIN, {}).get(DATA_IMAGES)
+      if images is not None:
+        images.recheck()
+
+  def _vacuum_areas(self, entity_id: str) -> List[Dict[str, str]]:
+    """The areas a vacuum can clean: its registry option area_mapping
+    (Home Assistant's vacuum.clean_area), named by the area registry."""
+    entry = er.async_get(self.hass).async_get(entity_id)
+    options = (entry.options or {}).get(VACUUM_DOMAIN, {}) if entry is not None else {}
+    mapping = options.get("area_mapping") if isinstance(options, dict) else None
+    if not isinstance(mapping, dict):
+      return []
+    registry = ar.async_get(self.hass)
+    names: Dict[str, str] = {}
+    for area_id in mapping:
+      area = registry.async_get_area(area_id) if isinstance(area_id, str) else None
+      if area is not None:
+        names[area_id] = area.name
+    return area_choices(mapping, names)
+
+  def _vacuum_extras(self, entity_id: str) -> Dict[str, Any]:
+    picked = self._vacuum_companions.get(entity_id, {})
+
+    def state_of(key: str) -> Optional[State]:
+      companion = picked.get(key)
+      return self.hass.states.get(companion) if companion else None
+
+    battery = state_of("battery")
+    area = state_of("cleaned_area")
+    duration = state_of("cleaning_time")
+    return {
+      "battery": battery_level(battery.state) if battery is not None else None,
+      "cleaned_area": area_measure(area.state, area.attributes.get("unit_of_measurement")) if area is not None else None,
+      "cleaning_time": (
+        time_measure(duration.state, duration.attributes.get("unit_of_measurement")) if duration is not None else None
+      ),
+      "map": picked.get("map"),
+      "areas": self._vacuum_areas(entity_id),
+    }
+
+  @callback
+  def _handle_vacuum_registry_event(self, event) -> None:
+    """A new area mapping, or entities added to or removed from a device."""
+    if not getattr(self, "vacuums", []):
+      return
+    if event.data.get("entity_id") not in self.vacuums and event.data.get("action") not in ("create", "remove"):
+      return
+    if self._vacuum_refresh_cancel is not None:
+      self._vacuum_refresh_cancel()
+
+    @callback
+    def _refresh(_now) -> None:
+      self._vacuum_refresh_cancel = None
+      previous = tuple(self._state_watch_entities())
+      self._refresh_vacuum_companions()
+      if tuple(self._state_watch_entities()) != previous:
+        self._resubscribe_state_events()
+      for vacuum in self.vacuums:
+        self.hass.async_create_task(self._async_publish_detail_state(vacuum, self.hass.states.get(vacuum)))
+
+    self._vacuum_refresh_cancel = async_call_later(self.hass, 2, _refresh)
 
   async def async_setup(self) -> None:
     """Subscribe to MQTT topics and start observers."""
@@ -1937,12 +2063,10 @@ class Tab5Bridge:
     if channel is None or channel.removing:
       await self._async_setup_plain_commands()
 
-    if self.tracked_entities:
-      self._unsub_state = async_track_state_change_event(
-        self.hass,
-        self.tracked_entities,
-        self._handle_state_event,
-      )
+    self._resubscribe_state_events()
+    self._unsub_vacuum_registry = self.hass.bus.async_listen(
+      er.EVENT_ENTITY_REGISTRY_UPDATED, self._handle_vacuum_registry_event,
+    )
     self._runtime_setup_complete = True
     await self._async_setup_requests()
 
@@ -1997,6 +2121,11 @@ class Tab5Bridge:
       self.hass,
       f"{self.base_topic}/cmnd/fan",
       self._async_handle_fan_command,
+    )
+    self._unsub_vacuum = await mqtt.async_subscribe(
+      self.hass,
+      f"{self.base_topic}/cmnd/vacuum",
+      self._async_handle_vacuum_command,
     )
     # Lock and Alarm commands have no plain topic: they are accepted only
     # sealed from a paired panel (_command_handlers, _access_secured).
@@ -2130,6 +2259,15 @@ class Tab5Bridge:
     if self._unsub_fan:
       self._unsub_fan()
       self._unsub_fan = None
+    if self._unsub_vacuum:
+      self._unsub_vacuum()
+      self._unsub_vacuum = None
+    if self._unsub_vacuum_registry:
+      self._unsub_vacuum_registry()
+      self._unsub_vacuum_registry = None
+    if self._vacuum_refresh_cancel is not None:
+      self._vacuum_refresh_cancel()
+      self._vacuum_refresh_cancel = None
     if self._unsub_start_rekey:
       self._unsub_start_rekey()
       self._unsub_start_rekey = None
@@ -2220,6 +2358,8 @@ class Tab5Bridge:
           "alarm_panel_meta": self._build_entity_meta(self.alarm_panels),
           CONF_FANS: self.fans,
           "fan_meta": self._build_entity_meta(self.fans),
+          CONF_VACUUMS: self.vacuums,
+          "vacuum_meta": self._build_entity_meta(self.vacuums),
           CONF_CALENDARS: self.calendars,
           "calendar_meta": self._build_entity_meta(self.calendars),
           "scene_meta": self._build_scene_meta(),
@@ -2228,8 +2368,9 @@ class Tab5Bridge:
           # its tiles' entities (entity_search.py): 2 = declarations, 3 = also
           # the Energy dashboard's sources (entity_search.ENERGY_LIST), 4 =
           # also scenes, scripts and buttons for the Scene tile, 5 = also
-          # calendars and their retained `events` topic (Calendar tile).
-          "entity_search": 5,
+          # calendars and their retained `events` topic (Calendar tile), 6 =
+          # also vacuums and their `detail` topic (Vacuum tile).
+          "entity_search": 6,
           # This Bridge sends name, unit and icon changes by itself
           # (_handle_state_event), so a panel that reads this flag needs no
           # refresh every minute, only after a reconnect or a lost message.
@@ -2273,7 +2414,7 @@ class Tab5Bridge:
   async def async_publish_snapshot(self, entity_ids: Optional[Iterable[str]] = None) -> None:
     """Push all configured entities (or only `entity_ids`) to MQTT."""
     # Lock, Alarm and Fan tiles also read the additive detail topic.
-    detail_entities = getattr(self, "locks", []) + getattr(self, "alarm_panels", []) + getattr(self, "fans", [])
+    detail_entities = self._detail_entities()
     for entity_id in (self.tracked_entities if entity_ids is None else list(entity_ids)):
       state = self.hass.states.get(entity_id)
       if entity_id in getattr(self, "numbers", []) + getattr(self, "selects", []) + getattr(self, "datetimes", []) and not state:
@@ -2334,12 +2475,19 @@ class Tab5Bridge:
       guard = guards[self.entry.entry_id] = CodeGuard(monotonic)
     return guard
 
+  def _detail_entities(self) -> List[str]:
+    """Lock, Alarm, Fan and Vacuum tiles read the additive detail topic."""
+    return (getattr(self, "locks", []) + getattr(self, "alarm_panels", []) + getattr(self, "fans", [])
+            + getattr(self, "vacuums", []))
+
   def _detail_payload(self, entity_id: str, state: Optional[State]) -> Dict[str, Any]:
     domain = entity_domain(entity_id)
     value = state.state if state is not None else None
     attributes = state.attributes if state is not None else {}
     if domain == FAN_DOMAIN:
       return build_fan_detail(value, attributes)
+    if domain == VACUUM_DOMAIN:
+      return build_vacuum_detail(value, attributes, self._vacuum_extras(entity_id))
     return build_access_detail(
       domain, value, attributes,
       has_default_code=self._has_default_code(entity_id, attributes),
@@ -2680,6 +2828,37 @@ class Tab5Bridge:
       FAN_DOMAIN, service, {"entity_id": entity_id, **service_data}, blocking=False,
     )
 
+  async def _async_handle_vacuum_command(self, msg: Any) -> None:
+    """Execute Vacuum tile commands; only features the entity supports."""
+    if getattr(msg, "retain", False):
+      return
+    command = parse_vacuum_command(msg.payload)
+    if command is None:
+      if self._secure_log_due("vacuum_malformed"):
+        _LOGGER.warning("Unhandled vacuum command from HomeTiles (malformed)")
+      return
+    raw_entity = command.get("entity_id")
+    entity_id = self._resolve_target_entity(
+      str(raw_entity).strip() if raw_entity is not None else None, self.vacuums,
+    )
+    if not entity_id or entity_domain(entity_id) != VACUUM_DOMAIN:
+      _LOGGER.warning("Unhandled vacuum command from HomeTiles (unknown entity): %s", raw_entity)
+      return
+    state = self.hass.states.get(entity_id)
+    call = build_vacuum_service_call(
+      command,
+      state.state if state is not None else None,
+      state.attributes if state is not None else {},
+      [area["id"] for area in self._vacuum_areas(entity_id)],
+    )
+    if call is None:
+      _LOGGER.debug("Ignoring unsupported or unavailable HomeTiles vacuum command for %s", entity_id)
+      return
+    service, service_data = call
+    await self.hass.services.async_call(
+      VACUUM_DOMAIN, service, {"entity_id": entity_id, **service_data}, blocking=False,
+    )
+
   async def _async_handle_value_command(self, msg):
     if getattr(msg, "retain", False) or len(msg.payload) > 2048:
       return
@@ -2876,7 +3055,7 @@ class Tab5Bridge:
     topic = self._ha_topic_for_entity(entity_id, "state")
     if entity_id in self.numbers + self.selects + self.datetimes:
       await self._async_publish_editable_state(entity_id, state)
-    if entity_id in getattr(self, "locks", []) + getattr(self, "alarm_panels", []) + getattr(self, "fans", []):
+    if entity_id in self._detail_entities():
       await self._async_publish_detail_state(entity_id, state)
 
     if entity_id.startswith("media_player."):
@@ -3165,6 +3344,7 @@ class Tab5Bridge:
       "cover": self._async_handle_cover_command,
       "camera": self._async_handle_camera_command,
       "fan": self._async_handle_fan_command,
+      "vacuum": self._async_handle_vacuum_command,
       "lock": self._async_handle_lock_command,
       "alarm": self._async_handle_alarm_command,
       "entities": self._async_handle_entities_command,
@@ -5533,6 +5713,11 @@ class Tab5Bridge:
     new_state = event.data.get("new_state")
     if not entity_id:
       return
+    vacuum = getattr(self, "_vacuum_of_companion", {}).get(entity_id)
+    if vacuum is not None:
+      self.hass.async_create_task(self._async_publish_detail_state(vacuum, self.hass.states.get(vacuum)))
+      if entity_id not in self.tracked_entities:
+        return
     if entity_id.startswith("weather.") and entity_id in self.weathers:
       self._sync_weather_subscriptions()
     if entity_id in getattr(self, "calendars", []):
@@ -5548,7 +5733,7 @@ class Tab5Bridge:
         )
       elif entity_id in self.switches:
         self.hass.async_create_task(self._async_publish_switch_absent_state(entity_id))
-      if entity_id in getattr(self, "locks", []) + getattr(self, "alarm_panels", []) + getattr(self, "fans", []):
+      if entity_id in self._detail_entities():
         self.hass.async_create_task(self._async_publish_detail_state(entity_id, None))
       return
 
@@ -7208,7 +7393,7 @@ async def _async_process_bridge_config(
     for key in (
       CONF_SENSORS, CONF_BINARY_SENSORS, CONF_WEATHERS, CONF_LIGHTS, CONF_SWITCHES,
       CONF_MEDIA_PLAYERS, CONF_CLIMATES, CONF_COVERS, CONF_CAMERAS,
-      CONF_NUMBERS, CONF_SELECTS, CONF_DATETIMES, CONF_FANS,
+      CONF_NUMBERS, CONF_SELECTS, CONF_DATETIMES, CONF_FANS, CONF_VACUUMS,
       CONF_SCENE_MAP,
     ) + access_keys:
       if should_import_feedback_selection(
@@ -7411,6 +7596,7 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
   media_players = panel_entity_list(payload.get("media_players"), CONF_MEDIA_PLAYERS)
   climates = panel_entity_list(payload.get("climates"), CONF_CLIMATES)
   fans = panel_entity_list(payload.get(CONF_FANS), CONF_FANS)
+  vacuums = panel_entity_list(payload.get(CONF_VACUUMS), CONF_VACUUMS)
   # Imported only from a paired panel (_async_process_bridge_config).
   locks = panel_entity_list(payload.get(CONF_LOCKS), CONF_LOCKS)
   alarm_panels = panel_entity_list(payload.get(CONF_ALARM_PANELS), CONF_ALARM_PANELS)
@@ -7452,6 +7638,7 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     CONF_COVERS: covers,
     CONF_CAMERAS: cameras,
     CONF_FANS: fans,
+    CONF_VACUUMS: vacuums,
     CONF_LOCKS: locks,
     CONF_ALARM_PANELS: alarm_panels,
     CONF_SCENE_MAP: scene_map,

@@ -387,6 +387,8 @@ def bridge_class(scope):
     bridge = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Tab5Bridge")
     names = {
         "async_setup", "_async_setup_plain_commands", "_async_setup_secure_commands", "_command_handlers",
+        "_resubscribe_state_events", "_state_watch_entities", "_handle_vacuum_registry_event",
+        "_async_handle_vacuum_command",
         "_secure_log_due", "_async_handle_secure_panel_message", "_async_handle_secure_status",
         "_async_publish_sealed_data", "_async_publish_camera_status", "async_publish_local_camera_command",
         "_async_send_start_rekey", "_drop_pairing", "_notify_pairing",
@@ -449,6 +451,9 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
             "config_entries": types.SimpleNamespace(SOURCE_INTEGRATION_DISCOVERY="integration_discovery"),
             "DISCOVERY_PAIRING_ENTRY": "pairing_entry_id", "DISCOVERY_PAIRING_ATTEMPT": "pairing_attempt",
             "PAIRING_UNIQUE_ID_PREFIX": "pairing_", "DATA_LINK": "link",
+            "callback": lambda function: function,
+            "_unique_entities": lambda items: list(dict.fromkeys(item for item in items if item)),
+            "er": types.SimpleNamespace(EVENT_ENTITY_REGISTRY_UPDATED="entity_registry_updated"),
         }
         self.Bridge = bridge_class(scope)
         self.handled = []
@@ -477,11 +482,12 @@ class BridgeWiringTest(unittest.IsolatedAsyncioTestCase):
 
         flow = types.SimpleNamespace(async_progress_by_handler=progress, async_abort=self.aborted.append)
         bridge.hass = types.SimpleNamespace(data={}, config_entries=types.SimpleNamespace(
-            async_update_entry=update, flow=flow))
+            async_update_entry=update, flow=flow), bus=types.SimpleNamespace(async_listen=lambda *args: lambda: None))
         bridge.entry = types.SimpleNamespace(entry_id="entry1", title="Kitchen",
                                              data=MappingProxyType(stored), options=MappingProxyType({}))
         bridge.base_topic = BASE
         bridge.tracked_entities = []
+        bridge._unsub_state = None
         bridge._command_channel = (
             CC.BridgeChannel(PAIRING_KEY, BASE, clock=self.clock, random=Random(), removing=removing)
             if paired or removing else None)

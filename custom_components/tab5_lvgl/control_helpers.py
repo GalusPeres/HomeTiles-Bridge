@@ -30,6 +30,7 @@ PANEL_LIST_DOMAINS = {
     "climates": ("climate",),
     "cameras": ("camera",),
     "fans": ("fan",),
+    "vacuums": ("vacuum",),
     "locks": ("lock",),
     "alarm_panels": ("alarm_control_panel",),
     "calendars": ("calendar",),

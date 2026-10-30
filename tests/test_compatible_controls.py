@@ -156,6 +156,7 @@ class CompatibleControlsTest(unittest.IsolatedAsyncioTestCase):
         self.bridge.tracked_entities = self.bridge.switches
         self.bridge.binary_sensors = []
         self.bridge._owns_state_publish = lambda entity: True
+        self.bridge._detail_entities = lambda: []
         self.bridge._ha_topic_for_entity = lambda entity, suffix: "ha/statestream/" + entity.replace(".", "/") + "/" + suffix
         published = []
         async def publish(*args, **kwargs): published.append((args, kwargs))

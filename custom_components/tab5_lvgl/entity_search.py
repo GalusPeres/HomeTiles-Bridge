@@ -42,6 +42,8 @@ LIST_DOMAINS: Dict[str, Tuple[str, ...]] = {
   "locks": ("lock",),
   "alarm_panels": ("alarm_control_panel",),
   "fans": ("fan",),
+  # The Vacuum tile: vacuums and their detail state.
+  "vacuums": ("vacuum",),
   # The Calendar tile: calendars whose events the Bridge publishes.
   "calendars": ("calendar",),
   # The Scene tile: scenes, scripts and buttons it runs or presses.
@@ -61,7 +63,7 @@ LIST_ATTRS: Dict[str, Tuple[str, ...]] = {
   "switches": ("lights", "switches"), "media": ("media_players",), "climates": ("climates",),
   "covers": ("covers",), "cameras": ("cameras",), "images": ("images", "cameras"),
   "locks": ("locks",),
-  "alarm_panels": ("alarm_panels",), "fans": ("fans",), "calendars": ("calendars",),
+  "alarm_panels": ("alarm_panels",), "fans": ("fans",), "vacuums": ("vacuums",), "calendars": ("calendars",),
   "scenes": ("scenes",),
 }
 

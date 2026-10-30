@@ -49,6 +49,7 @@ from .const import (
   CONF_ENERGY_WATER,
   CONF_CALENDARS,
   CONF_FANS,
+  CONF_VACUUMS,
   CONF_HA_PREFIX,
   CONF_LIGHTS,
   CONF_LOCAL_IO,
@@ -940,7 +941,7 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
           CONF_NUMBERS, CONF_SELECTS, CONF_DATETIMES,
           CONF_CLIMATES, CONF_COVERS,
           CONF_MEDIA_PLAYERS, CONF_CAMERAS, CONF_SCENE_MAP, CONF_SCENE_MAP_TEXT,
-          CONF_FANS, CONF_LOCKS, CONF_ALARM_PANELS, CONF_OPEN_WITHOUT_CODE,
+          CONF_FANS, CONF_VACUUMS, CONF_LOCKS, CONF_ALARM_PANELS, CONF_OPEN_WITHOUT_CODE,
           CONF_CALENDARS,
         )
         for entry in self.hass.config_entries.async_entries(DOMAIN):
@@ -991,6 +992,9 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
         ),
         vol.Optional(CONF_FANS, default=merged.get(CONF_FANS, [])): selector.EntitySelector(
           selector.EntitySelectorConfig(domain=["fan"], multiple=True)
+        ),
+        vol.Optional(CONF_VACUUMS, default=merged.get(CONF_VACUUMS, [])): selector.EntitySelector(
+          selector.EntitySelectorConfig(domain=["vacuum"], multiple=True)
         ),
         vol.Optional(CONF_LOCKS, default=merged.get(CONF_LOCKS, [])): selector.EntitySelector(
           selector.EntitySelectorConfig(domain=["lock"], multiple=True)
@@ -1142,6 +1146,7 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
   all_cameras = list(current.get(CONF_CAMERAS, []))
   all_images = list(current.get(CONF_IMAGES, []))
   all_fans = list(current.get(CONF_FANS, []))
+  all_vacuums = list(current.get(CONF_VACUUMS, []))
   all_calendars = list(current.get(CONF_CALENDARS, []))
   all_locks = list(current.get(CONF_LOCKS, []))
   all_alarm_panels = list(current.get(CONF_ALARM_PANELS, []))
@@ -1178,6 +1183,7 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
     all_cameras.extend(list(data.get(CONF_CAMERAS, [])))
     all_images.extend(list(data.get(CONF_IMAGES, [])))
     all_fans.extend(list(data.get(CONF_FANS, [])))
+    all_vacuums.extend(list(data.get(CONF_VACUUMS, [])))
     all_calendars.extend(list(data.get(CONF_CALENDARS, [])))
     all_locks.extend(list(data.get(CONF_LOCKS, [])))
     all_alarm_panels.extend(list(data.get(CONF_ALARM_PANELS, [])))
@@ -1199,6 +1205,7 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
     CONF_CAMERAS: _unique(all_cameras),
     CONF_IMAGES: _unique(all_images),
     CONF_FANS: _unique(all_fans),
+    CONF_VACUUMS: _unique(all_vacuums),
     CONF_CALENDARS: _unique(all_calendars),
     CONF_LOCKS: _unique(all_locks),
     CONF_ALARM_PANELS: _unique(all_alarm_panels),
@@ -1233,6 +1240,7 @@ def _convert_entity_data(user_input: Dict[str, Any], current: Dict[str, Any]) ->
     return [item for item in values if entity_domain(item) in domains]
 
   fans = selected(CONF_FANS, ("fan",))
+  vacuums = selected(CONF_VACUUMS, ("vacuum",))
   calendars = selected(CONF_CALENDARS, ("calendar",))
   images = selected(CONF_IMAGES, ("image",))
   locks = selected(CONF_LOCKS, ("lock",))
@@ -1261,6 +1269,7 @@ def _convert_entity_data(user_input: Dict[str, Any], current: Dict[str, Any]) ->
   updated[CONF_CAMERAS] = cameras
   updated[CONF_IMAGES] = images
   updated[CONF_FANS] = fans
+  updated[CONF_VACUUMS] = vacuums
   updated[CONF_CALENDARS] = calendars
   updated[CONF_LOCKS] = locks
   updated[CONF_ALARM_PANELS] = alarm_panels

@@ -63,6 +63,8 @@ CONF_IMAGES = "images"
 CONF_LOCKS = "locks"
 CONF_ALARM_PANELS = "alarm_panels"
 CONF_FANS = "fans"
+# Vacuums a Vacuum tile may show and control (vacuum_helpers.py).
+CONF_VACUUMS = "vacuums"
 # Calendars a Calendar tile may show (calendar_events.py).
 CONF_CALENDARS = "calendars"
 # Locks and alarm panels that may be unlocked, opened or disarmed from a panel

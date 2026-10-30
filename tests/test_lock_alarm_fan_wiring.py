@@ -14,6 +14,7 @@ from test_view_navigation import ROOT, load_module
 
 ACCESS = load_module("access_helpers")
 FAN = load_module("fan_helpers")
+VAC = load_module("vacuum_helpers")
 CONTROL = load_module("control_helpers")
 
 NOW = 1_760_000_000.0
@@ -91,7 +92,7 @@ class AccessWiringTest(unittest.IsolatedAsyncioTestCase):
     self.addCleanup(logger.removeHandler, self.records)
 
     scope: dict = {}
-    for module in (ACCESS, FAN):
+    for module in (ACCESS, FAN, VAC):
       scope.update({key: value for key, value in vars(module).items() if not key.startswith("__")})
     scope.update({
       "ACCESS_COMMAND_WINDOW_S": ACCESS.COMMAND_WINDOW_S,
