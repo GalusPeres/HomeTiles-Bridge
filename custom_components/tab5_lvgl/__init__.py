@@ -99,6 +99,7 @@ from .binary_sensor_helpers import (
 )
 from . import calendar_events
 from .calendar_events import CALENDAR_DOMAIN, REFRESH_S as CALENDAR_REFRESH_S
+from .time_zone_rule import posix_rule
 from .control_helpers import (
   ACTION_DOMAINS,
   SWITCH_DOMAINS,
@@ -2328,6 +2329,9 @@ class Tab5Bridge:
           "device_id": self.device_id,
           "base_topic": self.base_topic,
           "ha_prefix": self.ha_prefix,
+          # Home Assistant's time zone for a panel set to take it from here
+          # (near the start: a panel can only cut a long configuration's end).
+          "time_zone_rule": posix_rule(dt_util.now()),
           "sensors": self.sensors,
           "configured_sensors": self._configured_sensors,
           "sensor_meta": self._build_sensor_meta(),
