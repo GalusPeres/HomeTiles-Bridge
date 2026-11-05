@@ -8,6 +8,10 @@ tried in order, so one that fails falls over to the next by itself:
 - "wms": the OGC Web Map Service standard. Another service of this kind needs
   one more entry in SOURCES and no code.
 
+A list source brings its history: the Bridge keeps those frames, the panel gets
+their times with the camera's "ready" and picks one by its time (camera_stream.py
+shows it instead of the newest). The panel itself stores no frames.
+
 When every source fails the last picture stays, with its time in the picture.
 Only the home location rounded to 0.1 degrees (about 10 km) leaves the Bridge;
 the marker on the map uses the exact one.
@@ -51,6 +55,9 @@ SOURCE_SIZE = 512
 SCALE = PICTURE_WIDTH / SOURCE_SIZE
 WORLD_METERS = 40075016.68557849
 COORDINATE_DECIMALS = 1
+
+# The frames kept for the time bar. RainViewer lists 13, one every 10 minutes.
+MAX_FRAMES = 16
 
 # How often a shown radar asks for a newer frame, and after a failed round.
 REFRESH_S = 300.0
@@ -157,22 +164,29 @@ def covers(source: Source, view: View) -> bool:
 _RADAR_PATH = re.compile(r"/v2/radar/[0-9A-Za-z_]+\Z")
 
 
-def parse_frame_list(data: bytes) -> Optional[Tuple[int, str]]:
-  """(time, address prefix) of the newest frame of a RainViewer list."""
+def parse_frame_list(data: bytes) -> Optional[List[Tuple[int, str]]]:
+  """[(time, address prefix)] of a RainViewer list, oldest first and at most
+  MAX_FRAMES; None without a usable newest frame. A bad older entry is left out."""
   try:
     parsed = json.loads(data)
-    host, frames = parsed["host"], parsed["radar"]["past"]
-    newest = frames[-1]
-    when, path = newest["time"], newest["path"]
+    host, listed = parsed["host"], parsed["radar"]["past"]
   except (KeyError, IndexError, TypeError, ValueError):
-    return None
-  if isinstance(when, bool) or not isinstance(when, int) or when <= 0:
     return None
   if not isinstance(host, str) or not host.startswith("https://") or "/" in host[len("https://"):]:
     return None
-  if not isinstance(path, str) or not _RADAR_PATH.match(path):
+  if not isinstance(listed, list) or not listed:
     return None
-  return when, f"{host}{path}"
+  frames: List[Tuple[int, str]] = []
+  for entry in listed:
+    when = entry.get("time") if isinstance(entry, dict) else None
+    path = entry.get("path") if isinstance(entry, dict) else None
+    valid = (not isinstance(when, bool) and isinstance(when, int) and when > 0
+             and isinstance(path, str) and _RADAR_PATH.match(path) is not None)
+    if valid:
+      frames.append((when, f"{host}{path}"))
+    elif entry is listed[-1]:
+      return None
+  return sorted(frames)[-MAX_FRAMES:] or None
 
 
 def frame_image_url(prefix: str, view: View) -> str:
@@ -355,7 +369,7 @@ class Picture:
 
 
 class RainRadar:
-  """The newest picture for Home Assistant's location, loaded on demand."""
+  """The frames for Home Assistant's location, newest last, loaded on demand."""
 
   def __init__(
     self,
@@ -377,19 +391,30 @@ class RainRadar:
     self._clock = clock
     self._sources = sources
     self._map_file = map_file
-    self._picture: Optional[Picture] = None
+    self._frames: List[Picture] = []
     self._layers: Optional[Tuple[Tuple[View, str], Tuple[bytes, bytes]]] = None
     self._task: Optional[asyncio.Task] = None
+    self._fill_task: Optional[asyncio.Task] = None
     self._checked_at: Optional[float] = None
     self._failed = False
     self._listeners: List[Callable[[], None]] = []
 
   @property
   def picture(self) -> Optional[Picture]:
-    return self._picture
+    return self._frames[-1] if self._frames else None
+
+  def times(self) -> List[int]:
+    """The times of the kept frames, oldest first."""
+    return [frame.when for frame in self._frames]
+
+  def frame_at(self, when: int) -> Optional[bytes]:
+    for frame in self._frames:
+      if frame.when == when:
+        return frame.jpeg
+    return None
 
   def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
-    """Told about every new picture; returns the function that ends it."""
+    """Told whenever the frames changed; returns the function that ends it."""
     self._listeners.append(listener)
 
     def remove() -> None:
@@ -402,12 +427,12 @@ class RainRadar:
     picture is waited for."""
     self._refresh_if_due()
     task = self._task
-    if self._picture is None and task is not None:
+    if not self._frames and task is not None:
       try:
         await asyncio.wait_for(asyncio.shield(task), FIRST_WAIT_S)
       except asyncio.TimeoutError:
         pass
-    return self._picture.jpeg if self._picture is not None else None
+    return self._frames[-1].jpeg if self._frames else None
 
   def _refresh_if_due(self) -> None:
     if self._task is not None and not self._task.done():
@@ -435,38 +460,79 @@ class RainRadar:
         _LOGGER.warning("HomeTiles rain radar: source %s failed (%s)", source.id, err)
     _LOGGER.warning("HomeTiles rain radar: no source answered; keeping the last picture")
 
+  def _tell_listeners(self) -> None:
+    for listener in list(self._listeners):
+      listener()
+
   async def _async_try(self, source: Source, view: View) -> bool:
-    frame = await self._async_newest(source, view)
-    if frame is None:
+    listing = await self._async_listing(source, view)
+    if not listing:
       _LOGGER.info("HomeTiles rain radar: source %s has no picture now", source.id)
       return False
-    when, image_url = frame
-    current = self._picture
-    if current is not None and current.source == source.id and current.when == when and current.view == view:
-      return True  # Nothing new since the last look.
-    overlay = await self._fetch(image_url, IMAGE_MAX_BYTES)
+    newest, newest_url = listing[-1]
+    current = self.picture
+    same_series = current is not None and current.source == source.id and current.view == view
+    listed = {when for when, _url in listing}
+    kept = [frame for frame in self._frames if frame.when in listed] if same_series else []
+    if not kept or kept[-1].when != newest:
+      picture = await self._async_load(source, view, newest, newest_url)
+      if picture is None:
+        _LOGGER.info("HomeTiles rain radar: source %s did not deliver its picture", source.id)
+        return False
+      if not same_series:
+        _LOGGER.info("HomeTiles rain radar: showing %s", source.id)
+      self._frames = kept + [picture]
+      self._tell_listeners()
+    elif len(kept) != len(self._frames):
+      self._frames = kept
+      self._tell_listeners()
+    have = set(self.times())
+    missing = [item for item in listing[:-1] if item[0] not in have]
+    if missing and (self._fill_task is None or self._fill_task.done()):
+      # Behind the newest picture, so nobody waits for the whole history.
+      self._fill_task = asyncio.get_running_loop().create_task(self._async_fill(source, view, missing))
+    return True
+
+  async def _async_load(self, source: Source, view: View, when: int, url: str) -> Optional[Picture]:
+    overlay = await self._fetch(url, IMAGE_MAX_BYTES)
     if not overlay:
-      _LOGGER.info("HomeTiles rain radar: source %s did not deliver its picture", source.id)
-      return False
+      return None
     layers = await self._async_layers(view)
     stamp = f"{self._format_time(when)}  {source.credit}"
     jpeg = await self._run_blocking(render_picture, layers, overlay, stamp)
-    if current is None or current.source != source.id:
-      _LOGGER.info("HomeTiles rain radar: showing %s", source.id)
-    self._picture = Picture(jpeg, source.id, source.credit, when, view)
-    for listener in list(self._listeners):
-      listener()
-    return True
+    return Picture(jpeg, source.id, source.credit, when, view)
 
-  async def _async_newest(self, source: Source, view: View) -> Optional[Tuple[int, str]]:
-    """(time, picture address) of the source's newest frame."""
+  async def _async_fill(self, source: Source, view: View, missing: List[Tuple[int, str]]) -> None:
+    """The older frames, one after the other; the next refresh loads what failed."""
+    changed = False
+    try:
+      for when, url in reversed(missing):
+        current = self.picture
+        if current is None or current.source != source.id or current.view != view:
+          return  # Another source or place took over meanwhile.
+        picture = await self._async_load(source, view, when, url)
+        current = self.picture
+        if picture is None or current is None or current.source != source.id or current.view != view:
+          continue
+        self._frames = sorted(self._frames + [picture], key=lambda frame: frame.when)[-MAX_FRAMES:]
+        changed = True
+    except asyncio.CancelledError:
+      raise
+    except Exception as err:
+      _LOGGER.info("HomeTiles rain radar: older frames of %s stopped (%s)", source.id, err)
+    finally:
+      if changed:
+        self._tell_listeners()
+
+  async def _async_listing(self, source: Source, view: View) -> Optional[List[Tuple[int, str]]]:
+    """[(time, picture address)] of the source's frames, newest last."""
     if source.kind == "list":
       data = await self._fetch(source.url, LIST_MAX_BYTES)
       parsed = parse_frame_list(data) if data else None
-      return (parsed[0], frame_image_url(parsed[1], view)) if parsed else None
+      return [(when, frame_image_url(prefix, view)) for when, prefix in parsed] if parsed else None
     data = await self._fetch(capabilities_url(source), CAPABILITIES_MAX_BYTES)
-    parsed = parse_wms_time(data, source.layer) if data else None
-    return (parsed[1], wms_image_url(source, view, parsed[0])) if parsed else None
+    newest = parse_wms_time(data, source.layer) if data else None
+    return [(newest[1], wms_image_url(source, view, newest[0]))] if newest else None
 
   async def _async_layers(self, view: View) -> Tuple[bytes, bytes]:
     key = (view, self._language())

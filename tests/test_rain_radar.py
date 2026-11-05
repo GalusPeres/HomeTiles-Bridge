@@ -13,6 +13,7 @@ import types
 import unittest
 from io import BytesIO
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from PIL import Image, ImageFont
 
@@ -89,8 +90,11 @@ def make_radar(network, home=HOME_AT, clock=None, **kwargs):
 
 
 async def settle(radar):
-  if radar._task is not None:
-    await radar._task
+  """The running refresh and the older frames behind it."""
+  for attribute in ("_task", "_fill_task"):
+    task = getattr(radar, attribute)
+    if task is not None:
+      await task
 
 
 class GeometryTests(unittest.TestCase):
@@ -135,9 +139,22 @@ class GeometryTests(unittest.TestCase):
 
 
 class ParsingTests(unittest.TestCase):
-  def test_the_newest_frame_of_a_list(self):
+  def test_a_list_gives_every_frame_oldest_first(self):
     self.assertEqual(RR.parse_frame_list(frame_list()),
-                     (1793870000, "https://tilecache.rainviewer.com/v2/radar/abc123"))
+                     [(1793869400, "https://tilecache.rainviewer.com/v2/radar/older"),
+                      (1793870000, "https://tilecache.rainviewer.com/v2/radar/abc123")])
+
+  def test_a_bad_older_frame_is_left_out(self):
+    data = json.dumps({"host": "https://h", "radar": {"past": [
+      {"time": 5, "path": "/../../secret"}, {"time": 6, "path": "/v2/radar/ok"}, "nonsense",
+      {"time": 7, "path": "/v2/radar/new"}]}}).encode()
+    self.assertEqual(RR.parse_frame_list(data), [(6, "https://h/v2/radar/ok"), (7, "https://h/v2/radar/new")])
+
+  def test_a_long_list_keeps_the_newest_frames(self):
+    frames = [{"time": 100 + index, "path": f"/v2/radar/f{index}"} for index in range(RR.MAX_FRAMES + 5)]
+    parsed = RR.parse_frame_list(json.dumps({"host": "https://h", "radar": {"past": frames}}).encode())
+    self.assertEqual(len(parsed), RR.MAX_FRAMES)
+    self.assertEqual(parsed[-1][0], 100 + RR.MAX_FRAMES + 4)
 
   def test_a_bad_list_is_no_frame(self):
     for bad in (b"", b"[]", b"not json", b'{"host":"https://a","radar":{"past":[]}}',
@@ -212,16 +229,88 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     await settle(radar)
     self.assertEqual(network.count(LIST_URL), 1)
 
-  async def test_a_frame_already_shown_is_not_loaded_again(self):
+  async def test_a_frame_already_loaded_is_not_loaded_again(self):
     network = Network(working_rainviewer())
     clock = Clock()
     radar = make_radar(network, clock=clock)
     await radar.async_picture()
+    await settle(radar)
+    self.assertEqual(network.count("https://tilecache.rainviewer.com/"), 2)
     clock.now += RR.REFRESH_S
     await radar.async_picture()
     await settle(radar)
     self.assertEqual(network.count(LIST_URL), 2)
-    self.assertEqual(network.count("https://tilecache.rainviewer.com/"), 1)
+    self.assertEqual(network.count("https://tilecache.rainviewer.com/"), 2)
+
+  async def test_the_history_loads_behind_the_first_picture(self):
+    gate = asyncio.Event()
+    network = Network(working_rainviewer())
+    fetch = network.fetch
+
+    async def slow_older_frames(url, limit):
+      if "/older/" in url:
+        await gate.wait()
+      return await fetch(url, limit)
+
+    network.fetch = slow_older_frames
+    radar = make_radar(network)
+    told = []
+    radar.add_listener(lambda: told.append(radar.times()))
+    self.assertIsNotNone(await radar.async_picture())
+    self.assertEqual(radar.times(), [1793870000])  # the first answer did not wait for the rest
+    gate.set()
+    await settle(radar)
+    self.assertEqual(radar.times(), [1793869400, 1793870000])
+    self.assertEqual(told, [[1793870000], [1793869400, 1793870000]])
+
+  async def test_a_frame_is_found_by_its_time(self):
+    network = Network(working_rainviewer())
+    radar = make_radar(network)
+    await radar.async_picture()
+    await settle(radar)
+    self.assertTrue(radar.frame_at(1793869400).startswith(b"\xff\xd8"))
+    self.assertIsNone(radar.frame_at(12345))
+
+  async def test_a_frame_that_left_the_list_is_dropped(self):
+    network = Network(working_rainviewer())
+    clock = Clock()
+    radar = make_radar(network, clock=clock)
+    await radar.async_picture()
+    await settle(radar)
+    network.answers[LIST_URL] = json.dumps({"host": "https://tilecache.rainviewer.com", "radar": {"past": [
+      {"time": 1793870000, "path": "/v2/radar/abc123"}, {"time": 1793870600, "path": "/v2/radar/new"}]}}).encode()
+    clock.now += RR.REFRESH_S
+    await radar.async_picture()
+    await settle(radar)
+    self.assertEqual(radar.times(), [1793870000, 1793870600])
+
+  async def test_an_older_frame_that_fails_is_tried_at_the_next_refresh(self):
+    network = Network({LIST_URL: frame_list(), "https://tilecache.rainviewer.com/v2/radar/abc123": png()})
+    clock = Clock()
+    radar = make_radar(network, clock=clock)
+    await radar.async_picture()
+    await settle(radar)
+    self.assertEqual(radar.times(), [1793870000])
+    network.answers["https://tilecache.rainviewer.com/v2/radar/older"] = png()
+    clock.now += RR.REFRESH_S
+    await radar.async_picture()
+    await settle(radar)
+    self.assertEqual(radar.times(), [1793869400, 1793870000])
+
+  async def test_a_fallback_source_has_one_frame_and_replaces_the_history(self):
+    nasa = RR.SOURCES[-1]
+    network = Network(working_rainviewer())
+    clock = Clock()
+    radar = make_radar(network, clock=clock)
+    await radar.async_picture()
+    await settle(radar)
+    network.answers = {nasa.url + "?service": capabilities(nasa.layer),
+                       nasa.url + "?SERVICE": png(size=(RR.PICTURE_WIDTH, RR.PICTURE_HEIGHT))}
+    clock.now += RR.REFRESH_S
+    await radar.async_picture()
+    await settle(radar)
+    self.assertEqual(radar.picture.source, "nasa")
+    self.assertEqual(len(radar.times()), 1)
 
   async def test_a_new_frame_replaces_the_picture_and_tells_the_listeners(self):
     network = Network(working_rainviewer())
@@ -230,19 +319,20 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     told = []
     stop = radar.add_listener(lambda: told.append(True))
     await radar.async_picture()
-    self.assertEqual(len(told), 1)
+    await settle(radar)
+    self.assertEqual(len(told), 2)  # the newest picture, then the older one
     network.answers[LIST_URL] = frame_list(1793870600)
     clock.now += RR.REFRESH_S
     await radar.async_picture()
     await settle(radar)
     self.assertEqual(radar.picture.when, 1793870600)
-    self.assertEqual(len(told), 2)
+    self.assertEqual(len(told), 3)
     stop()
     network.answers[LIST_URL] = frame_list(1793871200)
     clock.now += RR.REFRESH_S
     await radar.async_picture()
     await settle(radar)
-    self.assertEqual(len(told), 2)
+    self.assertEqual(len(told), 3)
 
   async def test_in_germany_the_dwd_follows_when_the_first_source_fails(self):
     dwd = next(source for source in RR.SOURCES if source.id == "dwd")
@@ -426,6 +516,7 @@ class CameraEntityTests(unittest.IsolatedAsyncioTestCase):
     self.assertTrue(jpeg.startswith(b"\xff\xd8"))
     self.assertEqual(camera.attribution, "Radar data: RainViewer")
     self.assertEqual(camera.extra_state_attributes, {"source": "rainviewer", "picture_time": 1793870000})
+    await settle(radar)
 
   async def test_a_new_picture_writes_the_state_until_it_is_removed(self):
     network = Network(working_rainviewer())
@@ -434,13 +525,14 @@ class CameraEntityTests(unittest.IsolatedAsyncioTestCase):
     camera = self.module.HomeTilesRainRadar(self.entry(), radar)
     await camera.async_added_to_hass()
     await camera.async_camera_image()
-    self.assertEqual(camera.written, 1)
+    await settle(radar)
+    self.assertEqual(camera.written, 2)  # the newest picture, then the older one
     await camera.async_will_remove_from_hass()
     network.answers[LIST_URL] = frame_list(1793870600)
     clock.now += RR.REFRESH_S
     await camera.async_camera_image()
     await settle(radar)
-    self.assertEqual(camera.written, 1)
+    self.assertEqual(camera.written, 2)
 
 
 class WiringTests(unittest.TestCase):
@@ -465,6 +557,19 @@ class WiringTests(unittest.TestCase):
   def test_the_location_comes_from_home_assistant(self):
     self.assertIn("location=lambda: (hass.config.latitude, hass.config.longitude)", self.source)
 
+  def test_a_frame_command_needs_a_time_and_gets_no_answer(self):
+    self.assertIn('if command == "frame":', self.source)
+    self.assertIn('isinstance(when, bool) or not isinstance(when, int) or when < 0', self.source)
+    self.assertIn("manager.pick_frame(self.device_id, entity_id, frame)", self.source)
+
+  def test_the_ready_answer_tells_the_times_and_the_kind(self):
+    self.assertIn('response_payload["frames"] = radar.times()', self.source)
+    self.assertIn('response_payload["kind"] = "live" if session.source or session.live is not None else "still"', self.source)
+
+  def test_a_popup_on_the_radar_follows_new_frames(self):
+    self.assertIn('"status": "frames"', self.source)
+    self.assertIn("radar.add_listener(bridge.on_rain_radar_changed)", self.source)
+
   def test_every_language_names_it(self):
     for path in [ROOT / "strings.json", *sorted((ROOT / "translations").glob("*.json"))]:
       data = json.loads(path.read_text(encoding="utf-8"))
@@ -478,7 +583,7 @@ class WiringTests(unittest.TestCase):
 class ReleaseTests(unittest.TestCase):
   """The real Tab5Bridge methods, taken from the source without Home Assistant."""
 
-  NAMES = {"_resolve_rain_radar_entities", "_foreign_rain_radar"}
+  NAMES = {"_resolve_rain_radar_entities", "_foreign_rain_radar", "_rain_radar_of", "_pick_camera_frame"}
 
   def bridge(self, registered=()):
     tree = ast.parse((ROOT / "__init__.py").read_text(encoding="utf-8"))
@@ -495,12 +600,18 @@ class ReleaseTests(unittest.TestCase):
 
     registry = types.SimpleNamespace(async_get=entities.get, async_get_entity_id=entity_id_of)
     scope = {"List": list, "DOMAIN": "tab5_lvgl", "er": types.SimpleNamespace(async_get=lambda hass: registry),
+             "Optional": Optional, "Dict": Dict, "Any": Any, "RainRadar": RR.RainRadar,
+             "DATA_RAIN_RADAR": RR.DATA_RAIN_RADAR,
+             "_LOGGER": types.SimpleNamespace(warning=lambda *args: None),
              "entry_device_id": lambda entry: entry.data["device_id"],
              "rain_radar_unique_id": RR.rain_radar_unique_id, "is_rain_radar_unique_id": RR.is_rain_radar_unique_id}
     exec(compile(ast.Module(body=functions, type_ignores=[]), "__init__.py", "exec"), scope)
     bridge = type("Bridge", (), {name: scope[name] for name in self.NAMES})()
-    bridge.hass = None
+    self.radar = types.SimpleNamespace(frame_at={100: b"old"}.get)
+    bridge.hass = types.SimpleNamespace(data={"tab5_lvgl": {RR.DATA_RAIN_RADAR: self.radar}})
     bridge.entry = types.SimpleNamespace(entry_id="e1", data={"device_id": "mac"})
+    bridge.device_id = "mac"
+    bridge.base_topic = "hometiles/panel"
     return bridge
 
   @staticmethod
@@ -516,6 +627,33 @@ class ReleaseTests(unittest.TestCase):
   def test_before_the_entity_exists_nothing_is_released(self):
     self.assertEqual(self.bridge()._resolve_rain_radar_entities(), [])
 
+  def test_only_the_radar_has_a_history(self):
+    bridge = self.bridge([self.camera("camera.regenradar", "mac_rain_radar"),
+                          self.camera("camera.tuer", "x", platform="generic")])
+    self.assertIs(bridge._rain_radar_of("camera.regenradar"), self.radar)
+    self.assertIsNone(bridge._rain_radar_of("camera.tuer"))
+    self.assertIsNone(bridge._rain_radar_of("camera.unknown"))
+    self.assertIsNone(bridge._rain_radar_of(None))
+
+  def test_a_picked_time_shows_its_frame_and_zero_the_newest(self):
+    bridge = self.bridge([self.camera("camera.regenradar", "mac_rain_radar")])
+    picks = []
+    manager = types.SimpleNamespace(pick_frame=lambda *args: picks.append(args))
+    bridge._pick_camera_frame({"time": 100}, "camera.regenradar", manager)
+    bridge._pick_camera_frame({"time": 0}, "camera.regenradar", manager)
+    self.assertEqual(picks, [("mac", "camera.regenradar", b"old"), ("mac", "camera.regenradar", None)])
+
+  def test_a_time_that_is_gone_or_invalid_changes_nothing(self):
+    bridge = self.bridge([self.camera("camera.regenradar", "mac_rain_radar"),
+                          self.camera("camera.tuer", "x", platform="generic")])
+    picks = []
+    manager = types.SimpleNamespace(pick_frame=lambda *args: picks.append(args))
+    for parsed, entity in (({"time": 999}, "camera.regenradar"), ({"time": -1}, "camera.regenradar"),
+                           ({"time": True}, "camera.regenradar"), ({"time": "5"}, "camera.regenradar"),
+                           ({}, "camera.regenradar"), ({"time": 100}, "camera.tuer")):
+      bridge._pick_camera_frame(parsed, entity, manager)
+    self.assertEqual(picks, [])
+
   def test_only_another_panels_radar_is_foreign(self):
     bridge = self.bridge([
       self.camera("camera.regenradar", "mac_rain_radar"),
@@ -528,6 +666,117 @@ class ReleaseTests(unittest.TestCase):
     self.assertFalse(bridge._foreign_rain_radar("camera.other_panel"))
     self.assertFalse(bridge._foreign_rain_radar("camera.someone_elses"))
     self.assertFalse(bridge._foreign_rain_radar("camera.not_registered"))
+
+
+class PickedFrameTests(unittest.IsolatedAsyncioTestCase):
+  """The stream's feeder with a frame the panel picked (camera_stream.py)."""
+
+  async def asyncSetUp(self):
+    from test_camera_stream_lag import FakeHass
+    from test_local_camera_stream import load_camera_stream_module
+
+    self.module = load_camera_stream_module()
+    self.hass = FakeHass()
+    self.manager = self.module.CameraStreamManager(self.hass)
+    self.connection = self.manager.tcp_connection
+
+  def session(self, has_history=True):
+    return self.module.CameraStreamSession(
+      token="t", device_id="mac", entity_id="camera.regenradar", source=None, first_image=b"NEWEST",
+      width=752, height=424, fps=10, expires_at=0.0, stop_event=asyncio.Event(), has_history=has_history)
+
+  class Writes:
+    def __init__(self):
+      self.written = []
+      self.returncode = None
+      self.stdin = self
+
+    def write(self, data):
+      self.written.append(bytes(data))
+
+    async def drain(self):
+      await asyncio.sleep(0)
+
+    def close(self):
+      pass
+
+    def is_closing(self):
+      return True
+
+  async def run_feeder(self, session, process, image=b"NEWEST"):
+    calls = []
+
+    async def fake_image(hass, entity_id, timeout=None):
+      calls.append(entity_id)
+      return types.SimpleNamespace(content=image)
+
+    self.module.async_get_image = fake_image
+    task = asyncio.create_task(self.connection._async_feed_camera_images(session, process))
+    return task, calls
+
+  async def stop(self, process, task):
+    process.returncode = 0
+    await asyncio.wait_for(task, 2)
+
+  async def test_a_picked_frame_is_written_twice_and_at_once(self):
+    session, process = self.session(), self.Writes()
+    task, _calls = await self.run_feeder(session, process)
+    await asyncio.sleep(0.05)
+    session.picked_frame = b"OLD"
+    session.flush_next_frame = True
+    await asyncio.sleep(0.1)
+    await self.stop(process, task)
+    # Twice: FFmpeg would hold the first one until the next begins.
+    self.assertEqual(process.written.count(b"OLD"), 2)
+
+  async def test_while_a_frame_is_picked_the_camera_is_not_asked(self):
+    session, process = self.session(), self.Writes()
+    session.picked_frame = b"OLD"
+    task, calls = await self.run_feeder(session, process)
+    await asyncio.sleep(0.15)
+    await self.stop(process, task)
+    self.assertEqual(calls, [])
+    self.assertIn(b"OLD", process.written)
+
+  async def test_a_newer_camera_picture_does_not_replace_a_picked_frame(self):
+    session, process = self.session(), self.Writes()
+    task, _calls = await self.run_feeder(session, process, image=b"CHANGED")
+    session.picked_frame = b"OLD"
+    await asyncio.sleep(0.15)
+    await self.stop(process, task)
+    self.assertEqual(session.latest_image, b"OLD")
+
+  async def test_back_to_now_follows_the_camera_again(self):
+    session, process = self.session(), self.Writes()
+    session.picked_frame = b"OLD"
+    task, calls = await self.run_feeder(session, process, image=b"CHANGED")
+    await asyncio.sleep(0.05)
+    session.picked_frame = None
+    session.flush_next_frame = True
+    await asyncio.sleep(0.2)
+    await self.stop(process, task)
+    self.assertTrue(calls)
+    self.assertEqual(session.latest_image, b"CHANGED")
+
+  async def test_a_camera_without_a_history_keeps_its_rhythm(self):
+    session, process = self.session(has_history=False), self.Writes()
+    task, _calls = await self.run_feeder(session, process)
+    await asyncio.sleep(0.1)
+    await self.stop(process, task)
+    # The first frame once, no second write: nothing was picked.
+    self.assertEqual(process.written, [b"NEWEST"])
+
+  async def test_pick_frame_reaches_only_the_panels_running_camera(self):
+    session = self.session()
+    self.manager._panel_sessions["mac"] = session
+    self.assertTrue(self.manager.pick_frame("mac", "camera.regenradar", b"OLD"))
+    self.assertEqual(session.picked_frame, b"OLD")
+    self.assertTrue(session.flush_next_frame)
+    self.assertFalse(self.manager.pick_frame("other", "camera.regenradar", b"X"))
+    self.assertFalse(self.manager.pick_frame("mac", "camera.tuer", b"X"))
+    session.has_history = False
+    self.assertFalse(self.manager.pick_frame("mac", "camera.regenradar", b"X"))
+    self.assertEqual(session.picked_frame, b"OLD")
 
 
 if __name__ == "__main__":

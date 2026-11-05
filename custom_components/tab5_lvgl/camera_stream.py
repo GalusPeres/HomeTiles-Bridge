@@ -79,6 +79,8 @@ CAMERA_STILL_REPEAT_SECONDS: Final = 0.5
 # After a failed still image the next request waits at least this long, so the
 # failure limit still spans several seconds for a camera that fails fast.
 CAMERA_STILL_RETRY_SECONDS: Final = 0.5
+# A camera with a history looks this often for the frame its panel picked.
+CAMERA_PICK_POLL_SECONDS: Final = 0.02
 # FFmpeg's MJPEG scale is inverse: a larger value produces smaller frames.
 # Direct streams must stay below roughly five acknowledged 8 KiB blocks at
 # 24 FPS; still-image cameras retain the previous higher JPEG quality.
@@ -243,6 +245,14 @@ class CameraStreamSession:
   chunk_bytes: int = CAMERA_STREAM_CHUNK_BYTES
   # The panel's JPEG quality (FFmpeg -q:v), None for the Bridge's own.
   jpeg_quality: int | None = None
+  # A camera with a history (rain_radar.py): the frame its panel picked is
+  # shown instead of the camera's own until the panel picks "now" again.
+  has_history: bool = False
+  picked_frame: bytes | None = None
+  # FFmpeg's image2pipe holds a frame until the next one begins, so a picked
+  # frame is written twice to show at once (measured: 4 ms instead of up to
+  # CAMERA_STILL_REPEAT_SECONDS).
+  flush_next_frame: bool = False
 
 
 def upright_size(session: Any) -> tuple[int, int]:
@@ -593,6 +603,8 @@ class CameraStreamManager:
     self.hass = hass
     self._sessions: dict[str, CameraStreamSession] = {}
     self._device_tokens: dict[str, str] = {}
+    # The newest session of each panel, also after its token was taken.
+    self._panel_sessions: dict[str, CameraStreamSession] = {}
     self._processes: dict[str, asyncio.subprocess.Process] = {}
     self._stop_events: dict[str, asyncio.Event] = {}
     self._lock = asyncio.Lock()
@@ -856,6 +868,7 @@ class CameraStreamManager:
       self._drop_expired_sessions_locked()
       self._sessions[token] = session
       self._device_tokens[device_id] = token
+      self._panel_sessions[device_id] = session
       self._stop_events[device_id] = stop_event
     return session
 
@@ -950,6 +963,16 @@ class CameraStreamManager:
       raise ValueError("camera_invalid_stream_request")
     return width, height, fps
 
+  def pick_frame(self, device_id: str, entity_id: str, frame: bytes | None) -> bool:
+    """Show this frame of the camera's history on the panel's running stream;
+    None goes back to the camera's newest picture."""
+    session = self._panel_sessions.get(device_id)
+    if session is None or session.entity_id != entity_id or not session.has_history:
+      return False
+    session.picked_frame = frame
+    session.flush_next_frame = True
+    return True
+
   async def async_stop_device(self, device_id: str) -> None:
     """Revoke a pending session and terminate its active FFmpeg process."""
     process: asyncio.subprocess.Process | None = None
@@ -958,6 +981,7 @@ class CameraStreamManager:
       token = self._device_tokens.pop(device_id, None)
       if token:
         self._sessions.pop(token, None)
+      self._panel_sessions.pop(device_id, None)
       process = self._processes.pop(device_id, None)
       stop_event = self._stop_events.pop(device_id, None)
     if stop_event:
@@ -1259,13 +1283,20 @@ class CameraStreamConnection:
     try:
       while process.returncode is None:
         process.stdin.write(frame)
+        if session.flush_next_frame:
+          session.flush_next_frame = False
+          process.stdin.write(frame)
         await process.stdin.drain()
         repeat_at = time.monotonic() + CAMERA_STILL_REPEAT_SECONDS
 
         new_frame: bytes | None = None
         while new_frame is None and process.returncode is None:
           now = time.monotonic()
-          if image_task is None and now >= next_request_at:
+          picked = session.picked_frame
+          if picked is not None and picked != frame:
+            new_frame = picked
+            break
+          if image_task is None and picked is None and now >= next_request_at:
             request_started = now
             next_request_at = now + request_interval
             # Full-size image on purpose, see async_create_session: up to
@@ -1278,12 +1309,15 @@ class CameraStreamConnection:
               ),
               f"HomeTiles camera refresh {session.entity_id}",
             )
+          # Without a request ahead (a picked frame) only the repeat wakes it.
           wake_at = (
             repeat_at
-            if image_task is not None
+            if image_task is not None or picked is not None
             else min(repeat_at, next_request_at)
           )
           timeout = wake_at - time.monotonic()
+          if session.has_history:
+            timeout = min(timeout, CAMERA_PICK_POLL_SECONDS)
           if image_task is not None:
             if timeout > 0:
               await asyncio.wait((image_task,), timeout=timeout)
@@ -1306,7 +1340,8 @@ class CameraStreamConnection:
             if content:
               failures = 0
               # An unchanged image is not a new frame; the repeat covers it.
-              if content != frame:
+              # A frame the panel picked meanwhile stays.
+              if content != frame and session.picked_frame is None:
                 new_frame = content
                 new_frames += 1
             else:

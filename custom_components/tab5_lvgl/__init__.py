@@ -946,6 +946,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   # announced capabilities changed in between.
   hass.data[DOMAIN].setdefault("platforms", {})[entry.entry_id] = platforms
   await hass.config_entries.async_forward_entry_setups(entry, platforms)
+  radar = hass.data[DOMAIN].get(DATA_RAIN_RADAR)
+  if radar is not None:
+    entry.async_on_unload(radar.add_listener(bridge.on_rain_radar_changed))
   await bridge.async_publish_config_to_device()
   return True
 
@@ -1754,6 +1757,8 @@ class Tab5Bridge:
     # use without a Web Admin password (search, declared entities).
     self._released: Dict[str, List[str]] = {}
     self._declaration_parts = entity_search.DeclarationParts()
+    # The rain radar while this panel's camera popup shows it.
+    self._camera_history_entity: Optional[str] = None
     self._panel_entities_store = Store(hass, 1, panel_entities_store_key(entry.entry_id))
     self._icon_refresh_handle = None
     self._forecast_cache: Dict[Tuple[str, str], Tuple[datetime, List[Dict[str, Any]]]] = {}
@@ -5362,6 +5367,46 @@ class Tab5Bridge:
     registry_entry = er.async_get(self.hass).async_get(entity_id)
     return is_local_camera_self_loop(registry_entry, DOMAIN, self.entry.entry_id)
 
+  def _rain_radar_of(self, entity_id: Optional[str]) -> Optional[RainRadar]:
+    """The history behind a camera: only the Bridge's rain radar has one."""
+    if not entity_id:
+      return None
+    entry = er.async_get(self.hass).async_get(entity_id)
+    if (entry is None or entry.platform != DOMAIN or entry.domain != "camera"
+        or not is_rain_radar_unique_id(entry.unique_id)):
+      return None
+    return self.hass.data.get(DOMAIN, {}).get(DATA_RAIN_RADAR)
+
+  def _pick_camera_frame(self, parsed: Dict[str, Any], entity_id: Optional[str], manager: Any) -> None:
+    """The panel's time bar: the frame of this time, 0 for the newest. The
+    panel knows the times, so nothing is answered; a frame that is gone
+    meanwhile leaves the picture as it is."""
+    when = parsed.get("time")
+    if isinstance(when, bool) or not isinstance(when, int) or when < 0:
+      _LOGGER.warning("HomeTiles camera: invalid frame time from %s", self.base_topic)
+      return
+    radar = self._rain_radar_of(entity_id)
+    if radar is None or manager is None or not self.device_id:
+      return
+    frame = radar.frame_at(when) if when else None
+    if when and frame is None:
+      return
+    manager.pick_frame(self.device_id, entity_id, frame)
+
+  @callback
+  def on_rain_radar_changed(self) -> None:
+    """New frames while this panel's popup shows the radar: its time bar follows."""
+    entity_id = self._camera_history_entity
+    radar = self._rain_radar_of(entity_id)
+    if radar is None:
+      return
+    self.hass.async_create_task(self._async_publish_camera_status({
+      "status": "frames",
+      "entity_id": entity_id,
+      "frames": radar.times(),
+      "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
+    }))
+
   async def _async_handle_camera_command(self, msg: ReceiveMessage) -> None:
     """Create or stop the short-lived JPEG-frame stream used by the popup."""
     parsed = _try_parse_json(msg.payload.strip())
@@ -5376,6 +5421,7 @@ class Tab5Bridge:
     manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
 
     if command in ("close", "stop"):
+      self._camera_history_entity = None
       self._finish_camera_sound()
       if manager and self.device_id:
         await manager.async_stop_device(self.device_id)
@@ -5384,6 +5430,10 @@ class Tab5Bridge:
         "entity_id": entity_id or requested_entity or "",
         "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
       })
+      return
+
+    if command == "frame":
+      self._pick_camera_frame(parsed, entity_id, manager)
       return
 
     if command == "open" and entity_id and self._is_local_camera_self_loop(entity_id):
@@ -5482,6 +5532,12 @@ class Tab5Bridge:
         response_payload["fit"] = session.fit
       if session.jpeg_quality is not None:
         response_payload["quality"] = session.jpeg_quality
+      response_payload["kind"] = "live" if session.source or session.live is not None else "still"
+      radar = self._rain_radar_of(entity_id)
+      session.has_history = radar is not None
+      self._camera_history_entity = entity_id if radar is not None else None
+      if radar is not None:
+        response_payload["frames"] = radar.times()
       if parsed.get("audio") == AUDIO_STREAM_TRANSPORT and session.source:
         self._start_camera_sound(entity_id, session.source)
       elif self._camera_sound_session() is not None:

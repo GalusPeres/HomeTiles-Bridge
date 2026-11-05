@@ -89,6 +89,7 @@ class CameraSoundTest(unittest.IsolatedAsyncioTestCase):
             entry=types.SimpleNamespace(entry_id="e1"), base_topic=BASE, device_id="mac",
             cameras=[ENTITY], _device_ip=None, _command_channel=None,
             _camera_sound_entity=None, _camera_sound_task=None, _camera_sound_probes={},
+            _camera_history_entity=None, _rain_radar_of=lambda entity_id: None,
             _resolve_target_entity=lambda requested, allowed: requested if requested in allowed else None)
 
         async def create_audio_stream(url, rate, start_ms=0, live=False):

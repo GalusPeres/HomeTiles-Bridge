@@ -111,6 +111,8 @@ Every panel can pick **Rain radar** in its Camera tile, and there is nothing to 
 
 The sources are tried in order, so a failing one falls over by itself: RainViewer worldwide (free for personal use), then the DWD inside Germany, then NASA's worldwide precipitation layer, which runs several hours behind. If all of them fail, the last picture stays. Only the home location rounded to 0.1 degrees (about 10 km) leaves Home Assistant.
 
+With firmware b663 or newer the Camera popup shows a time bar for the radar's last two hours: press Play or drag it by hand. The Bridge keeps the pictures and the panel asks for the one it shows, so the panel stores none. Only RainViewer brings this history; with a fallback source the popup shows the newest picture without a bar.
+
 The map is drawn from Natural Earth (public domain), the names use the Inter font (SIL Open Font License, `rain_radar_font.LICENSE.txt`). `tools/build_rain_radar_map.py` builds the data files.
 
 ## MQTT Topics
