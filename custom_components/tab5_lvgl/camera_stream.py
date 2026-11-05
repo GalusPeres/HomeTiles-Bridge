@@ -1270,6 +1270,10 @@ class CameraStreamConnection:
     # After an FFmpeg restart, resume from the newest still image instead of
     # the snapshot taken when the popup opened.
     frame = session.latest_image or session.first_image
+    # A history's first picture at once: FFmpeg would hold it for the first
+    # repeat (measured: 23 ms instead of 505 ms).
+    if session.has_history:
+      session.flush_next_frame = True
     request_interval = 1.0 / max(1, min(session.fps, CAMERA_STILL_MAX_FPS))
     failures = 0
     image_task: asyncio.Task | None = None

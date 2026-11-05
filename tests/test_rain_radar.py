@@ -729,6 +729,13 @@ class PickedFrameTests(unittest.IsolatedAsyncioTestCase):
     # Twice: FFmpeg would hold the first one until the next begins.
     self.assertEqual(process.written.count(b"OLD"), 2)
 
+  async def test_a_historys_first_picture_is_written_twice_to_show_at_once(self):
+    session, process = self.session(), self.Writes()
+    task, _calls = await self.run_feeder(session, process)
+    await asyncio.sleep(0.05)
+    await self.stop(process, task)
+    self.assertEqual(process.written, [b"NEWEST", b"NEWEST"])
+
   async def test_while_a_frame_is_picked_the_camera_is_not_asked(self):
     session, process = self.session(), self.Writes()
     session.picked_frame = b"OLD"
