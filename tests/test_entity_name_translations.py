@@ -24,6 +24,7 @@ EXPECTED = {
     ("switch", "wake_listen"): ("Listening", "Zuhören"),
     ("switch", "local_camera"): ("Camera", "Kamera"),
     ("camera", "local_camera"): ("Camera Image", "Kamerabild"),
+    ("camera", "rain_radar"): ("Rain radar", "Regenradar"),
     ("button", "assist"): ("Start Assist", "Assist starten"),
     ("sensor", "battery_soc"): ("Battery SoC", "Batterie SoC"),
     ("sensor", "external_temperature"): ("External Temperature", "Externe Temperatur"),

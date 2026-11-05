@@ -105,6 +105,14 @@ Fan tiles control on/off, speed, preset, oscillation and direction, each only wh
 
 Select them under **Calendars** in the entity configuration. A Calendar tile shows up to four of them. The Bridge reads their events with Home Assistant's `calendar.get_events` (the current month from a week before the 1st up to the two months after it) and publishes them retained on `ha_prefix/calendar/<object>/events`, in Home Assistant's local time: again when an event starts or ends, every 15 minutes (for edited future events and the new day), and on a snapshot. The list is bounded (96 events, 16 KB); when it has to drop events it drops the latest and shortens the window the panel shows, so a dropped day never looks free. Requires firmware with the Calendar tile; older firmware ignores the topic.
 
+### Rain radar
+
+Every panel can pick **Rain radar** in its Camera tile, and there is nothing to set up: no option, no key, no extra integration. It is an ordinary camera entity that shows the rain around Home Assistant's home location on a map, with the picture's time and source in it. It loads pictures only while somebody shows it.
+
+The sources are tried in order, so a failing one falls over by itself: RainViewer worldwide (free for personal use), then the DWD inside Germany, then NASA's worldwide precipitation layer, which runs several hours behind. If all of them fail, the last picture stays. Only the home location rounded to 0.1 degrees (about 10 km) leaves Home Assistant.
+
+The map is drawn from Natural Earth (public domain), the names use the Inter font (SIL Open Font License, `rain_radar_font.LICENSE.txt`). `tools/build_rain_radar_map.py` builds the data files.
+
 ## MQTT Topics
 
 The integration and the display exchange these topics over MQTT, or, for a display on the direct link (HomeTiles v0.9.0 or newer), with the same topics over the display's own connection to the Bridge (TCP port 8140, or up to 8147 when it is taken):

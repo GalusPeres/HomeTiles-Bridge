@@ -285,6 +285,7 @@ class BridgeHarness(unittest.IsolatedAsyncioTestCase):
 
         bridge._async_publish_sealed_data = publish
         bridge._refresh_runtime_entity_lists = refresh
+        bridge._foreign_rain_radar = lambda entity_id: False  # test_rain_radar.py
         bridge.async_publish_config_to_device = config
         bridge.async_publish_snapshot = snapshot
         self.opened = scope["_OpenedCommand"]

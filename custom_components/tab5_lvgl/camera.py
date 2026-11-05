@@ -1,4 +1,4 @@
-"""Camera entity for the camera built into a HomeTiles panel.
+"""Camera entities: the Bridge's rain radar and the camera built into a panel.
 
 Still images use MQTT snapshots (local_camera.py). Panels that announce
 ``local_camera_stream`` additionally deliver a live JPEG stream over the
@@ -50,6 +50,7 @@ from .local_camera import (
     parse_status,
     request_id_from_topic,
 )
+from .rain_radar import DATA_RAIN_RADAR, RainRadar, rain_radar_unique_id
 from .local_camera_stream import (
     LIVE_FRAME_FRESH_S,
     LIVE_FRAME_MAX_MISSES,
@@ -75,7 +76,64 @@ async def async_setup_entry(
     if supports(data, "local_camera"):
         entities.append(HomeTilesLocalCamera(
             entry, entry_base_topic(entry), live=supports(data, "local_camera_stream")))
+    # The rain radar needs no announcement and no setting: every panel can
+    # simply pick it, and it loads nothing until somebody shows it.
+    radar = hass.data.get(DOMAIN, {}).get(DATA_RAIN_RADAR) if hass is not None else None
+    if radar is not None:
+        entities.append(HomeTilesRainRadar(entry, radar))
     async_add_entities(entities)
+
+
+class HomeTilesRainRadar(Camera):
+    """The rain radar picture (rain_radar.py) as a camera like any other.
+
+    Without a device, so its name stays "Rain radar" and not "<panel> Rain
+    radar": it becomes the title of the tile the user picks it for.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "rain_radar"
+    _attr_should_poll = False
+    _attr_supported_features = CameraEntityFeature(0)
+    _attr_frame_interval = 60.0
+    _attr_icon = "mdi:weather-pouring"
+
+    def __init__(self, entry: ConfigEntry, radar: RainRadar) -> None:
+        super().__init__()
+        self.content_type = "image/jpeg"
+        self._radar = radar
+        self._attr_unique_id = rain_radar_unique_id(entry_device_id(entry))
+        self._stop_listening = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._stop_listening = self._radar.add_listener(self._on_new_picture)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._stop_listening is not None:
+            self._stop_listening()
+            self._stop_listening = None
+        await super().async_will_remove_from_hass()
+
+    @callback
+    def _on_new_picture(self) -> None:
+        self.async_write_ha_state()
+
+    @property
+    def attribution(self) -> str | None:
+        picture = self._radar.picture
+        return f"Radar data: {picture.credit}" if picture is not None else None
+
+    @property
+    def extra_state_attributes(self):
+        picture = self._radar.picture
+        if picture is None:
+            return {}
+        return {"source": picture.source, "picture_time": picture.when}
+
+    async def async_camera_image(self, width: int | None = None, height: int | None = None) -> bytes | None:
+        # The camera paths scale it, as for every other camera.
+        return await self._radar.async_picture()
 
 
 class HomeTilesLocalCamera(Camera):

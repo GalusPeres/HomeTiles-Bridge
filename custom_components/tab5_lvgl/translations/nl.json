@@ -207,6 +207,9 @@
     "camera": {
       "local_camera": {
         "name": "Camerabeeld"
+      },
+      "rain_radar": {
+        "name": "Regenradar"
       }
     },
     "select": {

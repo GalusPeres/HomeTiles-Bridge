@@ -81,6 +81,7 @@ from .link_runtime import LinkRuntime
 from .advertise_host import advertised_host
 from .images import CAMERA_REFRESH_S, ImageService, content_key, render_jpeg
 from .images import Source as ImageSource
+from .rain_radar import DATA_RAIN_RADAR, RainRadar, is_rain_radar_unique_id, rain_radar_unique_id
 from .binary_history import (
   BINARY_HISTORY_KIND,
   BINARY_HISTORY_RECORDER_MAX_CHANGES,
@@ -350,6 +351,7 @@ MEDIA_COVER_FETCH_MAX_BYTES = 1_500_000
 # An image entity's picture may be a full-size photo or screenshot.
 IMAGE_PICTURE_MAX_BYTES = 12_000_000
 IMAGE_PICTURE_TIMEOUT_S = 10
+RAIN_RADAR_FETCH_TIMEOUT_S = 15
 MEDIA_COVER_CACHE_MAX = 24
 # A player's own picture (read from the entity, like HA's media_player_proxy).
 MEDIA_COVER_ENTITY_TIMEOUT_S = 10
@@ -777,12 +779,52 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
   return ImageService(runtime.broker, source=source, render=render, allowed=allowed, track=track)
 
 
+def _build_rain_radar(hass: HomeAssistant) -> RainRadar:
+  """The rain radar's connection to Home Assistant (rain_radar.py): one for
+  all panels, so they share its pictures and its requests."""
+
+  async def fetch(url: str, limit: int) -> Optional[bytes]:
+    try:
+      session = async_get_clientsession(hass)
+      async with session.get(url, timeout=RAIN_RADAR_FETCH_TIMEOUT_S,
+                             headers={"User-Agent": "HomeTiles-Bridge"}) as response:
+        if response.status != 200:
+          _LOGGER.debug("HomeTiles rain radar: HTTP %s from %s", response.status, url)
+          return None
+        chunks: List[bytes] = []
+        received = 0
+        async for chunk in response.content.iter_chunked(16384):
+          chunks.append(chunk)
+          received += len(chunk)
+          if received > limit:
+            _LOGGER.info("HomeTiles rain radar: an answer above %d bytes was not loaded", limit)
+            return None
+        return b"".join(chunks)
+    except Exception as err:  # pragma: no cover - network dependent
+      _LOGGER.debug("HomeTiles rain radar: fetch failed (%s)", err)
+      return None
+
+  def format_time(when: int) -> str:
+    local = dt_util.as_local(dt_util.utc_from_timestamp(when))
+    return local.strftime("%H:%M" if local.date() == dt_util.now().date() else "%m-%d %H:%M")
+
+  return RainRadar(
+    fetch=fetch,
+    location=lambda: (hass.config.latitude, hass.config.longitude),
+    language=lambda: str(hass.config.language or "en"),
+    format_time=format_time,
+    run_blocking=hass.async_add_executor_job,
+  )
+
+
 async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
   """Set up the integration namespace and service."""
   domain_data = hass.data.setdefault(DOMAIN, {"entries": {}})
   # Loaded entries whose panel still uses MQTT; while it is empty, MQTT gets
   # no publishes at all (link_mqtt.py).
   domain_data.setdefault(DATA_MQTT_ENTRIES, set())
+  if DATA_RAIN_RADAR not in domain_data:
+    domain_data[DATA_RAIN_RADAR] = _build_rain_radar(hass)
 
   await async_ensure_link_runtime(hass)
 
@@ -1745,6 +1787,20 @@ class Tab5Bridge:
         result.append(entry.entity_id)
     return _unique_entities(result)
 
+  def _resolve_rain_radar_entities(self) -> List[str]:
+    """This panel's rain radar camera: always released, so it can be picked
+    without a Web Admin password and without anything set up in the Bridge."""
+    entity_id = er.async_get(self.hass).async_get_entity_id(
+      "camera", DOMAIN, rain_radar_unique_id(entry_device_id(self.entry)))
+    return [entity_id] if entity_id else []
+
+  def _foreign_rain_radar(self, entity_id: str) -> bool:
+    """Another panel's rain radar: the same picture under a second id, which
+    the full search does not need to offer."""
+    entry = er.async_get(self.hass).async_get(entity_id)
+    return (entry is not None and entry.platform == DOMAIN and entry.domain == "camera"
+            and is_rain_radar_unique_id(entry.unique_id) and entry.config_entry_id != self.entry.entry_id)
+
   def _resolve_local_io_entities(self, domain: str, channel_type: str) -> List[str]:
     """Resolve integration-owned local I/O entity IDs in descriptor order."""
     expected = [
@@ -1865,6 +1921,7 @@ class Tab5Bridge:
       "sensor", LOCAL_IO_TEMPERATURE
     )
     local_relays = self._resolve_local_io_entities("switch", LOCAL_IO_RELAY)
+    rain_radar = self._resolve_rain_radar_entities()
 
     def lists_of(source: Dict[str, Any]) -> Dict[str, List[str]]:
       # Releases of a set of entries with this panel's own entities.
@@ -1874,7 +1931,8 @@ class Tab5Bridge:
         "switches": _unique_entities(source["switches"] + local_relays),
         "media_players": source["media_players"], "climates": source["climates"],
         "numbers": source["numbers"], "selects": source["selects"], "datetimes": source["datetimes"],
-        "covers": source["covers"], "cameras": source["cameras"], "images": source["images"],
+        "covers": source["covers"], "cameras": _unique_entities(source["cameras"] + rain_radar),
+        "images": source["images"],
         "weathers": source["weathers"],
         "locks": source["locks"], "alarm_panels": source["alarm_panels"], "fans": source["fans"],
         "vacuums": source["vacuums"],
@@ -3449,7 +3507,8 @@ class Tab5Bridge:
       entries = await self._energy_search_entries(full)
     else:
       if full:
-        entity_ids = [state.entity_id for state in self.hass.states.async_all(entity_search.LIST_DOMAINS[request["list"]])]
+        entity_ids = [state.entity_id for state in self.hass.states.async_all(entity_search.LIST_DOMAINS[request["list"]])
+                      if not self._foreign_rain_radar(state.entity_id)]
       else:
         entity_ids = self._released_for_list(request["list"])
       entries = self._search_entries(entity_ids)

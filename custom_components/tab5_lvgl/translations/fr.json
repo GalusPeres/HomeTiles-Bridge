@@ -207,6 +207,9 @@
     "camera": {
       "local_camera": {
         "name": "Image de la cam\u00e9ra"
+      },
+      "rain_radar": {
+        "name": "Radar de pluie"
       }
     },
     "select": {
