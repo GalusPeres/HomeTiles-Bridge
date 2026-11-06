@@ -14,6 +14,8 @@ import struct
 import time
 from typing import Any, Awaitable, Callable, Final
 
+from types import SimpleNamespace
+
 from homeassistant.components.camera import async_get_image, async_get_stream_source
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.core import HomeAssistant
@@ -608,6 +610,8 @@ class CameraStreamManager:
   def __init__(self, hass: HomeAssistant) -> None:
     self.hass = hass
     self._sessions: dict[str, CameraStreamSession] = {}
+    # An image entity's picture as JPEG: (its bytes, the JPEG), see _async_get_still.
+    self._image_jpegs: dict[str, tuple[bytes, bytes]] = {}
     self._device_tokens: dict[str, str] = {}
     # The newest session of each panel, also after its token was taken.
     self._panel_sessions: dict[str, CameraStreamSession] = {}
@@ -790,6 +794,32 @@ class CameraStreamManager:
       self._tcp_port = None
       await async_close_server(server, "camera")
 
+  async def _async_get_still(self, entity_id: str, timeout: int) -> Any:
+    """A camera's still, or an image entity's picture as a JPEG.
+
+    An image entity's popup plays like a still camera. FFmpeg's image pipe reads
+    JPEGs only and such a picture is often a PNG, so it is converted once per
+    picture, not per request.
+    """
+    if not entity_id.startswith("image."):
+      return await async_get_image(self.hass, entity_id, timeout=timeout)
+    from homeassistant.components.image import async_get_image as async_get_picture
+
+    from .webcam_source import to_jpeg
+
+    picture = await async_get_picture(self.hass, entity_id, timeout=timeout)
+    content = bytes(picture.content) if picture.content else b""
+    if not content or content[:2] == b"\xff\xd8":
+      return picture
+    known = self._image_jpegs.get(entity_id)
+    if known is None or known[0] != content:
+      known = (content, await self.hass.async_add_executor_job(to_jpeg, content))
+      self._image_jpegs.pop(entity_id, None)
+      self._image_jpegs[entity_id] = known
+      while len(self._image_jpegs) > 4:
+        self._image_jpegs.pop(next(iter(self._image_jpegs)))
+    return SimpleNamespace(content=known[1])
+
   async def async_create_session(
     self,
     device_id: str,
@@ -833,11 +863,7 @@ class CameraStreamManager:
       try:
         # No width/height: Home Assistant would rescale the JPEG on its event
         # loop for every fetch; FFmpeg scales and crops in its own process.
-        image = await async_get_image(
-          self.hass,
-          entity_id,
-          timeout=10,
-        )
+        image = await self._async_get_still(entity_id, 10)
         first_image = bytes(image.content) if image.content else None
       except Exception as err:
         _LOGGER.debug(
@@ -1349,11 +1375,7 @@ class CameraStreamConnection:
             # Full-size image on purpose, see async_create_session: up to
             # 10 fetches per second must not rescale on the event loop.
             image_task = self._manager.hass.async_create_task(
-              async_get_image(
-                self._manager.hass,
-                session.entity_id,
-                timeout=5,
-              ),
+              self._manager._async_get_still(session.entity_id, 5),
               f"HomeTiles camera refresh {session.entity_id}",
             )
           # Without a request ahead (a picked frame) only the repeat wakes it.

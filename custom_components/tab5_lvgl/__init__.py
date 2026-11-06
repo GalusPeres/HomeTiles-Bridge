@@ -5572,7 +5572,8 @@ class Tab5Bridge:
     command = str(parsed.get("command") or "open").strip().lower()
     raw_entity = parsed.get("entity_id") or parsed.get("entity")
     requested_entity = str(raw_entity).strip() if raw_entity is not None else None
-    entity_id = self._resolve_target_entity(requested_entity, self.cameras)
+    # An image entity's popup plays like a still camera.
+    entity_id = self._resolve_target_entity(requested_entity, self.cameras + list(getattr(self, "images", [])))
     manager = self.hass.data.get(DOMAIN, {}).get("camera_stream_manager")
 
     if command in ("close", "stop"):

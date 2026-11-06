@@ -105,13 +105,17 @@ Fan tiles control on/off, speed, preset, oscillation and direction, each only wh
 
 Select them under **Calendars** in the entity configuration. A Calendar tile shows up to four of them. The Bridge reads their events with Home Assistant's `calendar.get_events` (the current month from a week before the 1st up to the two months after it) and publishes them retained on `ha_prefix/calendar/<object>/events`, in Home Assistant's local time: again when an event starts or ends, every 15 minutes (for edited future events and the new day), and on a snapshot. The list is bounded (96 events, 16 KB); when it has to drop events it drops the latest and shortens the window the panel shows, so a dropped day never looks free. Requires firmware with the Calendar tile; older firmware ignores the topic.
 
-### Rain radar
+### Rain radar and webcams
 
-Every panel can pick **Rain radar** in its Camera tile, and there is nothing to set up: no option, no key, no extra integration. It is an ordinary camera entity that shows the rain around Home Assistant's home location on a map, with the picture's time and source in it. It loads pictures only while somebody shows it.
+A panel's Camera tile (firmware b665 or newer) has a source in the Web Admin: Home Assistant, Rain radar or Webcam, with a list of entries under it. There is nothing to set up here: no option, no key, no extra integration.
+
+The Bridge creates its own device "HomeTiles Bridge" without a form. It holds one camera entity per thing, never one per panel: `camera.ht_radar_home` for Home Assistant's home always exists and loads nothing unless somebody looks at it; every other place and every webcam exists while a panel uses it and goes with the last one. Home Assistant's camera window plays the radar as a loop with the time drawn in.
+
+A place is Home Assistant's home, a zone, any town by name (Open-Meteo's geocoding, no key) or your own coordinates. A webcam is an https address of a public name: a picture, or a page whose `og:image` the Bridge reads, with no code per site. It fetches every 10 minutes and keeps changed pictures for 24 hours, so the time bar fills up over a day. Check a site's terms: some ask for consent before their pictures are used.
 
 The sources are tried in order, so a failing one falls over by itself: RainViewer worldwide (free for personal use), then the DWD inside Germany, then NASA's worldwide precipitation layer, which runs several hours behind. If all of them fail, the last picture stays. Only the home location rounded to 0.1 degrees (about 10 km) leaves Home Assistant.
 
-With firmware b663 or newer the Camera popup shows a time bar for the radar's last two hours: press Play or drag it by hand. The Bridge keeps the pictures and the panel asks for the one it shows, so the panel stores none. Only RainViewer brings this history; with a fallback source the popup shows the newest picture without a bar.
+The Camera popup shows a time bar for the radar's last two hours: press Play or drag it by hand. The Bridge keeps the pictures and the panel asks for the one it shows, so the panel stores none. Only RainViewer brings this history; with a fallback source the popup shows the newest picture without a bar.
 
 The map is drawn from Natural Earth (public domain), the names use the Inter font (SIL Open Font License, `rain_radar_font.LICENSE.txt`). `tools/build_rain_radar_map.py` builds the data files.
 
