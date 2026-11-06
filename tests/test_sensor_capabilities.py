@@ -20,6 +20,7 @@ def extract(filename, names, scope):
     tree = ast.parse((ROOT / filename).read_text())
     functions = [node for node in tree.body if getattr(node, "name", None) in names]
     tree = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), *functions], type_ignores=[])
+    scope["panel_entries"] = lambda hass: hass.config_entries.async_entries("tab5_lvgl")
     exec(compile(ast.fix_missing_locations(tree), filename, "exec"), scope)
 
 

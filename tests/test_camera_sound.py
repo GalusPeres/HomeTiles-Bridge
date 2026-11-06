@@ -99,6 +99,7 @@ class CameraSoundTest(unittest.IsolatedAsyncioTestCase):
         async def publish_audio_command(text):
             self.audio_commands.append(json.loads(text))
 
+        bridge._history_of = lambda entity_id: None  # test_rain_radar.py
         bridge.async_create_audio_stream = create_audio_stream
         bridge.async_publish_audio_command = publish_audio_command
         for name in names:

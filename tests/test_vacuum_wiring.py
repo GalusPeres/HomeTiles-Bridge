@@ -182,7 +182,7 @@ class SourceContractTest(unittest.TestCase):
 
   def test_config_payload_tracking_and_level(self) -> None:
     config = self.segment("async_publish_config_to_device")
-    for key in ("CONF_VACUUMS", '"vacuum_meta"', '"entity_search": 6'):
+    for key in ("CONF_VACUUMS", '"vacuum_meta"', '"entity_search": 7'):
       self.assertIn(key, config)
     refresh = self.segment("_refresh_runtime_entity_lists")
     self.assertIn("+ self.vacuums", refresh)

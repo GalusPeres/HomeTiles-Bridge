@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -81,6 +82,11 @@ CAMERA_STILL_REPEAT_SECONDS: Final = 0.5
 CAMERA_STILL_RETRY_SECONDS: Final = 0.5
 # A camera with a history looks this often for the frame its panel picked.
 CAMERA_PICK_POLL_SECONDS: Final = 0.02
+# How often a camera is still asked while a frame of its history is shown.
+CAMERA_PICKED_REFRESH_SECONDS: Final = 30.0
+# A still camera's own shape within the panel's box (async_create_session).
+CAMERA_BOX_MAX_HEIGHT: Final = 720
+CAMERA_BOX_MIN_HEIGHT: Final = 60
 # FFmpeg's MJPEG scale is inverse: a larger value produces smaller frames.
 # Direct streams must stay below roughly five acknowledged 8 KiB blocks at
 # 24 FPS; still-image cameras retain the previous higher JPEG quality.
@@ -797,8 +803,14 @@ class CameraStreamManager:
     window: Any = None,
     chunk: Any = None,
     quality: Any = None,
+    box: Any = None,
   ) -> CameraStreamSession:
-    """Resolve a direct stream or a still-image camera into a video session."""
+    """Resolve a direct stream or a still-image camera into a video session.
+
+    box: the panel's popup can show a still camera's picture in its own shape
+    within this size, so nothing is cut and no bars are sent; "ready" tells the
+    size. Direct streams keep the requested frame.
+    """
     view, rotate, fit = self._validate_view(view, rotate, fit)
     window = self._validate_window(window)
     chunk_bytes = self._validate_chunk(chunk)
@@ -841,6 +853,8 @@ class CameraStreamManager:
       fps = min(
         fps, LIVE_STREAM_FPS if live is not None else CAMERA_STILL_MAX_FPS
       )
+      if view == "popup" and live is None:
+        width, height = self._fit_into_box(first_image, box, width, height)
 
     await self.async_stop_device(device_id)
     token = secrets.token_urlsafe(24)
@@ -871,6 +885,30 @@ class CameraStreamManager:
       self._panel_sessions[device_id] = session
       self._stop_events[device_id] = stop_event
     return session
+
+  @staticmethod
+  def _fit_into_box(image: bytes, box: Any, width: int, height: int) -> tuple[int, int]:
+    """The picture's own shape within the panel's box: width a multiple of 8, as
+    the P4 decoder needs, and an even height; the requested frame without a box."""
+    if not isinstance(box, (list, tuple)) or len(box) != 2:
+      return width, height
+    box_w, box_h = box
+    if (isinstance(box_w, bool) or isinstance(box_h, bool) or not isinstance(box_w, int) or not isinstance(box_h, int)
+        or box_w != width or not height <= box_h <= CAMERA_BOX_MAX_HEIGHT):
+      return width, height
+    try:
+      from PIL import Image
+
+      with Image.open(BytesIO(image)) as picture:
+        image_w, image_h = picture.size
+    except Exception:  # A picture Pillow cannot read still goes through FFmpeg.
+      return width, height
+    if image_w <= 0 or image_h <= 0:
+      return width, height
+    scale = min(box_w / image_w, box_h / image_h)
+    fit_w = max(CAMERA_STREAM_MIN_WIDTH, int(image_w * scale + 0.5) & ~7)
+    fit_h = max(CAMERA_BOX_MIN_HEIGHT, int(image_h * scale + 0.5) & ~1)
+    return min(fit_w, box_w), min(fit_h, box_h)
 
   @staticmethod
   def _validate_view(view: Any, rotate: Any, fit: Any) -> tuple[str, int, str]:
@@ -1300,9 +1338,14 @@ class CameraStreamConnection:
           if picked is not None and picked != frame:
             new_frame = picked
             break
-          if image_task is None and picked is None and now >= next_request_at:
+          # Back on the newest picture: at once, not after the slow rhythm below.
+          if picked is None and next_request_at > now + request_interval:
+            next_request_at = now
+          # While a frame of the history is shown the camera is still asked now
+          # and then, so new frames reach the time bar; the answer is not shown.
+          if image_task is None and now >= next_request_at and (picked is None or session.has_history):
             request_started = now
-            next_request_at = now + request_interval
+            next_request_at = now + (request_interval if picked is None else CAMERA_PICKED_REFRESH_SECONDS)
             # Full-size image on purpose, see async_create_session: up to
             # 10 fetches per second must not rescale on the event loop.
             image_task = self._manager.hass.async_create_task(
@@ -1314,11 +1357,7 @@ class CameraStreamConnection:
               f"HomeTiles camera refresh {session.entity_id}",
             )
           # Without a request ahead (a picked frame) only the repeat wakes it.
-          wake_at = (
-            repeat_at
-            if image_task is not None or picked is not None
-            else min(repeat_at, next_request_at)
-          )
+          wake_at = repeat_at if image_task is not None else min(repeat_at, next_request_at)
           timeout = wake_at - time.monotonic()
           if session.has_history:
             timeout = min(timeout, CAMERA_PICK_POLL_SECONDS)

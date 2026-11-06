@@ -6,12 +6,14 @@ import asyncio
 import base64
 from datetime import date, datetime, timedelta
 from io import BytesIO
+from pathlib import Path
 from ipaddress import ip_address
 import json
 import logging
 import secrets
 from time import monotonic
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlencode, urlsplit
 
 import voluptuous as vol
 
@@ -81,7 +83,23 @@ from .link_runtime import LinkRuntime
 from .advertise_host import advertised_host
 from .images import CAMERA_REFRESH_S, ImageService, content_key, render_jpeg
 from .images import Source as ImageSource
-from .rain_radar import DATA_RAIN_RADAR, RainRadar, is_rain_radar_unique_id, rain_radar_unique_id
+from .camera_sources import (
+  BRIDGE_DEVICE_ID,
+  DATA_CAMERA_SOURCES,
+  STORE_KEY as CAMERA_SOURCES_STORE_KEY,
+  SourceRegistry,
+  clean_radar_source,
+  clean_sources,
+  frames_payload,
+  parse_place_answer,
+  source_entity_id,
+  source_id_of,
+  source_unique_id,
+)
+from homeassistant.helpers import translation
+from .device_helpers import is_bridge_entry, panel_entries
+from .rain_radar import RainRadar, custom_source, is_rain_radar_unique_id
+from .webcam_source import WebcamSource, url_allowed
 from .binary_history import (
   BINARY_HISTORY_KIND,
   BINARY_HISTORY_RECORDER_MAX_CHANGES,
@@ -640,7 +658,7 @@ async def async_ensure_link_runtime(hass: HomeAssistant) -> LinkRuntime:
   runtime = domain_data.get(DATA_LINK)
   if runtime is not None:
     return runtime
-  runtime = LinkRuntime(lambda: hass.config_entries.async_entries(DOMAIN))
+  runtime = LinkRuntime(lambda: panel_entries(hass))
   domain_data[DATA_LINK] = runtime
   await runtime.async_start()
   images = _create_image_service(hass, runtime)
@@ -779,17 +797,21 @@ def _create_image_service(hass: HomeAssistant, runtime: LinkRuntime) -> ImageSer
   return ImageService(runtime.broker, source=source, render=render, allowed=allowed, track=track)
 
 
-def _build_rain_radar(hass: HomeAssistant) -> RainRadar:
-  """The rain radar's connection to Home Assistant (rain_radar.py): one for
-  all panels, so they share its pictures and its requests."""
+def _build_camera_sources(hass: HomeAssistant) -> SourceRegistry:
+  """The Bridge's own cameras' connection to Home Assistant (camera_sources.py):
+  one for all panels, so they share their pictures and their requests."""
+  store: Store = Store(hass, 1, CAMERA_SOURCES_STORE_KEY)
 
-  async def fetch(url: str, limit: int) -> Optional[bytes]:
+  async def get(url: str, limit: int, public: bool) -> Optional[bytes]:
     try:
       session = async_get_clientsession(hass)
       async with session.get(url, timeout=RAIN_RADAR_FETCH_TIMEOUT_S,
                              headers={"User-Agent": "HomeTiles-Bridge"}) as response:
+        if public and not url_allowed(str(response.url)):
+          _LOGGER.info("HomeTiles camera source: a redirect left the public internet at %s", url)
+          return None
         if response.status != 200:
-          _LOGGER.debug("HomeTiles rain radar: HTTP %s from %s", response.status, url)
+          _LOGGER.debug("HomeTiles camera source: HTTP %s from %s", response.status, url)
           return None
         chunks: List[bytes] = []
         received = 0
@@ -797,24 +819,101 @@ def _build_rain_radar(hass: HomeAssistant) -> RainRadar:
           chunks.append(chunk)
           received += len(chunk)
           if received > limit:
-            _LOGGER.info("HomeTiles rain radar: an answer above %d bytes was not loaded", limit)
+            _LOGGER.info("HomeTiles camera source: an answer above %d bytes was not loaded", limit)
             return None
         return b"".join(chunks)
     except Exception as err:  # pragma: no cover - network dependent
-      _LOGGER.debug("HomeTiles rain radar: fetch failed (%s)", err)
+      _LOGGER.debug("HomeTiles camera source: fetch failed (%s)", err)
       return None
+
+  async def fetch(url: str, limit: int) -> Optional[bytes]:
+    return await get(url, limit, False)
+
+  async def fetch_public(url: str, limit: int) -> Optional[bytes]:
+    return await get(url, limit, True)
 
   def format_time(when: int) -> str:
     local = dt_util.as_local(dt_util.utc_from_timestamp(when))
     return local.strftime("%H:%M" if local.date() == dt_util.now().date() else "%m-%d %H:%M")
 
-  return RainRadar(
-    fetch=fetch,
-    location=lambda: (hass.config.latitude, hass.config.longitude),
-    language=lambda: str(hass.config.language or "en"),
-    format_time=format_time,
-    run_blocking=hass.async_add_executor_job,
+  def location_of(spec: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    if "lat" in spec:
+      return spec["lat"], spec["lon"]
+    if "zone" in spec:
+      state = hass.states.get(spec["zone"])
+      if state is None or state.attributes.get("latitude") is None or state.attributes.get("longitude") is None:
+        return None
+      return float(state.attributes["latitude"]), float(state.attributes["longitude"])
+    return hass.config.latitude, hass.config.longitude
+
+  def first_sources() -> Tuple[Any, ...]:
+    return (custom_source(registry.radar_source),) if registry.radar_source else ()
+
+  def make_source(spec: Dict[str, Any]) -> Any:
+    if spec["kind"] == "webcam":
+      return WebcamSource(spec["url"], fetch=fetch_public, run_blocking=hass.async_add_executor_job,
+                          directory=Path(hass.config.path("hometiles_webcams", spec["id"])))
+    return RainRadar(fetch=fetch, location=lambda: location_of(spec), language=lambda: str(hass.config.language or "en"),
+                     format_time=format_time, run_blocking=hass.async_add_executor_job, first_sources=first_sources)
+
+  def entity_name(spec: Dict[str, Any]) -> str:
+    if spec["kind"] == "webcam":
+      return spec.get("name") or urlsplit(spec["url"]).hostname or "Webcam"
+    word = hass.data.get(DOMAIN, {}).get("_rain_radar_word") or "Rain radar"
+    place = spec.get("name", "")
+    if not place and "zone" in spec:
+      state = hass.states.get(spec["zone"])
+      place = state.name if state is not None else ""
+    if not place and "lat" in spec:
+      place = f"{spec['lat']:g}, {spec['lon']:g}"
+    return f"{word} {place}" if place else word
+
+  def make_entity(spec: Dict[str, Any], source: Any) -> Any:
+    from .camera import HomeTilesCameraSource
+    return HomeTilesCameraSource(spec, source, entity_name(spec))
+
+  async def remove_entity(source_id: str) -> None:
+    registry_entries = er.async_get(hass)
+    entity_id = registry_entries.async_get_entity_id("camera", DOMAIN, source_unique_id(source_id))
+    if entity_id:
+      registry_entries.async_remove(entity_id)
+
+  registry = SourceRegistry(load=store.async_load, save=store.async_save, make_source=make_source,
+                            make_entity=make_entity, remove_entity=remove_entity)
+
+  async def search_places(query: str) -> List[Tuple[str, str, str, float, float]]:
+    url = "https://geocoding-api.open-meteo.com/v1/search?" + urlencode(
+      {"name": query, "count": 8, "language": str(hass.config.language or "en"), "format": "json"})
+    return parse_place_answer(await fetch(url, 256 * 1024))
+
+  hass.data[DOMAIN]["_search_places"] = search_places
+  return registry
+
+
+async def _async_rain_radar_word(hass: HomeAssistant) -> str:
+  """The radar's name in Home Assistant's language; places follow it."""
+  try:
+    language = str(hass.config.language or "en")
+    texts = await translation.async_get_translations(hass, language, "entity", [DOMAIN])
+    return texts.get(f"component.{DOMAIN}.entity.camera.rain_radar.name") or "Rain radar"
+  except Exception:  # pragma: no cover - only the name depends on it
+    return "Rain radar"
+
+
+async def _async_setup_bridge_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+  """The Bridge's own entry: a device and the cameras that belong to no panel."""
+  dr.async_get(hass).async_get_or_create(
+    config_entry_id=entry.entry_id, identifiers={(DOMAIN, BRIDGE_DEVICE_ID)},
+    name="HomeTiles Bridge", manufacturer="HomeTiles", model="Bridge",
   )
+  # Bridge betas up to v0.9.8b4 made one radar per panel.
+  registry_entries = er.async_get(hass)
+  for item in list(registry_entries.entities.values()):
+    if item.platform == DOMAIN and item.domain == "camera" and is_rain_radar_unique_id(item.unique_id):
+      registry_entries.async_remove(item.entity_id)
+  hass.data[DOMAIN].setdefault("platforms", {})[entry.entry_id] = ["camera"]
+  await hass.config_entries.async_forward_entry_setups(entry, ["camera"])
+  return True
 
 
 async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
@@ -823,8 +922,13 @@ async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
   # Loaded entries whose panel still uses MQTT; while it is empty, MQTT gets
   # no publishes at all (link_mqtt.py).
   domain_data.setdefault(DATA_MQTT_ENTRIES, set())
-  if DATA_RAIN_RADAR not in domain_data:
-    domain_data[DATA_RAIN_RADAR] = _build_rain_radar(hass)
+  if DATA_CAMERA_SOURCES not in domain_data:
+    domain_data[DATA_CAMERA_SOURCES] = _build_camera_sources(hass)
+    await domain_data[DATA_CAMERA_SOURCES].async_load()
+    domain_data["_rain_radar_word"] = await _async_rain_radar_word(hass)
+  if not any(is_bridge_entry(entry) for entry in hass.config_entries.async_entries(DOMAIN)):
+    # It sets itself up, nothing to enter (config_flow.async_step_system).
+    hass.async_create_task(hass.config_entries.flow.async_init(DOMAIN, context={"source": "system"}, data={}))
 
   await async_ensure_link_runtime(hass)
 
@@ -893,6 +997,8 @@ async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   """Create the bridge instance for a config entry."""
+  if is_bridge_entry(entry):
+    return await _async_setup_bridge_entry(hass, entry)
   device_reg = dr.async_get(hass)
   dev_info = entry_device_info(entry)
   kwargs = {
@@ -905,7 +1011,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   if dev_info.get("model"):
     kwargs["model"] = dev_info["model"]
   device_reg.async_get_or_create(**kwargs)
-  for sensor_entry in hass.config_entries.async_entries(DOMAIN):
+  for sensor_entry in panel_entries(hass):
     _cleanup_persisted_runtime_sensor_entities(hass, sensor_entry)
   # Der Entry-Titel wird sonst nur einmal bei der Ersterstellung gesetzt und
   # danach nie wieder - anders als der Geraetename oben, der bei jedem Setup
@@ -946,9 +1052,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   # announced capabilities changed in between.
   hass.data[DOMAIN].setdefault("platforms", {})[entry.entry_id] = platforms
   await hass.config_entries.async_forward_entry_setups(entry, platforms)
-  radar = hass.data[DOMAIN].get(DATA_RAIN_RADAR)
-  if radar is not None:
-    entry.async_on_unload(radar.add_listener(bridge.on_rain_radar_changed))
+  sources = hass.data[DOMAIN].get(DATA_CAMERA_SOURCES)
+  if sources is not None:
+    entry.async_on_unload(sources.add_listener(bridge.on_camera_source_changed))
   await bridge.async_publish_config_to_device()
   return True
 
@@ -985,7 +1091,7 @@ def _preserved_user_sensor_ids(hass: HomeAssistant, entry: ConfigEntry | None,
     return set()
   protected = set((entry.data or {}).get("user_sensor_selections", []))
   registry = er.async_get(hass)
-  for owner in hass.config_entries.async_entries(DOMAIN):
+  for owner in panel_entries(hass):
     data = merged_capabilities_data(owner)
     if owner.entry_id == entry.entry_id and incoming_data:
       data.update(incoming_data)
@@ -1104,7 +1210,7 @@ def _cleanup_persisted_runtime_sensor_entities(
 ) -> None:
   """Repair sensor selections affected by the firmware feedback loop."""
   runtime_entity_ids = set()
-  for owner in hass.config_entries.async_entries(DOMAIN):
+  for owner in panel_entries(hass):
     runtime_entity_ids.update(_runtime_managed_sensor_entity_ids(hass, owner))
   protected = _preserved_user_sensor_ids(hass, entry)
   runtime_entity_ids.difference_update(protected)
@@ -1424,7 +1530,7 @@ def _legacy_local_io_alias_owner_count(
 ) -> int:
   """Count verified HomeTiles entries which announced the same legacy ID."""
   owners = {entry.entry_id}
-  for candidate_entry in hass.config_entries.async_entries(DOMAIN):
+  for candidate_entry in panel_entries(hass):
     if candidate_entry.entry_id in owners:
       continue
     for candidate_descriptor in entry_local_io(candidate_entry):
@@ -1503,6 +1609,13 @@ def _firmware_entity_slug(value: Any) -> str:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
   """Unload a config entry."""
+  if is_bridge_entry(entry):
+    sources = hass.data[DOMAIN].get(DATA_CAMERA_SOURCES)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, ["camera"])
+    if unloaded and sources is not None:
+      sources.detach()
+      await sources.async_stop()
+    return unloaded
   bridge: Tab5Bridge | None = hass.data[DOMAIN]["entries"].get(entry.entry_id)
   platforms = hass.data[DOMAIN].get("platforms", {}).get(entry.entry_id, PLATFORMS)
   unload_ok = await hass.config_entries.async_unload_platforms(entry, platforms)
@@ -1518,7 +1631,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
   """A removed panel on the direct link loses its connection at once."""
+  if is_bridge_entry(entry):
+    return
   await Store(hass, 1, panel_entities_store_key(entry.entry_id)).async_remove()
+  sources = hass.data.get(DOMAIN, {}).get(DATA_CAMERA_SOURCES)
+  if sources is not None:
+    await sources.async_forget_panel(str(entry_device_id(entry)))
   runtime = hass.data.get(DOMAIN, {}).get(DATA_LINK)
   device_id = entry_device_id(entry)
   if runtime is not None and device_id:
@@ -1547,6 +1665,8 @@ async def async_remove_config_entry_device(
   # A manually created entry initially uses its config-entry ID, then adopts
   # the firmware-announced device ID after the first bridge-config message.
   # The old registry device is stale; the current identifier must stay owned.
+  if is_bridge_entry(config_entry):
+    return False
   return is_stale_device_entry(
     device_entry.identifiers,
     (DOMAIN, entry_device_id(config_entry)),
@@ -1759,6 +1879,7 @@ class Tab5Bridge:
     self._declaration_parts = entity_search.DeclarationParts()
     # The rain radar while this panel's camera popup shows it.
     self._camera_history_entity: Optional[str] = None
+    self._source_status: Optional[Dict[str, str]] = None
     self._panel_entities_store = Store(hass, 1, panel_entities_store_key(entry.entry_id))
     self._icon_refresh_handle = None
     self._forecast_cache: Dict[Tuple[str, str], Tuple[datetime, List[Dict[str, Any]]]] = {}
@@ -1792,19 +1913,16 @@ class Tab5Bridge:
         result.append(entry.entity_id)
     return _unique_entities(result)
 
-  def _resolve_rain_radar_entities(self) -> List[str]:
-    """This panel's rain radar camera: always released, so it can be picked
-    without a Web Admin password and without anything set up in the Bridge."""
-    entity_id = er.async_get(self.hass).async_get_entity_id(
-      "camera", DOMAIN, rain_radar_unique_id(entry_device_id(self.entry)))
-    return [entity_id] if entity_id else []
+  def _camera_sources(self) -> Optional[SourceRegistry]:
+    return self.hass.data.get(DOMAIN, {}).get(DATA_CAMERA_SOURCES)
 
-  def _foreign_rain_radar(self, entity_id: str) -> bool:
-    """Another panel's rain radar: the same picture under a second id, which
-    the full search does not need to offer."""
-    entry = er.async_get(self.hass).async_get(entity_id)
-    return (entry is not None and entry.platform == DOMAIN and entry.domain == "camera"
-            and is_rain_radar_unique_id(entry.unique_id) and entry.config_entry_id != self.entry.entry_id)
+  def _resolve_camera_source_entities(self) -> List[str]:
+    """The Bridge's cameras this panel uses: always released, so they work without
+    a Web Admin password and without anything set up in the Bridge."""
+    sources = self._camera_sources()
+    if sources is None:
+      return []
+    return [source_entity_id(item) for item in sources.source_ids_of(str(entry_device_id(self.entry)))]
 
   def _resolve_local_io_entities(self, domain: str, channel_type: str) -> List[str]:
     """Resolve integration-owned local I/O entity IDs in descriptor order."""
@@ -1851,7 +1969,7 @@ class Tab5Bridge:
     all_open_without_code: List[str] = []
     all_access_codes: Dict[str, List[str]] = {}
     all_scene_map: Dict[str, str] = {}
-    for entry in entries if entries is not None else self.hass.config_entries.async_entries(DOMAIN):
+    for entry in entries if entries is not None else panel_entries(self.hass):
       data = dict(entry.data or {})
       if entry.options:
         data.update(entry.options)
@@ -1926,7 +2044,7 @@ class Tab5Bridge:
       "sensor", LOCAL_IO_TEMPERATURE
     )
     local_relays = self._resolve_local_io_entities("switch", LOCAL_IO_RELAY)
-    rain_radar = self._resolve_rain_radar_entities()
+    camera_sources = self._resolve_camera_source_entities()
 
     def lists_of(source: Dict[str, Any]) -> Dict[str, List[str]]:
       # Releases of a set of entries with this panel's own entities.
@@ -1936,7 +2054,7 @@ class Tab5Bridge:
         "switches": _unique_entities(source["switches"] + local_relays),
         "media_players": source["media_players"], "climates": source["climates"],
         "numbers": source["numbers"], "selects": source["selects"], "datetimes": source["datetimes"],
-        "covers": source["covers"], "cameras": _unique_entities(source["cameras"] + rain_radar),
+        "covers": source["covers"], "cameras": _unique_entities(source["cameras"] + camera_sources),
         "images": source["images"],
         "weathers": source["weathers"],
         "locks": source["locks"], "alarm_panels": source["alarm_panels"], "fans": source["fans"],
@@ -2438,7 +2556,7 @@ class Tab5Bridge:
           # also scenes, scripts and buttons for the Scene tile, 5 = also
           # calendars and their retained `events` topic (Calendar tile), 6 =
           # also vacuums and their `detail` topic (Vacuum tile).
-          "entity_search": 6,
+          "entity_search": 7,  # 7: the radar's places and the Bridge's own cameras
           # This Bridge sends name, unit and icon changes by itself
           # (_handle_state_event), so a panel that reads this flag needs no
           # refresh every minute, only after a reconnect or a lost message.
@@ -3508,15 +3626,21 @@ class Tab5Bridge:
         _LOGGER.warning("HomeTiles panel %s sent an invalid entity search", self.base_topic)
       return
     full = self._access_secured(msg, request)
+    if request["list"] == entity_search.PLACES_LIST:
+      # Nothing here is sensitive: zones and towns, no Web Admin password needed.
+      for part in entity_search.pack_answer(request["id"], await self._places_entries(request["q"]), True, False):
+        if not await self._async_publish_sealed_data("entities", part):
+          return
+      return
     if request["list"] == entity_search.ENERGY_LIST:
       entries = await self._energy_search_entries(full)
     else:
       if full:
-        entity_ids = [state.entity_id for state in self.hass.states.async_all(entity_search.LIST_DOMAINS[request["list"]])
-                      if not self._foreign_rain_radar(state.entity_id)]
+        entity_ids = [state.entity_id for state in self.hass.states.async_all(entity_search.LIST_DOMAINS[request["list"]])]
       else:
         entity_ids = self._released_for_list(request["list"])
-      entries = self._search_entries(entity_ids)
+      # The Bridge's own cameras have their own source at the Camera tile.
+      entries = self._search_entries([item for item in entity_ids if source_id_of(item) is None])
     results, more = entity_search.search(entries, request["q"], offset=request["o"])
     # Icons only for what the panel gets: icon translations load per
     # integration. Energy sources bring their own.
@@ -3527,6 +3651,22 @@ class Tab5Bridge:
     for part in entity_search.pack_answer(request["id"], results, full, more):
       if not await self._async_publish_sealed_data("entities", part):
         return
+
+  async def _places_entries(self, query: str) -> List[Dict[str, str]]:
+    """The radar's places: Home Assistant's home and zones, then towns by name."""
+    words = [word for word in query.casefold().split() if word]
+    zones = [{"v": state.entity_id, "t": state.name, "d": "Home Assistant"}
+             for state in self.hass.states.async_all("zone")]
+    zones = [item for item in zones if entity_search.matches(item, words)]
+    zones.sort(key=lambda item: (item["v"] != "zone.home", item["t"].casefold()))
+    for item in zones:
+      item["i"] = self._search_icon(item["v"])
+    search = self.hass.data.get(DOMAIN, {}).get("_search_places")
+    if search is None or len(query) < 2:
+      return zones
+    places = [{"v": f"geo:{lat:.4f},{lon:.4f}", "t": name, "a": region, "d": country}
+              for name, region, country, lat, lon in await search(query)]
+    return zones + places
 
   async def _async_handle_tiles_command(self, msg: Any) -> None:
     """The panel declares every entity it uses; a complete declaration
@@ -3553,6 +3693,13 @@ class Tab5Bridge:
       self._panel_declaration = declaration
       await self._async_save_panel_entities()
       self._refresh_runtime_entity_lists()
+    sources = self._camera_sources()
+    if sources is not None and await sources.async_set_panel(
+        str(entry_device_id(self.entry)), clean_sources(self._declaration_parts.sources),
+        clean_radar_source(self._declaration_parts.radar_source)):
+      self._refresh_runtime_entity_lists()
+      changed = True
+    await self._async_publish_source_status()
     if changed or not self._declaration_logged:
       # The first declaration after a start and every change.
       self._declaration_logged = True
@@ -5367,17 +5514,12 @@ class Tab5Bridge:
     registry_entry = er.async_get(self.hass).async_get(entity_id)
     return is_local_camera_self_loop(registry_entry, DOMAIN, self.entry.entry_id)
 
-  def _rain_radar_of(self, entity_id: Optional[str]) -> Optional[RainRadar]:
-    """The history behind a camera: only the Bridge's rain radar has one."""
-    if not entity_id:
-      return None
-    entry = er.async_get(self.hass).async_get(entity_id)
-    if (entry is None or entry.platform != DOMAIN or entry.domain != "camera"
-        or not is_rain_radar_unique_id(entry.unique_id)):
-      return None
-    return self.hass.data.get(DOMAIN, {}).get(DATA_RAIN_RADAR)
+  def _history_of(self, entity_id: Optional[str]) -> Any:
+    """The history behind a camera: only the Bridge's own cameras have one."""
+    sources = self._camera_sources()
+    return sources.source(source_id_of(entity_id)) if sources is not None else None
 
-  def _pick_camera_frame(self, parsed: Dict[str, Any], entity_id: Optional[str], manager: Any) -> None:
+  async def _async_pick_camera_frame(self, parsed: Dict[str, Any], entity_id: Optional[str], manager: Any) -> None:
     """The panel's time bar: the frame of this time, 0 for the newest. The
     panel knows the times, so nothing is answered; a frame that is gone
     meanwhile leaves the picture as it is."""
@@ -5385,25 +5527,38 @@ class Tab5Bridge:
     if isinstance(when, bool) or not isinstance(when, int) or when < 0:
       _LOGGER.warning("HomeTiles camera: invalid frame time from %s", self.base_topic)
       return
-    radar = self._rain_radar_of(entity_id)
-    if radar is None or manager is None or not self.device_id:
+    history = self._history_of(entity_id)
+    if history is None or manager is None or not self.device_id:
       return
-    frame = radar.frame_at(when) if when else None
+    frame = await history.async_frame_at(when) if when else None
     if when and frame is None:
       return
     manager.pick_frame(self.device_id, entity_id, frame)
 
+  async def _async_publish_source_status(self) -> None:
+    """Which webcam addresses have no picture, for the panel's Web Admin."""
+    sources = self._camera_sources()
+    if sources is None:
+      return
+    status = sources.status_of(str(entry_device_id(self.entry)))
+    if status != self._source_status:
+      if await self._async_publish_sealed_data("sources", json.dumps({"src": status}, separators=(",", ":"))):
+        self._source_status = status
+
   @callback
-  def on_rain_radar_changed(self) -> None:
-    """New frames while this panel's popup shows the radar: its time bar follows."""
+  def on_camera_source_changed(self, source_id: str) -> None:
+    """New frames while this panel's popup shows the camera: its time bar follows."""
+    self.hass.async_create_task(self._async_publish_source_status())
     entity_id = self._camera_history_entity
-    radar = self._rain_radar_of(entity_id)
-    if radar is None:
+    if entity_id != source_entity_id(source_id):
+      return
+    history = self._history_of(entity_id)
+    if history is None:
       return
     self.hass.async_create_task(self._async_publish_camera_status({
       "status": "frames",
       "entity_id": entity_id,
-      "frames": radar.times(),
+      **frames_payload(history.times()),
       "protocol_version": CAMERA_BRIDGE_PROTOCOL_VERSION,
     }))
 
@@ -5433,7 +5588,7 @@ class Tab5Bridge:
       return
 
     if command == "frame":
-      self._pick_camera_frame(parsed, entity_id, manager)
+      await self._async_pick_camera_frame(parsed, entity_id, manager)
       return
 
     if command == "open" and entity_id and self._is_local_camera_self_loop(entity_id):
@@ -5473,6 +5628,7 @@ class Tab5Bridge:
         parsed.get("window"),
         parsed.get("chunk"),
         parsed.get("quality"),
+        parsed.get("box"),
       )
 
       async def _async_notify_panel_end(stopped_entity: str = entity_id) -> None:
@@ -5533,11 +5689,12 @@ class Tab5Bridge:
       if session.jpeg_quality is not None:
         response_payload["quality"] = session.jpeg_quality
       response_payload["kind"] = "live" if session.source or session.live is not None else "still"
-      radar = self._rain_radar_of(entity_id)
-      session.has_history = radar is not None
-      self._camera_history_entity = entity_id if radar is not None else None
-      if radar is not None:
-        response_payload["frames"] = radar.times()
+      history = self._history_of(entity_id)
+      session.has_history = history is not None
+      self._camera_history_entity = entity_id if history is not None else None
+      if history is not None:
+        response_payload["history"] = True
+        response_payload.update(frames_payload(history.times()))
       if parsed.get("audio") == AUDIO_STREAM_TRANSPORT and session.source:
         self._start_camera_sound(entity_id, session.source)
       elif self._camera_sound_session() is not None:
@@ -7828,7 +7985,7 @@ def _payload_to_entry_data(payload: Dict[str, Any]) -> Dict[str, Any]:
 def _find_entry_by_device_id(hass: HomeAssistant, device_id: Optional[str]) -> Optional[ConfigEntry]:
   if not device_id:
     return None
-  for entry in hass.config_entries.async_entries(DOMAIN):
+  for entry in panel_entries(hass):
     if entry.data.get(CONF_DEVICE_ID) == device_id or entry.unique_id == device_id:
       return entry
   return None
@@ -7849,7 +8006,7 @@ def _may_adopt_entry(entry: ConfigEntry, device_id: Optional[str]) -> bool:
 def _find_entry_by_base(hass: HomeAssistant, base_topic: Optional[str]) -> Optional[ConfigEntry]:
   if not base_topic:
     return None
-  for entry in hass.config_entries.async_entries(DOMAIN):
+  for entry in panel_entries(hass):
     if entry.data.get(CONF_BASE_TOPIC) == base_topic:
       return entry
   return None

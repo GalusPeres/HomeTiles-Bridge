@@ -518,6 +518,7 @@ class ConfigFlowTest(unittest.TestCase):
     scope["split_binary_sensor_entities"] = load_module("binary_sensor_helpers").split_binary_sensor_entities
     module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
                               *nodes], type_ignores=[])
+    scope["panel_entries"] = lambda hass: hass.config_entries.async_entries("tab5_lvgl")
     exec(compile(ast.fix_missing_locations(module), "access-config", "exec"), scope)
     convert = scope["_convert_entity_data"]
     selected = {

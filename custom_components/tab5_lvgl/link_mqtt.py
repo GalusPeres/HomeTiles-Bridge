@@ -86,6 +86,8 @@ def _link_prefixes(hass: Any) -> tuple:
   prefixes = []
   for entry in entries:
     values = dict(getattr(entry, "data", None) or {})
+    if values.get("hometiles_bridge_entry") is True:
+      continue  # The Bridge's own entry is no panel (camera_sources.py).
     values.update(getattr(entry, "options", None) or {})
     if values.get(CONF_TRANSPORT) != TRANSPORT_LINK:
       continue

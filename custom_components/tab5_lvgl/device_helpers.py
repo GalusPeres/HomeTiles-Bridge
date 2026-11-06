@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -16,6 +16,20 @@ from .const import (
     DEFAULT_BASE,
     DOMAIN,
 )
+
+
+# The Bridge's own config entry holds what belongs to no panel (camera_sources.py).
+BRIDGE_ENTRY_KEY = "hometiles_bridge_entry"
+
+
+def is_bridge_entry(entry: Any) -> bool:
+  data = getattr(entry, "data", None)
+  return isinstance(data, Mapping) and data.get(BRIDGE_ENTRY_KEY) is True
+
+
+def panel_entries(hass: Any) -> list:
+  """This integration's entries that are panels."""
+  return [entry for entry in hass.config_entries.async_entries(DOMAIN) if not is_bridge_entry(entry)]
 
 
 def _merged_entry_data(entry: ConfigEntry) -> Dict[str, Any]:

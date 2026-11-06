@@ -212,7 +212,9 @@ class BridgeHarness(unittest.IsolatedAsyncioTestCase):
         devices = {"dev1": SimpleNamespace(name="Heizung", name_by_user=None, area_id="kitchen")}
         areas = {"kitchen": SimpleNamespace(name="OG Küche"), "garden": SimpleNamespace(name="Garten")}
         scope = {
-            "json": json, "entity_search": SEARCH,
+            "json": json, "entity_search": SEARCH, "source_id_of": lambda entity_id: None,
+            "clean_sources": lambda items: [], "clean_radar_source": lambda url: "",
+            "entry_device_id": lambda entry: "mac",
             "_LOGGER": SimpleNamespace(warning=lambda *a: None, info=lambda *a: self.logged.append(a[0] % a[1:])),
             "monotonic": lambda: 0.0, "_unique_entities": lambda items: list(dict.fromkeys(items)),
             "er": SimpleNamespace(async_get=lambda hass: SimpleNamespace(async_get=entities.get)),
@@ -285,7 +287,12 @@ class BridgeHarness(unittest.IsolatedAsyncioTestCase):
 
         bridge._async_publish_sealed_data = publish
         bridge._refresh_runtime_entity_lists = refresh
-        bridge._foreign_rain_radar = lambda entity_id: False  # test_rain_radar.py
+        bridge._camera_sources = lambda: None  # test_camera_sources.py
+
+        async def no_source_status():
+            pass
+
+        bridge._async_publish_source_status = no_source_status
         bridge.async_publish_config_to_device = config
         bridge.async_publish_snapshot = snapshot
         self.opened = scope["_OpenedCommand"]
@@ -439,7 +446,7 @@ class WiringTests(BridgeHarness):
                       "scene aliases stay from every entry, served Scene tile ids join them")
         self.assertIn('"scenes": _unique_entities(list(source["scene_map"].values())),', refresh,
                       "the released scenes are a picker list like the others")
-        self.assertIn('"entity_search": 6,', text)
+        self.assertIn('"entity_search": 7,', text)
         self.assertIn('"entities": self._async_handle_entities_command,', text)
         self.assertIn('"tiles": self._async_handle_tiles_command,', text)
         setup = text[text.index("  async def async_setup(self) -> None:"):]

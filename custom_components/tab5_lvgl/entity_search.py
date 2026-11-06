@@ -56,6 +56,10 @@ LIST_DOMAINS: Dict[str, Tuple[str, ...]] = {
 # categories the entry's Energy Dashboard options release.
 ENERGY_LIST = "energy"
 
+# The rain radar's places: Home Assistant's home and zones, and with a search text
+# towns by name. A place from the search has the value "geo:<lat>,<lon>".
+PLACES_LIST = "places"
+
 # Bridge entity list attributes of each picker list.
 LIST_ATTRS: Dict[str, Tuple[str, ...]] = {
   "sensors": ("sensors",), "binary_sensors": ("binary_sensors",), "numbers": ("numbers",),
@@ -88,7 +92,7 @@ def parse_search(body: Any) -> Optional[Dict[str, Any]]:
   if isinstance(request_id, bool) or not isinstance(request_id, int) or not 0 <= request_id <= 0xFFFFFFFF:
     return None
   key = data.get("list")
-  if key not in LIST_DOMAINS and key != ENERGY_LIST:
+  if key not in LIST_DOMAINS and key not in (ENERGY_LIST, PLACES_LIST):
     return None
   query = data.get("q", "")
   if not isinstance(query, str):
@@ -177,8 +181,13 @@ def parse_declaration(body: Any) -> Optional[Dict[str, Any]]:
   lists = clean_lists(data.get("lists"))
   if part >= parts or lists is None:
     return None
-  return {"v": version, "p": part, "n": parts, "lists": lists, "web_auth": data.get("web_auth") is True,
-          "own": data.get("own") is True}
+  result = {"v": version, "p": part, "n": parts, "lists": lists, "web_auth": data.get("web_auth") is True,
+            "own": data.get("own") is True}
+  # The Bridge's own cameras it uses and the radar's emergency address (camera_sources.py).
+  for key in ("src", "rs"):
+    if data.get(key):
+      result[key] = data[key]
+  return result
 
 
 class DeclarationParts:
@@ -188,6 +197,10 @@ class DeclarationParts:
     self._version: Optional[int] = None
     self._count = 0
     self._parts: Dict[int, Mapping[str, Any]] = {}
+    # Of the last complete declaration: the Bridge cameras it names
+    # (camera_sources.py) and the radar's emergency address, both unchecked.
+    self.sources: List[Any] = []
+    self.radar_source: Any = None
 
   def add(self, part: Mapping[str, Any]) -> Optional[Tuple[Dict[str, List[str]], bool, bool]]:
     """(lists, web_auth, own) once every part of the version arrived; None
@@ -207,6 +220,8 @@ class DeclarationParts:
     lists = {key: sorted(set(ids)) for key, ids in joined.items()}
     if sum(len(ids) for ids in lists.values()) > MAX_PANEL_ENTITIES:
       return None
+    self.sources = [source for item in parts if isinstance(item.get("src"), list) for source in item["src"]]
+    self.radar_source = next((item["rs"] for item in parts if item.get("rs")), None)
     return lists, all(item["web_auth"] for item in parts), all(item.get("own") for item in parts)
 
 

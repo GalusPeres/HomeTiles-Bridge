@@ -31,6 +31,8 @@ from .command_channel import entry_pairing_key, entry_removing_key, key_id_for_k
 from .pairing import ANSWER_PAIRED, ANSWER_WAITING
 from .control_helpers import ACTION_DOMAINS, SWITCH_DOMAINS, build_action_map, entity_domain
 from .editable_helpers import (EDITABLE_LISTS, EDITABLE_DOMAINS, NUMBER_DOMAINS, SELECT_DOMAINS, DATETIME_DOMAINS, editable_selection, domain_of, build_editable_payload, build_editable_service_call, add_number_history, MAX_CONTROL_BYTES)
+from .camera_sources import BRIDGE_DEVICE_ID
+from .device_helpers import BRIDGE_ENTRY_KEY, is_bridge_entry, panel_entries
 from .const import (
   CONF_NUMBERS, CONF_SELECTS, CONF_DATETIMES,
   CONF_ACCESS_CODES,
@@ -167,6 +169,16 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   _link_card_unsub: Optional[Callable[[], None]] = None
   # Removes the number card when the panel ends the pairing (Cancel there).
   _link_number_watch: Optional[asyncio.Task] = None
+
+  def _async_current_entries(self, include_ignore: bool | None = None) -> list:
+    """The panels: the Bridge's own entry (camera_sources.py) is none."""
+    return [entry for entry in super()._async_current_entries(include_ignore) if not is_bridge_entry(entry)]
+
+  async def async_step_system(self, user_input: Dict[str, Any] | None = None):
+    """The Bridge's own entry: it holds its own cameras, nothing to enter."""
+    await self.async_set_unique_id(BRIDGE_DEVICE_ID)
+    self._abort_if_unique_id_configured()
+    return self.async_create_entry(title="HomeTiles Bridge", data={BRIDGE_ENTRY_KEY: True})
 
   def _validate_topic_input(self, user_input: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Normalisiert base_topic/ha_prefix und prueft auf Kollision. Von async_step_user
@@ -836,6 +848,11 @@ class Tab5ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
   ) -> config_entries.OptionsFlow:
     return Tab5OptionsFlowHandler()
 
+  @classmethod
+  @callback
+  def async_supports_options_flow(cls, config_entry: config_entries.ConfigEntry) -> bool:
+    return not is_bridge_entry(config_entry)
+
 
 # ---------------------------------------------------------------------------
 #  Options flow — menu with two sections
@@ -944,7 +961,7 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
           CONF_FANS, CONF_VACUUMS, CONF_LOCKS, CONF_ALARM_PANELS, CONF_OPEN_WITHOUT_CODE,
           CONF_CALENDARS,
         )
-        for entry in self.hass.config_entries.async_entries(DOMAIN):
+        for entry in panel_entries(self.hass):
           if entry.entry_id == self.config_entry.entry_id:
             continue
           other = dict(entry.data or {})
@@ -1053,7 +1070,7 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
           codes[entity_id] = ",".join(parsed)
       if not errors:
         # Shared by all displays like the entity selection.
-        for entry in self.hass.config_entries.async_entries(DOMAIN):
+        for entry in panel_entries(self.hass):
           other = dict(entry.data or {})
           other[CONF_ACCESS_CODES] = codes
           self.hass.config_entries.async_update_entry(entry, data=other)
@@ -1079,7 +1096,7 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
       updated[CONF_ENERGY_WATER] = bool(user_input.get(CONF_ENERGY_WATER, False))
       self.hass.config_entries.async_update_entry(self.config_entry, data=updated)
       # Sync to all other entries
-      for entry in self.hass.config_entries.async_entries(DOMAIN):
+      for entry in panel_entries(self.hass):
         if entry.entry_id == self.config_entry.entry_id:
           continue
         other = dict(entry.data or {})
@@ -1111,7 +1128,7 @@ def _merge_energy_checkboxes(hass, current: Dict[str, Any]) -> Dict[str, Any]:
     CONF_ENERGY_GAS: bool(current.get(CONF_ENERGY_GAS, False)),
     CONF_ENERGY_WATER: bool(current.get(CONF_ENERGY_WATER, False)),
   }
-  for entry in hass.config_entries.async_entries(DOMAIN):
+  for entry in panel_entries(hass):
     data = dict(entry.data or {})
     for key in (CONF_ENERGY_ELECTRICITY, CONF_ENERGY_GAS, CONF_ENERGY_WATER):
       if data.get(key):
@@ -1154,7 +1171,7 @@ def _merge_all_entities(hass, current: Dict[str, Any]) -> Dict[str, Any]:
   all_scene_ids = list((current.get(CONF_SCENE_MAP) or {}).values())
   scene_map_text = current.get(CONF_SCENE_MAP_TEXT, "")
 
-  for entry in hass.config_entries.async_entries(DOMAIN):
+  for entry in panel_entries(hass):
     if entry.entry_id == current.get("_entry_id"):
       continue
     data = dict(entry.data or {})

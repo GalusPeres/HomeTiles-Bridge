@@ -12,9 +12,10 @@ A list source brings its history: the Bridge keeps those frames, the panel gets
 their times with the camera's "ready" and picks one by its time (camera_stream.py
 shows it instead of the newest). The panel itself stores no frames.
 
-When every source fails the last picture stays, with its time in the picture.
-Only the home location rounded to 0.1 degrees (about 10 km) leaves the Bridge;
-the marker on the map uses the exact one.
+Each place has its own RainRadar (camera_sources.py). When every source fails the
+last picture stays. Only the location rounded to 0.1 degrees (about 10 km) leaves
+the Bridge; the marker on the map uses the exact one. The picture itself names only
+its source, which the sources ask for; the panel shows the time around it.
 
 The map is Natural Earth (public domain, rain_radar_map.json.gz, built by
 tools/build_rain_radar_map.py), so no map server is involved. Nothing here
@@ -34,19 +35,20 @@ from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Awaitable, Callable, List, NamedTuple, Optional, Tuple
-from urllib.parse import urlencode
+from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Tuple
+from urllib.parse import urlencode, urlsplit
 
 _LOGGER = logging.getLogger(__name__)
 
-DATA_RAIN_RADAR = "rain_radar"
+# Bridge betas up to v0.9.8b4 had one radar entity per panel (migrated away).
 UNIQUE_ID_SUFFIX = "_rain_radar"
 MAP_FILE = Path(__file__).with_name("rain_radar_map.json.gz")
 FONT_FILE = Path(__file__).with_name("rain_radar_font.ttf")
 
-# The picture. Panels show it through the camera paths, which scale it.
+# The picture, in the shape of the panel's popup with its bottom row (752 x 538 on
+# 1280 x 800). Panels show it through the camera paths, which scale it.
 PICTURE_WIDTH = 1024
-PICTURE_HEIGHT = 576
+PICTURE_HEIGHT = 732
 JPEG_QUALITY = 85
 # Web Mercator zoom of RainViewer's 512 pixel images (its maximum is 7): one
 # image is about 430 km wide in central Europe.
@@ -59,8 +61,11 @@ COORDINATE_DECIMALS = 1
 # The frames kept for the time bar. RainViewer lists 13, one every 10 minutes.
 MAX_FRAMES = 16
 
-# How often a shown radar asks for a newer frame, and after a failed round.
+# While somebody shows the radar: a list source publishes on a fixed step, so it is
+# asked only when a new frame is due, then every minute until it came. Others every
+# few minutes, and after a failed round every minute.
 REFRESH_S = 300.0
+DUE_CHECK_S = 60.0
 RETRY_S = 60.0
 # A first picture is worth waiting for, within the callers' 10 s timeouts.
 FIRST_WAIT_S = 8.0
@@ -88,10 +93,12 @@ class Source(NamedTuple):
   layer: str = ""
   # (west, south, east, north) when the source does not cover the world.
   area: Optional[Tuple[float, float, float, float]] = None
+  # Seconds between its frames when it publishes on a fixed step.
+  step_s: float = 0.0
 
 
 SOURCES: Tuple[Source, ...] = (
-  Source("rainviewer", "list", "https://api.rainviewer.com/public/weather-maps.json", "RainViewer"),
+  Source("rainviewer", "list", "https://api.rainviewer.com/public/weather-maps.json", "RainViewer", step_s=600.0),
   Source("dwd", "wms", "https://maps.dwd.de/geoserver/dwd/Radar_rv_product_1x1km_ger/ows", "DWD",
          layer="Radar_rv_product_1x1km_ger", area=(5.5, 47.0, 15.5, 55.2)),
   # Worldwide and run by a public agency, but several hours behind: the last
@@ -101,8 +108,9 @@ SOURCES: Tuple[Source, ...] = (
 )
 
 
-def rain_radar_unique_id(device_id: str) -> str:
-  return f"{device_id}{UNIQUE_ID_SUFFIX}"
+def custom_source(url: str) -> Source:
+  """The emergency address from a panel's System page: a list like RainViewer's."""
+  return Source("custom", "list", url, urlsplit(url).hostname or "Radar", step_s=600.0)
 
 
 def is_rain_radar_unique_id(unique_id: Optional[str]) -> bool:
@@ -338,8 +346,21 @@ def _overlay_image(data: bytes) -> Any:
   return rain
 
 
+def stamp_time(jpeg: bytes, text: str) -> bytes:
+  """The frame's time in the picture, for a window without a time bar."""
+  from PIL import Image, ImageDraw
+
+  with Image.open(BytesIO(jpeg)) as source:
+    picture = source.convert("RGB")
+  ImageDraw.Draw(picture).text((16, PICTURE_HEIGHT - 8), text, font=_font(STAMP_PX), fill=TEXT, anchor="ls",
+                               stroke_width=2, stroke_fill=OUTLINE)
+  output = BytesIO()
+  picture.save(output, format="JPEG", quality=JPEG_QUALITY, subsampling=2)
+  return output.getvalue()
+
+
 def render_picture(layers: Tuple[bytes, bytes], overlay: bytes, stamp: str) -> bytes:
-  """Map, rain, names and mark, and the frame's time with its source."""
+  """Map, rain, names and mark, and the frame's source."""
   from PIL import Image, ImageDraw
 
   with Image.open(BytesIO(layers[0])) as base_file:
@@ -347,7 +368,8 @@ def render_picture(layers: Tuple[bytes, bytes], overlay: bytes, stamp: str) -> b
   picture.alpha_composite(_overlay_image(overlay))
   with Image.open(BytesIO(layers[1])) as top_file:
     picture.alpha_composite(top_file.convert("RGBA"))
-  # Bottom centre: a tile that fills its shape cuts the sides, not this.
+  # The source's name, bottom centre: a tile that fills its shape cuts the sides,
+  # not this.
   ImageDraw.Draw(picture).text((PICTURE_WIDTH / 2, PICTURE_HEIGHT - 8), stamp, font=_font(STAMP_PX), fill=TEXT,
                                anchor="ms", stroke_width=2, stroke_fill=OUTLINE)
   output = BytesIO()
@@ -375,19 +397,21 @@ class RainRadar:
     self,
     *,
     fetch: Callable[[str, int], Awaitable[Optional[bytes]]],
-    location: Callable[[], Tuple[float, float]],
+    location: Callable[[], Optional[Tuple[float, float]]],
     language: Callable[[], str],
     format_time: Callable[[int], str],
     run_blocking: Callable[..., Awaitable[Any]],
     clock: Callable[[], float] = time.time,
     sources: Tuple[Source, ...] = SOURCES,
     map_file: Path = MAP_FILE,
+    first_sources: Callable[[], Tuple[Source, ...]] = tuple,
   ) -> None:
     self._fetch = fetch
     self._location = location
     self._language = language
     self._format_time = format_time
     self._run_blocking = run_blocking
+    self._first_sources = first_sources
     self._clock = clock
     self._sources = sources
     self._map_file = map_file
@@ -398,6 +422,7 @@ class RainRadar:
     self._checked_at: Optional[float] = None
     self._failed = False
     self._listeners: List[Callable[[], None]] = []
+    self._stamped: Dict[int, bytes] = {}
 
   @property
   def picture(self) -> Optional[Picture]:
@@ -412,6 +437,19 @@ class RainRadar:
       if frame.when == when:
         return frame.jpeg
     return None
+
+  async def async_frame_at(self, when: int) -> Optional[bytes]:
+    return self.frame_at(when)
+
+  async def async_stamped_frame(self, when: int) -> Optional[bytes]:
+    """A frame with its time in the picture (Home Assistant's camera window)."""
+    if when not in self._stamped:
+      jpeg = self.frame_at(when)
+      if jpeg is None:
+        return None
+      self._stamped = {key: value for key, value in self._stamped.items() if key in self.times()}
+      self._stamped[when] = await self._run_blocking(stamp_time, jpeg, self._format_time(when))
+    return self._stamped[when]
 
   def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
     """Told whenever the frames changed; returns the function that ends it."""
@@ -438,16 +476,30 @@ class RainRadar:
     if self._task is not None and not self._task.done():
       return
     now = self._clock()
-    if self._checked_at is not None and now - self._checked_at < (RETRY_S if self._failed else REFRESH_S):
+    if self._checked_at is not None and now < self._next_check():
       return
     self._checked_at = now
     self._task = asyncio.get_running_loop().create_task(self._async_refresh())
 
+  def _next_check(self) -> float:
+    if self._failed:
+      return self._checked_at + RETRY_S
+    picture = self.picture
+    source = next((item for item in self._all_sources() if picture and item.id == picture.source), None)
+    if source is None or not source.step_s:
+      return self._checked_at + REFRESH_S
+    return max(picture.when + source.step_s, self._checked_at + DUE_CHECK_S)
+
+  def _all_sources(self) -> Tuple[Source, ...]:
+    return tuple(self._first_sources()) + tuple(self._sources)
+
   async def _async_refresh(self) -> None:
-    lat, lon = self._location()
-    view = make_view(lat, lon)
+    location = self._location()
     self._failed = True
-    for source in self._sources:
+    if location is None:
+      return  # A zone that is gone.
+    view = make_view(location[0], location[1])
+    for source in self._all_sources():
       if not covers(source, view):
         continue
       try:
@@ -498,8 +550,7 @@ class RainRadar:
     if not overlay:
       return None
     layers = await self._async_layers(view)
-    stamp = f"{self._format_time(when)}  {source.credit}"
-    jpeg = await self._run_blocking(render_picture, layers, overlay, stamp)
+    jpeg = await self._run_blocking(render_picture, layers, overlay, source.credit)
     return Picture(jpeg, source.id, source.credit, when, view)
 
   async def _async_fill(self, source: Source, view: View, missing: List[Tuple[int, str]]) -> None:

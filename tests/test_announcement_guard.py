@@ -140,6 +140,7 @@ def extract(names, scope):
     nodes += [node for node in bridge.body if getattr(node, "name", None) in names]
     module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
                               *nodes], type_ignores=[])
+    scope["panel_entries"] = lambda hass: hass.config_entries.async_entries("tab5_lvgl")
     exec(compile(ast.fix_missing_locations(module), "__init__.py", "exec"), scope)
     return scope
 

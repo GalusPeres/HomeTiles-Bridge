@@ -17,6 +17,8 @@ import logging
 from time import monotonic
 
 from homeassistant.components import network as ha_network
+from typing import Any
+
 from homeassistant.components.camera import Camera, CameraEntityFeature, async_get_still_stream
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -35,7 +37,7 @@ from .const import (
     LOCAL_CAMERA_STALE_FALLBACK_S,
     LOCAL_CAMERA_WARNING_INTERVAL_S,
 )
-from .device_helpers import entry_base_topic, entry_device_id, entry_device_info, state_topic
+from .device_helpers import entry_base_topic, entry_device_id, entry_device_info, is_bridge_entry, state_topic
 from .jpeg_rotate import rotate_jpeg
 from .local_camera import (
     LocalCameraSnapshots,
@@ -50,7 +52,7 @@ from .local_camera import (
     parse_status,
     request_id_from_topic,
 )
-from .rain_radar import DATA_RAIN_RADAR, RainRadar, rain_radar_unique_id
+from .camera_sources import BRIDGE_DEVICE_ID, DATA_CAMERA_SOURCES, source_entity_id, source_unique_id
 from .local_camera_stream import (
     LIVE_FRAME_FRESH_S,
     LIVE_FRAME_MAX_MISSES,
@@ -69,6 +71,10 @@ _QUIET_FAILURES = frozenset({"offline", "not_ready", "removed"})
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities
 ) -> None:
+    # The Bridge's own entry: the cameras that belong to no panel.
+    if is_bridge_entry(entry):
+        hass.data[DOMAIN][DATA_CAMERA_SOURCES].attach(async_add_entities)
+        return
     entities = []
     # Consent and sensor detection live on the panel; the Bridge only mirrors
     # the announcement and never probes panels that did not announce it.
@@ -76,38 +82,42 @@ async def async_setup_entry(
     if supports(data, "local_camera"):
         entities.append(HomeTilesLocalCamera(
             entry, entry_base_topic(entry), live=supports(data, "local_camera_stream")))
-    # The rain radar needs no announcement and no setting: every panel can
-    # simply pick it, and it loads nothing until somebody shows it.
-    radar = hass.data.get(DOMAIN, {}).get(DATA_RAIN_RADAR) if hass is not None else None
-    if radar is not None:
-        entities.append(HomeTilesRainRadar(entry, radar))
     async_add_entities(entities)
 
 
-class HomeTilesRainRadar(Camera):
-    """The rain radar picture (rain_radar.py) as a camera like any other.
+# Home Assistant's camera window plays a history in a loop, like the panel.
+_LOOP_STEP_S = 0.5
+_LOOP_HOLD_STEPS = 3
 
-    Without a device, so its name stays "Rain radar" and not "<panel> Rain
-    radar": it becomes the title of the tile the user picks it for.
-    """
 
-    _attr_has_entity_name = True
-    _attr_translation_key = "rain_radar"
+class HomeTilesCameraSource(Camera):
+    """A rain radar place or a webcam (camera_sources.py) as a camera like any other."""
+
     _attr_should_poll = False
     _attr_supported_features = CameraEntityFeature(0)
-    _attr_frame_interval = 60.0
-    _attr_icon = "mdi:weather-pouring"
+    _attr_frame_interval = 5.0
 
-    def __init__(self, entry: ConfigEntry, radar: RainRadar) -> None:
+    def __init__(self, spec: dict, source: Any, name: str) -> None:
         super().__init__()
         self.content_type = "image/jpeg"
-        self._radar = radar
-        self._attr_unique_id = rain_radar_unique_id(entry_device_id(entry))
+        self._source = source
+        self._attr_name = name
+        self._attr_unique_id = source_unique_id(spec["id"])
+        self._attr_icon = "mdi:webcam" if spec["kind"] == "webcam" else "mdi:weather-pouring"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, BRIDGE_DEVICE_ID)},
+            "name": "HomeTiles Bridge",
+            "manufacturer": "HomeTiles",
+            "model": "Bridge",
+        }
+        self.entity_id = source_entity_id(spec["id"])
         self._stop_listening = None
+        self._loop_index = 0
+        self._loop_hold = 0
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        self._stop_listening = self._radar.add_listener(self._on_new_picture)
+        self._stop_listening = self._source.add_listener(self._on_new_picture)
 
     async def async_will_remove_from_hass(self) -> None:
         if self._stop_listening is not None:
@@ -121,19 +131,41 @@ class HomeTilesRainRadar(Camera):
 
     @property
     def attribution(self) -> str | None:
-        picture = self._radar.picture
+        picture = getattr(self._source, "picture", None)
         return f"Radar data: {picture.credit}" if picture is not None else None
 
     @property
     def extra_state_attributes(self):
-        picture = self._radar.picture
-        if picture is None:
-            return {}
-        return {"source": picture.source, "picture_time": picture.when}
+        picture = getattr(self._source, "picture", None)
+        if picture is not None:
+            return {"source": picture.source, "picture_time": picture.when}
+        when = getattr(self._source, "picture_time", None)
+        return {"picture_time": when} if when else {}
 
     async def async_camera_image(self, width: int | None = None, height: int | None = None) -> bytes | None:
         # The camera paths scale it, as for every other camera.
-        return await self._radar.async_picture()
+        return await self._source.async_picture()
+
+    async def _async_next_loop_image(self) -> bytes | None:
+        """The next frame of the loop with its time in the picture."""
+        times = self._source.times()
+        if not times:
+            return await self._source.async_picture()
+        if self._loop_hold > 0:
+            self._loop_hold -= 1
+        else:
+            self._loop_index = self._loop_index + 1 if self._loop_index + 1 < len(times) else 0
+            if self._loop_index == len(times) - 1:
+                self._loop_hold = _LOOP_HOLD_STEPS - 1
+        self._loop_index = min(self._loop_index, len(times) - 1)
+        return await self._source.async_stamped_frame(times[self._loop_index])
+
+    async def handle_async_mjpeg_stream(self, request):
+        # A camera without a video stream shows this in Home Assistant's window.
+        if not hasattr(self._source, "async_stamped_frame"):
+            return await super().handle_async_mjpeg_stream(request)
+        await self._source.async_picture()
+        return await async_get_still_stream(request, self._async_next_loop_image, self.content_type, _LOOP_STEP_S)
 
 
 class HomeTilesLocalCamera(Camera):
