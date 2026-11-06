@@ -84,6 +84,13 @@ CAMERA_STILL_REPEAT_SECONDS: Final = 0.5
 CAMERA_STILL_RETRY_SECONDS: Final = 0.5
 # A camera with a history looks this often for the frame its panel picked.
 CAMERA_PICK_POLL_SECONDS: Final = 0.02
+# A history sends a picture only when it changed: FFmpeg's output holds each frame
+# back and the feeder writes it twice, so every step of Play came out as two or three
+# JPEGs, the old one first. Unchanged, one now and then so the panel sees a live stream.
+CAMERA_HISTORY_KEEPALIVE_SECONDS: Final = 10.0
+# A history's frame is written twice, so FFmpeg holds nothing back: no repeats are
+# needed to push it out, only some for that sign of life.
+CAMERA_HISTORY_REPEAT_SECONDS: Final = 5.0
 # How often a camera is still asked while a frame of its history is shown.
 CAMERA_PICKED_REFRESH_SECONDS: Final = 30.0
 # A still camera's own shape within the panel's box (async_create_session).
@@ -1351,11 +1358,13 @@ class CameraStreamConnection:
     try:
       while process.returncode is None:
         process.stdin.write(frame)
-        if session.flush_next_frame:
+        if session.flush_next_frame or session.has_history:
           session.flush_next_frame = False
           process.stdin.write(frame)
         await process.stdin.drain()
-        repeat_at = time.monotonic() + CAMERA_STILL_REPEAT_SECONDS
+        repeat_at = time.monotonic() + (
+          CAMERA_HISTORY_REPEAT_SECONDS if session.has_history else CAMERA_STILL_REPEAT_SECONDS
+        )
 
         new_frame: bytes | None = None
         while new_frame is None and process.returncode is None:
@@ -1790,6 +1799,8 @@ class CameraStreamConnection:
     assert process.stdout is not None
     parser = JpegFrameParser()
     dropped = 0
+    sent: bytes | None = None
+    sent_at = 0.0
     try:
       while (
         not session.stop_event.is_set()
@@ -1797,6 +1808,11 @@ class CameraStreamConnection:
       ):
         for jpeg in parser.feed(chunk):
           diagnostics.note_parsed(jpeg)
+          if session.has_history:
+            now = time.monotonic()
+            if jpeg == sent and now - sent_at < CAMERA_HISTORY_KEEPALIVE_SECONDS:
+              continue
+            sent, sent_at = jpeg, now
           if frames.full():
             with suppress(asyncio.QueueEmpty):
               frames.get_nowait()

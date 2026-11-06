@@ -69,6 +69,7 @@ DUE_CHECK_S = 60.0
 RETRY_S = 60.0
 # A first picture is worth waiting for, within the callers' 10 s timeouts.
 FIRST_WAIT_S = 8.0
+FILL_TELL_EVERY = 3
 LIST_MAX_BYTES = 256 * 1024
 IMAGE_MAX_BYTES = 2 * 1024 * 1024
 CAPABILITIES_MAX_BYTES = 8 * 1024 * 1024
@@ -472,6 +473,10 @@ class RainRadar:
         pass
     return self._frames[-1].jpeg if self._frames else None
 
+  def prepare(self) -> None:
+    """Load ahead of being shown; nothing when the frames are fresh."""
+    self._refresh_if_due()
+
   def _refresh_if_due(self) -> None:
     if self._task is not None and not self._task.done():
       return
@@ -556,6 +561,7 @@ class RainRadar:
   async def _async_fill(self, source: Source, view: View, missing: List[Tuple[int, str]]) -> None:
     """The older frames, one after the other; the next refresh loads what failed."""
     changed = False
+    loaded = 0
     try:
       for when, url in reversed(missing):
         current = self.picture
@@ -567,6 +573,11 @@ class RainRadar:
           continue
         self._frames = sorted(self._frames + [picture], key=lambda frame: frame.when)[-MAX_FRAMES:]
         changed = True
+        loaded += 1
+        # The time bar shows soon and grows, not only when all frames are there.
+        if loaded % FILL_TELL_EVERY == 0:
+          changed = False
+          self._tell_listeners()
     except asyncio.CancelledError:
       raise
     except Exception as err:

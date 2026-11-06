@@ -5696,6 +5696,7 @@ class Tab5Bridge:
       if history is not None:
         response_payload["history"] = True
         response_payload.update(frames_payload(history.times()))
+        self._camera_sources().prepare_panel(str(entry_device_id(self.entry)))
       if parsed.get("audio") == AUDIO_STREAM_TRANSPORT and session.source:
         self._start_camera_sound(entity_id, session.source)
       elif self._camera_sound_session() is not None:

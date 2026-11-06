@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from types import SimpleNamespace
 import gzip
 import importlib.util
 import json
@@ -708,3 +709,56 @@ class PickedFrameTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+class HistoryFramesTests(unittest.IsolatedAsyncioTestCase):
+  """Play: one picture per step, not the previous one again first."""
+
+  async def run_reader(self, has_history, jpegs):
+    from test_local_camera_stream import load_camera_stream_module
+
+    module = load_camera_stream_module()
+    manager = module.CameraStreamManager(hass=None)
+    chunks = [b"".join(jpegs), b""]
+
+    class Stdout:
+      async def read(self, _size):
+        return chunks.pop(0)
+
+    class Diagnostics:
+      def note_parsed(self, _jpeg):
+        pass
+
+      def note_dropped(self):
+        pass
+
+    session = SimpleNamespace(stop_event=asyncio.Event(), has_history=has_history)
+    frames = asyncio.Queue(maxsize=16)
+    await manager._tcp_connection._async_read_latest_jpeg_frames(session, SimpleNamespace(stdout=Stdout()), frames, Diagnostics())
+    out = []
+    while not frames.empty():
+      item = frames.get_nowait()
+      if item is not None:
+        out.append(item)
+    return out
+
+  async def test_a_history_sends_a_repeated_picture_once(self):
+    a, b = b"\xff\xd8a\xff\xd9", b"\xff\xd8b\xff\xd9"
+    self.assertEqual(await self.run_reader(True, [a, a, b, b, b, a]), [a, b, a])
+
+  async def test_any_other_camera_keeps_every_frame(self):
+    a = b"\xff\xd8a\xff\xd9"
+    self.assertEqual(await self.run_reader(False, [a, a, a]), [a, a, a])
+
+
+class PrepareTests(unittest.IsolatedAsyncioTestCase):
+  async def test_prepare_loads_once_and_not_again_while_fresh(self):
+    network = Network(working_rainviewer())
+    radar = make_radar(network, clock=Clock())
+    radar.prepare()
+    await settle(radar)
+    self.assertEqual(network.count(LIST_URL), 1)
+    self.assertTrue(radar.times())
+    radar.prepare()
+    await settle(radar)
+    self.assertEqual(network.count(LIST_URL), 1, "Fresh frames: nothing is asked")

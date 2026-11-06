@@ -168,6 +168,14 @@ class SourceRegistry:
     ids = [spec["id"] for spec in self._panels.get(device_id, [])]
     return [HOME_ID] + [item for item in ids if item != HOME_ID]
 
+  def prepare_panel(self, device_id: str) -> None:
+    """A panel's popup opened: the radar places it declared load ahead, so switching
+    to one shows its picture at once. Webcams load by themselves."""
+    for spec in self._panels.get(device_id, []):
+      prepare = getattr(self._sources.get(spec["id"]), "prepare", None)
+      if prepare is not None:
+        prepare()
+
   def status_of(self, device_id: str) -> Dict[str, str]:
     """"none" for an address without a picture, for the panel's Web Admin."""
     result: Dict[str, str] = {}
