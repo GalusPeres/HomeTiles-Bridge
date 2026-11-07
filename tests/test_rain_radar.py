@@ -1,4 +1,4 @@
-"""The rain radar: sources in order, on demand, the location rounded, the picture."""
+"""The rain radar: sources in order, kept on the disk, the location rounded, the picture."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import importlib.util
 import json
 import re
 import sys
+import tempfile
 import types
 import unittest
 from io import BytesIO
@@ -19,10 +20,19 @@ from typing import Any, Dict, Optional
 from PIL import Image, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1] / "custom_components/tab5_lvgl"
-_spec = importlib.util.spec_from_file_location("hometiles_rain_radar_under_test", ROOT / "rain_radar.py")
-RR = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = RR  # dataclasses look their module up
-_spec.loader.exec_module(RR)
+# As a package, as test_camera_sources.py does: it imports picture_store.py.
+_package = types.ModuleType("hometiles_sources_pkg")
+_package.__path__ = [str(ROOT)]
+sys.modules.setdefault("hometiles_sources_pkg", _package)
+RR = importlib.import_module("hometiles_sources_pkg.rain_radar")
+STORE = importlib.import_module("hometiles_sources_pkg.picture_store")
+_FOLDERS = tempfile.TemporaryDirectory()
+_folder_count = [0]
+
+
+def fresh_folder():
+  _folder_count[0] += 1
+  return Path(_FOLDERS.name) / f"radar{_folder_count[0]}"
 
 LIST_URL = RR.SOURCES[0].url
 NEXT_FRAME_S = RR.SOURCES[0].step_s + 1
@@ -37,7 +47,7 @@ def png(color=(0, 0, 255, 255), size=(512, 512)):
   return output.getvalue()
 
 
-def frame_list(when=1793870000, path="/v2/radar/abc123", host="https://tilecache.rainviewer.com"):
+def frame_list(when=1793869800, path="/v2/radar/abc123", host="https://tilecache.rainviewer.com"):
   return json.dumps({"version": "2.0", "host": host,
                      "radar": {"past": [{"time": when - 600, "path": "/v2/radar/older"},
                                         {"time": when, "path": path}], "nowcast": []}}).encode()
@@ -70,13 +80,13 @@ class Network:
     return sum(url.startswith(start) for url in self.requests)
 
 
-def working_rainviewer(when=1793870000):
+def working_rainviewer(when=1793869800):
   return {LIST_URL: frame_list(when), "https://tilecache.rainviewer.com/": png()}
 
 
 class Clock:
   def __init__(self):
-    self.now = 1793870005.0  # just after the frames of frame_list()
+    self.now = 1793869805.0  # just after the frames of frame_list()
 
   def __call__(self):
     return self.now
@@ -86,9 +96,10 @@ async def direct(fn, *args):
   return await asyncio.to_thread(fn, *args)
 
 
-def make_radar(network, home=HOME_AT, clock=None, **kwargs):
+def make_radar(network, home=HOME_AT, clock=None, directory=None, **kwargs):
   return RR.RainRadar(fetch=network.fetch, location=lambda: home, language=lambda: "de",
-                      format_time=lambda when: "12:34", run_blocking=direct, clock=clock or Clock(), **kwargs)
+                      format_time=lambda when: "12:34", run_blocking=direct, clock=clock or Clock(),
+                      directory=directory or fresh_folder(), **kwargs)
 
 
 async def settle(radar):
@@ -143,8 +154,8 @@ class GeometryTests(unittest.TestCase):
 class ParsingTests(unittest.TestCase):
   def test_a_list_gives_every_frame_oldest_first(self):
     self.assertEqual(RR.parse_frame_list(frame_list()),
-                     [(1793869400, "https://tilecache.rainviewer.com/v2/radar/older"),
-                      (1793870000, "https://tilecache.rainviewer.com/v2/radar/abc123")])
+                     [(1793869200, "https://tilecache.rainviewer.com/v2/radar/older"),
+                      (1793869800, "https://tilecache.rainviewer.com/v2/radar/abc123")])
 
   def test_a_bad_older_frame_is_left_out(self):
     data = json.dumps({"host": "https://h", "radar": {"past": [
@@ -210,7 +221,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     jpeg = await radar.async_picture()
     self.assertTrue(jpeg.startswith(b"\xff\xd8"))
     self.assertEqual(radar.picture.source, "rainviewer")
-    self.assertEqual(radar.picture.when, 1793870000)
+    self.assertEqual(radar.picture.when, 1793869800)
 
   async def test_the_exact_location_never_leaves_the_bridge(self):
     network = Network(working_rainviewer())
@@ -259,32 +270,32 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     told = []
     radar.add_listener(lambda: told.append(radar.times()))
     self.assertIsNotNone(await radar.async_picture())
-    self.assertEqual(radar.times(), [1793870000])  # the first answer did not wait for the rest
+    self.assertEqual(radar.times(), [1793869800])  # the first answer did not wait for the rest
     gate.set()
     await settle(radar)
-    self.assertEqual(radar.times(), [1793869400, 1793870000])
-    self.assertEqual(told, [[1793870000], [1793869400, 1793870000]])
+    self.assertEqual(radar.times(), [1793869200, 1793869800])
+    self.assertEqual(told, [[1793869800], [1793869200, 1793869800]])
 
   async def test_a_frame_is_found_by_its_time(self):
     network = Network(working_rainviewer())
     radar = make_radar(network)
     await radar.async_picture()
     await settle(radar)
-    self.assertTrue(radar.frame_at(1793869400).startswith(b"\xff\xd8"))
-    self.assertIsNone(radar.frame_at(12345))
+    self.assertTrue((await radar.async_frame_at(1793869200)).startswith(b"\xff\xd8"))
+    self.assertIsNone(await radar.async_frame_at(12345))
 
-  async def test_a_frame_that_left_the_list_is_dropped(self):
+  async def test_a_frame_that_left_the_list_stays_for_a_day(self):
     network = Network(working_rainviewer())
     clock = Clock()
     radar = make_radar(network, clock=clock)
     await radar.async_picture()
     await settle(radar)
     network.answers[LIST_URL] = json.dumps({"host": "https://tilecache.rainviewer.com", "radar": {"past": [
-      {"time": 1793870000, "path": "/v2/radar/abc123"}, {"time": 1793870600, "path": "/v2/radar/new"}]}}).encode()
+      {"time": 1793869800, "path": "/v2/radar/abc123"}, {"time": 1793870400, "path": "/v2/radar/new"}]}}).encode()
     clock.now += NEXT_FRAME_S
     await radar.async_picture()
     await settle(radar)
-    self.assertEqual(radar.times(), [1793870000, 1793870600])
+    self.assertEqual(radar.times(), [1793869200, 1793869800, 1793870400])
 
   async def test_an_older_frame_that_fails_is_tried_at_the_next_refresh(self):
     network = Network({LIST_URL: frame_list(), "https://tilecache.rainviewer.com/v2/radar/abc123": png()})
@@ -292,12 +303,12 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     radar = make_radar(network, clock=clock)
     await radar.async_picture()
     await settle(radar)
-    self.assertEqual(radar.times(), [1793870000])
+    self.assertEqual(radar.times(), [1793869800])
     network.answers["https://tilecache.rainviewer.com/v2/radar/older"] = png()
     clock.now += NEXT_FRAME_S
     await radar.async_picture()
     await settle(radar)
-    self.assertEqual(radar.times(), [1793869400, 1793870000])
+    self.assertEqual(radar.times(), [1793869200, 1793869800])
 
   async def test_a_fallback_source_has_one_frame_and_replaces_the_history(self):
     nasa = RR.SOURCES[-1]
@@ -323,14 +334,14 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     await radar.async_picture()
     await settle(radar)
     self.assertEqual(len(told), 2)  # the newest picture, then the older one
-    network.answers[LIST_URL] = frame_list(1793870600)
+    network.answers[LIST_URL] = frame_list(1793870400)
     clock.now += NEXT_FRAME_S
     await radar.async_picture()
     await settle(radar)
-    self.assertEqual(radar.picture.when, 1793870600)
+    self.assertEqual(radar.picture.when, 1793870400)
     self.assertEqual(len(told), 3)
     stop()
-    network.answers[LIST_URL] = frame_list(1793871200)
+    network.answers[LIST_URL] = frame_list(1793871000)
     clock.now += NEXT_FRAME_S
     await radar.async_picture()
     await settle(radar)
@@ -383,11 +394,11 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
       await settle(radar)
     self.assertEqual(await radar.async_picture(), first)
     # Back after the short retry instead of a whole interval.
-    network.answers.update(working_rainviewer(1793870600))
+    network.answers.update(working_rainviewer(1793870400))
     clock.now += RR.RETRY_S
     await radar.async_picture()
     await settle(radar)
-    self.assertEqual(radar.picture.when, 1793870600)
+    self.assertEqual(radar.picture.when, 1793870400)
 
   async def test_a_shown_radar_asks_when_a_frame_is_due_then_every_minute(self):
     network = Network(working_rainviewer())
@@ -408,10 +419,10 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     await settle(radar)
     self.assertEqual(network.count(LIST_URL), 2, "Not within the minute")
     clock.now += 31
-    network.answers[LIST_URL] = frame_list(1793870600)
+    network.answers[LIST_URL] = frame_list(1793870400)
     await radar.async_picture()
     await settle(radar)
-    self.assertEqual(radar.picture.when, 1793870600, "The new frame arrives within a minute")
+    self.assertEqual(radar.picture.when, 1793870400, "The new frame arrives within a minute")
 
   async def test_a_panels_emergency_address_is_tried_first(self):
     custom = RR.custom_source("https://radar.example.org/list.json")
@@ -426,7 +437,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
   async def test_a_place_that_is_gone_loads_nothing(self):
     network = Network(working_rainviewer())
     radar = RR.RainRadar(fetch=network.fetch, location=lambda: None, language=lambda: "de",
-                         format_time=lambda when: "12:34", run_blocking=direct, clock=Clock())
+                         format_time=lambda when: "12:34", run_blocking=direct, clock=Clock(),
+                         directory=fresh_folder())
     self.assertIsNone(await radar.async_picture())
     await settle(radar)
     self.assertEqual(network.requests, [])
@@ -451,13 +463,64 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     clock = Clock()
     home = {"at": HOME_AT}
     radar = RR.RainRadar(fetch=network.fetch, location=lambda: home["at"], language=lambda: "de",
-                         format_time=lambda when: "12:34", run_blocking=direct, clock=clock)
+                         format_time=lambda when: "12:34", run_blocking=direct, clock=clock,
+                         directory=fresh_folder())
     await radar.async_picture()
     home["at"] = HOME_US
     clock.now += NEXT_FRAME_S
     await radar.async_picture()
     await settle(radar)
     self.assertEqual(radar.picture.view.lat, 40.7)
+
+  async def test_the_frames_come_back_after_a_restart(self):
+    network = Network(working_rainviewer())
+    folder = fresh_folder()
+    radar = make_radar(network, directory=folder)
+    await radar.async_picture()
+    await settle(radar)
+    again = make_radar(Network(), directory=folder)
+    self.assertTrue((await again.async_frame_at(1793869800)).startswith(b"\xff\xd8"), "Read from the disk")
+    self.assertEqual(again.times(), [1793869200, 1793869800])
+    self.assertEqual(again.picture.source, "rainviewer", "The place is known again")
+
+  async def test_another_place_starts_its_own_pictures(self):
+    network = Network(working_rainviewer())
+    folder = fresh_folder()
+    radar = make_radar(network, directory=folder)
+    await radar.async_picture()
+    await settle(radar)
+    moved = make_radar(network, home=HOME_DE, directory=folder)
+    await moved.async_picture()
+    await settle(moved)
+    self.assertEqual(moved.picture.view.lat, 50.9)
+    self.assertEqual(len(list(folder.glob("*.jpg"))), 2, "The other place's frames went")
+
+  async def test_older_than_a_day_goes_and_the_newest_stays(self):
+    network = Network(working_rainviewer())
+    clock = Clock()
+    radar = make_radar(network, clock=clock)
+    await radar.async_picture()
+    await settle(radar)
+    clock.now += STORE.KEEP_S + 700
+    network.answers[LIST_URL] = frame_list(1793869800 + STORE.KEEP_S + 600)
+    await radar.async_picture()
+    await settle(radar)
+    self.assertEqual(radar.times(), [1793869800 + STORE.KEEP_S, 1793869800 + STORE.KEEP_S + 600])
+
+  async def test_while_a_panel_uses_the_place_it_collects_by_itself(self):
+    network = Network(working_rainviewer())
+    radar = make_radar(network)
+    told = []
+    radar.add_listener(lambda: told.append(True))
+    radar.start()
+    for _ in range(100):
+      await asyncio.sleep(0.01)
+      if len(radar.times()) == 2:
+        break
+    await settle(radar)
+    self.assertEqual(radar.times(), [1793869200, 1793869800], "Nobody asked for a picture")
+    await radar.async_stop()
+    self.assertTrue(told)
 
 
 class PictureTests(unittest.TestCase):

@@ -1,16 +1,19 @@
 """The rain radar behind the Bridge's rain radar camera (camera.py).
 
-Nobody configures anything: the picture is drawn for Home Assistant's home
-location and loaded only while somebody shows it. Sources are data and are
+Nobody configures anything: the picture is drawn for a place (Home Assistant's
+home, a zone or coordinates). While a panel uses the place the Bridge collects its
+frames by itself; otherwise only when somebody shows it. Sources are data and are
 tried in order, so one that fails falls over to the next by itself:
 
 - "list": a frame list like RainViewer's, worldwide and current;
 - "wms": the OGC Web Map Service standard. Another service of this kind needs
   one more entry in SOURCES and no code.
 
-A list source brings its history: the Bridge keeps those frames, the panel gets
-their times with the camera's "ready" and picks one by its time (camera_stream.py
-shows it instead of the newest). The panel itself stores no frames.
+A list source brings its history. The frames are kept like every Bridge camera's
+pictures (picture_store.py): on the disk, at their fixed times, for a day, also
+after the source no longer lists them. The panel gets their times with the
+camera's "ready" and picks one by its time (camera_stream.py shows it instead of
+the newest). The panel itself stores no frames.
 
 Each place has its own RainRadar (camera_sources.py). When every source fails the
 last picture stays. Only the location rounded to 0.1 degrees (about 10 km) leaves
@@ -38,6 +41,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Tuple
 from urllib.parse import urlencode, urlsplit
 
+from .picture_store import KEEP_S, FrameStore, slot_of
+
 _LOGGER = logging.getLogger(__name__)
 
 # Bridge betas up to v0.9.8b4 had one radar entity per panel (migrated away).
@@ -58,12 +63,13 @@ SCALE = PICTURE_WIDTH / SOURCE_SIZE
 WORLD_METERS = 40075016.68557849
 COORDINATE_DECIMALS = 1
 
-# The frames kept for the time bar. RainViewer lists 13, one every 10 minutes.
+# The frames taken from one list. RainViewer lists 13, one every 10 minutes;
+# picture_store.py keeps a day of them.
 MAX_FRAMES = 16
 
-# While somebody shows the radar: a list source publishes on a fixed step, so it is
-# asked only when a new frame is due, then every minute until it came. Others every
-# few minutes, and after a failed round every minute.
+# A list source publishes on a fixed step, so it is asked only when a new frame is
+# due, then every minute until it came. Others every few minutes, and after a
+# failed round every minute.
 REFRESH_S = 300.0
 DUE_CHECK_S = 60.0
 RETRY_S = 60.0
@@ -384,15 +390,27 @@ def render_picture(layers: Tuple[bytes, bytes], overlay: bytes, stamp: str) -> b
 
 @dataclass
 class Picture:
-  jpeg: bytes
+  """The newest frame: where it came from and when."""
+
   source: str
   credit: str
   when: int
   view: View
 
 
+def place_key(view: View) -> str:
+  return f"{view.lat:.{COORDINATE_DECIMALS}f},{view.lon:.{COORDINATE_DECIMALS}f}"
+
+
+def series_key(source: Source, view: View) -> str:
+  """The pictures of one source for one place; another starts a new series."""
+  return f"{source.id}@{place_key(view)}"
+
+
 class RainRadar:
-  """The frames for Home Assistant's location, newest last, loaded on demand."""
+  """The frames for one place, newest last, kept like every Bridge camera's pictures
+  (picture_store.py). While a panel uses the place it collects by itself (start);
+  otherwise only when somebody asks."""
 
   def __init__(
     self,
@@ -402,6 +420,7 @@ class RainRadar:
     language: Callable[[], str],
     format_time: Callable[[int], str],
     run_blocking: Callable[..., Awaitable[Any]],
+    directory: Path,
     clock: Callable[[], float] = time.time,
     sources: Tuple[Source, ...] = SOURCES,
     map_file: Path = MAP_FILE,
@@ -416,10 +435,12 @@ class RainRadar:
     self._clock = clock
     self._sources = sources
     self._map_file = map_file
-    self._frames: List[Picture] = []
+    self._store = FrameStore(directory, run_blocking=run_blocking, clock=clock)
+    self._view: Optional[View] = None
     self._layers: Optional[Tuple[Tuple[View, str], Tuple[bytes, bytes]]] = None
     self._task: Optional[asyncio.Task] = None
     self._fill_task: Optional[asyncio.Task] = None
+    self._run_task: Optional[asyncio.Task] = None
     self._checked_at: Optional[float] = None
     self._failed = False
     self._listeners: List[Callable[[], None]] = []
@@ -427,25 +448,23 @@ class RainRadar:
 
   @property
   def picture(self) -> Optional[Picture]:
-    return self._frames[-1] if self._frames else None
+    newest = self._store.newest
+    if newest is None or self._view is None:
+      return None
+    return Picture(newest.tag, self._credit_of(newest.tag), newest.when, self._view)
 
   def times(self) -> List[int]:
     """The times of the kept frames, oldest first."""
-    return [frame.when for frame in self._frames]
-
-  def frame_at(self, when: int) -> Optional[bytes]:
-    for frame in self._frames:
-      if frame.when == when:
-        return frame.jpeg
-    return None
+    return self._store.times()
 
   async def async_frame_at(self, when: int) -> Optional[bytes]:
-    return self.frame_at(when)
+    await self._async_ready()
+    return await self._store.async_frame(when)
 
   async def async_stamped_frame(self, when: int) -> Optional[bytes]:
     """A frame with its time in the picture (Home Assistant's camera window)."""
     if when not in self._stamped:
-      jpeg = self.frame_at(when)
+      jpeg = await self.async_frame_at(when)
       if jpeg is None:
         return None
       self._stamped = {key: value for key, value in self._stamped.items() if key in self.times()}
@@ -464,18 +483,62 @@ class RainRadar:
   async def async_picture(self) -> Optional[bytes]:
     """The newest JPEG. A due refresh runs behind it; only the very first
     picture is waited for."""
+    await self._async_ready()
     self._refresh_if_due()
     task = self._task
-    if not self._frames and task is not None:
+    if not self._store.times() and task is not None:
       try:
         await asyncio.wait_for(asyncio.shield(task), FIRST_WAIT_S)
       except asyncio.TimeoutError:
         pass
-    return self._frames[-1].jpeg if self._frames else None
+    newest = self._store.newest
+    return await self._store.async_frame(newest.when) if newest else None
 
   def prepare(self) -> None:
     """Load ahead of being shown; nothing when the frames are fresh."""
     self._refresh_if_due()
+
+  # ---- Collecting while a panel uses the place ----
+
+  def start(self) -> None:
+    if self._run_task is None or self._run_task.done():
+      self._run_task = asyncio.get_running_loop().create_task(self._async_run())
+
+  async def async_stop(self) -> None:
+    """Back to loading only when somebody asks."""
+    task, self._run_task = self._run_task, None
+    if task is not None:
+      task.cancel()
+      try:
+        await task
+      except asyncio.CancelledError:
+        pass
+
+  async def async_remove_files(self) -> None:
+    for task in (self._fill_task, self._task):
+      if task is not None and not task.done():
+        task.cancel()
+    await self._store.async_remove_files()
+
+  async def _async_run(self) -> None:
+    await self._async_ready()
+    if self._store.times():
+      self._tell_listeners()
+    while True:
+      self._refresh_if_due()
+      await asyncio.sleep(DUE_CHECK_S)
+
+  # ---- Loading ----
+
+  async def _async_ready(self) -> None:
+    """The kept pictures read back; the place they show is known again."""
+    await self._store.async_load()
+    if self._view is None and self._store.series:
+      location = self._location()
+      if location is not None:
+        view = make_view(location[0], location[1])
+        if self._store.series.endswith("@" + place_key(view)):
+          self._view = view
 
   def _refresh_if_due(self) -> None:
     if self._task is not None and not self._task.done():
@@ -498,7 +561,12 @@ class RainRadar:
   def _all_sources(self) -> Tuple[Source, ...]:
     return tuple(self._first_sources()) + tuple(self._sources)
 
+  def _credit_of(self, source_id: str) -> str:
+    source = next((item for item in self._all_sources() if item.id == source_id), None)
+    return source.credit if source is not None else source_id
+
   async def _async_refresh(self) -> None:
+    await self._async_ready()
     location = self._location()
     self._failed = True
     if location is None:
@@ -526,52 +594,51 @@ class RainRadar:
     if not listing:
       _LOGGER.info("HomeTiles rain radar: source %s has no picture now", source.id)
       return False
+    key = series_key(source, view)
     newest, newest_url = listing[-1]
-    current = self.picture
-    same_series = current is not None and current.source == source.id and current.view == view
-    listed = {when for when, _url in listing}
-    kept = [frame for frame in self._frames if frame.when in listed] if same_series else []
-    if not kept or kept[-1].when != newest:
-      picture = await self._async_load(source, view, newest, newest_url)
-      if picture is None:
+    if self._store.series != key or self._store.tag_at(slot_of(newest)) is None:
+      jpeg = await self._async_render(source, view, newest_url)
+      if jpeg is None:
         _LOGGER.info("HomeTiles rain radar: source %s did not deliver its picture", source.id)
         return False
-      if not same_series:
+      # Another source or place starts its own pictures; the frames of the one
+      # before stay until this picture is there.
+      if await self._store.async_series(key):
         _LOGGER.info("HomeTiles rain radar: showing %s", source.id)
-      self._frames = kept + [picture]
+        self._stamped = {}
+      self._view = view
+      await self._store.async_put(newest, source.id, jpeg)
       self._tell_listeners()
-    elif len(kept) != len(self._frames):
-      self._frames = kept
-      self._tell_listeners()
+    self._view = view
+    oldest = self._clock() - KEEP_S
     have = set(self.times())
-    missing = [item for item in listing[:-1] if item[0] not in have]
+    missing = [item for item in listing[:-1] if slot_of(item[0]) not in have and item[0] >= oldest]
     if missing and (self._fill_task is None or self._fill_task.done()):
       # Behind the newest picture, so nobody waits for the whole history.
       self._fill_task = asyncio.get_running_loop().create_task(self._async_fill(source, view, missing))
     return True
 
-  async def _async_load(self, source: Source, view: View, when: int, url: str) -> Optional[Picture]:
+  async def _async_render(self, source: Source, view: View, url: str) -> Optional[bytes]:
     overlay = await self._fetch(url, IMAGE_MAX_BYTES)
     if not overlay:
       return None
     layers = await self._async_layers(view)
-    jpeg = await self._run_blocking(render_picture, layers, overlay, source.credit)
-    return Picture(jpeg, source.id, source.credit, when, view)
+    return await self._run_blocking(render_picture, layers, overlay, source.credit)
 
   async def _async_fill(self, source: Source, view: View, missing: List[Tuple[int, str]]) -> None:
     """The older frames, one after the other; the next refresh loads what failed."""
+    key = series_key(source, view)
     changed = False
     loaded = 0
     try:
       for when, url in reversed(missing):
-        current = self.picture
-        if current is None or current.source != source.id or current.view != view:
+        if self._store.series != key:
           return  # Another source or place took over meanwhile.
-        picture = await self._async_load(source, view, when, url)
-        current = self.picture
-        if picture is None or current is None or current.source != source.id or current.view != view:
+        jpeg = await self._async_render(source, view, url)
+        if jpeg is None or self._store.series != key:
           continue
-        self._frames = sorted(self._frames + [picture], key=lambda frame: frame.when)[-MAX_FRAMES:]
+        if not await self._store.async_put(when, source.id, jpeg):
+          continue
         changed = True
         loaded += 1
         # The time bar shows soon and grows, not only when all frames are there.

@@ -99,7 +99,8 @@ from .camera_sources import (
 from homeassistant.helpers import translation
 from .device_helpers import is_bridge_entry, panel_entries
 from .rain_radar import RainRadar, custom_source, is_rain_radar_unique_id
-from .webcam_source import SiteRefused, WebcamSource, url_allowed
+from .picture_store import FOLDER as PICTURE_FOLDER, OLD_FOLDER as OLD_PICTURE_FOLDER, move_old_folder
+from .webcam_source import Answer as WebcamAnswer, SiteRefused, WebcamSource, http_time, url_allowed
 from .binary_history import (
   BINARY_HISTORY_KIND,
   BINARY_HISTORY_RECORDER_MAX_CHANGES,
@@ -802,7 +803,8 @@ def _build_camera_sources(hass: HomeAssistant) -> SourceRegistry:
   one for all panels, so they share their pictures and their requests."""
   store: Store = Store(hass, 1, CAMERA_SOURCES_STORE_KEY)
 
-  async def get(url: str, limit: int, public: bool) -> Optional[bytes]:
+  async def get(url: str, limit: int, public: bool) -> Any:
+    """The answer's bytes; for a public address with the time its server gives it."""
     try:
       session = async_get_clientsession(hass)
       async with session.get(url, timeout=RAIN_RADAR_FETCH_TIMEOUT_S,
@@ -823,7 +825,10 @@ def _build_camera_sources(hass: HomeAssistant) -> SourceRegistry:
           if received > limit:
             _LOGGER.info("HomeTiles camera source: an answer above %d bytes was not loaded", limit)
             return None
-        return b"".join(chunks)
+        data = b"".join(chunks)
+        if public:
+          return WebcamAnswer(data, http_time(response.headers.get("Last-Modified")))
+        return data
     except SiteRefused:
       raise
     except Exception as err:  # pragma: no cover - network dependent
@@ -833,7 +838,7 @@ def _build_camera_sources(hass: HomeAssistant) -> SourceRegistry:
   async def fetch(url: str, limit: int) -> Optional[bytes]:
     return await get(url, limit, False)
 
-  async def fetch_public(url: str, limit: int) -> Optional[bytes]:
+  async def fetch_public(url: str, limit: int) -> Optional[WebcamAnswer]:
     return await get(url, limit, True)
 
   def format_time(when: int) -> str:
@@ -854,11 +859,13 @@ def _build_camera_sources(hass: HomeAssistant) -> SourceRegistry:
     return (custom_source(registry.radar_source),) if registry.radar_source else ()
 
   def make_source(spec: Dict[str, Any]) -> Any:
+    # Every Bridge camera keeps its pictures alike, each in its own folder.
+    directory = Path(hass.config.path(PICTURE_FOLDER, spec["id"]))
     if spec["kind"] == "webcam":
-      return WebcamSource(spec["url"], fetch=fetch_public, run_blocking=hass.async_add_executor_job,
-                          directory=Path(hass.config.path("hometiles_webcams", spec["id"])))
+      return WebcamSource(spec["url"], fetch=fetch_public, run_blocking=hass.async_add_executor_job, directory=directory)
     return RainRadar(fetch=fetch, location=lambda: location_of(spec), language=lambda: str(hass.config.language or "en"),
-                     format_time=format_time, run_blocking=hass.async_add_executor_job, first_sources=first_sources)
+                     format_time=format_time, run_blocking=hass.async_add_executor_job, directory=directory,
+                     first_sources=first_sources)
 
   def entity_name(spec: Dict[str, Any]) -> str:
     if spec["kind"] == "webcam":
@@ -927,6 +934,8 @@ async def async_setup(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
   # no publishes at all (link_mqtt.py).
   domain_data.setdefault(DATA_MQTT_ENTRIES, set())
   if DATA_CAMERA_SOURCES not in domain_data:
+    await hass.async_add_executor_job(move_old_folder, Path(hass.config.path(OLD_PICTURE_FOLDER)),
+                                      Path(hass.config.path(PICTURE_FOLDER)))
     domain_data[DATA_CAMERA_SOURCES] = _build_camera_sources(hass)
     await domain_data[DATA_CAMERA_SOURCES].async_load()
     domain_data["_rain_radar_word"] = await _async_rain_radar_word(hass)

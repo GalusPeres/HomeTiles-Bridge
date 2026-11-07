@@ -1,4 +1,5 @@
-"""The Bridge's own cameras: one entity per thing, the panels' declarations, webcams."""
+"""The Bridge's own cameras: one entity per thing, the panels' declarations, webcams,
+their pictures at fixed times and the portals' archives."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -21,6 +23,8 @@ _package.__path__ = [str(ROOT)]
 sys.modules.setdefault("hometiles_sources_pkg", _package)
 SOURCES = importlib.import_module("hometiles_sources_pkg.camera_sources")
 WEBCAM = importlib.import_module("hometiles_sources_pkg.webcam_source")
+STORE = importlib.import_module("hometiles_sources_pkg.picture_store")
+ARCHIVES = importlib.import_module("hometiles_sources_pkg.webcam_archives")
 
 
 def jpeg(color=(10, 20, 30), size=(640, 480)):
@@ -44,7 +48,7 @@ class Network:
 
 
 class Clock:
-  def __init__(self, now=1000000.0):
+  def __init__(self, now=999600.0):
     self.now = now
 
   def __call__(self):
@@ -88,8 +92,8 @@ class WebcamTests(unittest.IsolatedAsyncioTestCase):
     network = Network({"https://cam.example/x.jpg": jpeg()})
     cam = self.webcam(network, "https://cam.example/x.jpg")
     self.assertTrue(await cam.async_refresh())
-    self.assertEqual(cam.times(), [1000000])
-    self.assertTrue((await cam.async_frame_at(1000000)).startswith(b"\xff\xd8"))
+    self.assertEqual(cam.times(), [999600])
+    self.assertTrue((await cam.async_frame_at(999600)).startswith(b"\xff\xd8"))
     self.assertFalse(cam.failed)
 
   async def test_a_page_is_read_once_then_only_its_picture(self):
@@ -163,7 +167,7 @@ class WebcamTests(unittest.IsolatedAsyncioTestCase):
     network.answers["https://cam.example/x.jpg"] = jpeg((200, 0, 0))
     await cam.async_refresh()
     again = self.webcam(network, "https://cam.example/x.jpg")
-    again._load_index()
+    await again._store.async_load()
     self.assertEqual(len(again.times()), 2)
     self.assertTrue((await again.async_frame_at(first)).startswith(b"\xff\xd8"), "Read from the disk")
     self.clock.now += WEBCAM.KEEP_S + 1
@@ -179,6 +183,90 @@ class WebcamTests(unittest.IsolatedAsyncioTestCase):
     with Image.open(BytesIO(await cam.async_picture())) as image:
       self.assertEqual(max(image.size), WEBCAM.STORED_MAX_SIDE)
 
+  async def test_a_picture_has_the_time_its_site_gives_it_on_the_grid(self):
+    network = Network({"https://cam.example/x.jpg": WEBCAM.Answer(jpeg(), modified=999600 - 1800 + 22)})
+    cam = self.webcam(network, "https://cam.example/x.jpg")
+    await cam.async_refresh()
+    self.assertEqual(cam.times(), [999600 - 1800], "Last-Modified, on the 10-minute grid")
+    self.clock.now += 240
+    network.answers["https://cam.example/x.jpg"] = jpeg((200, 0, 0))
+    await cam.async_refresh()
+    self.assertEqual(cam.times(), [999600 - 1800, 999600], "Without a time: when it came, on the grid")
+
+  async def test_a_server_time_in_the_future_is_not_believed(self):
+    network = Network({"https://cam.example/x.jpg": WEBCAM.Answer(jpeg(), modified=999600 + 86400)})
+    cam = self.webcam(network, "https://cam.example/x.jpg")
+    await cam.async_refresh()
+    self.assertEqual(cam.times(), [999600])
+
+  async def test_two_pictures_in_one_slot_are_one_frame(self):
+    network = Network({"https://cam.example/x.jpg": jpeg()})
+    cam = self.webcam(network, "https://cam.example/x.jpg")
+    await cam.async_refresh()
+    self.clock.now += 120
+    network.answers["https://cam.example/x.jpg"] = jpeg((200, 0, 0))
+    await cam.async_refresh()
+    self.assertEqual(cam.times(), [999600])
+    self.assertEqual(len(list(self.directory.glob("*.jpg"))), 1)
+
+  async def test_the_same_picture_after_a_restart_is_not_kept_twice(self):
+    # User 2026-11-07: 9:52 and 9:54 showed the same picture after the Bridge's update.
+    network = Network({"https://cam.example/x.jpg": jpeg()})
+    cam = self.webcam(network, "https://cam.example/x.jpg")
+    await cam.async_refresh()
+    self.clock.now += 700
+    again = self.webcam(network, "https://cam.example/x.jpg")
+    await again.async_refresh()
+    self.assertEqual(again.times(), [999600])
+
+  async def test_older_betas_files_become_one_picture_per_slot(self):
+    self.directory.mkdir(parents=True)
+    for when, color in ((999600 + 120, (1, 2, 3)), (999600 + 240, (4, 5, 6)), (999600 + 700, (7, 8, 9))):
+      (self.directory / f"{when}_{when:016x}.jpg").write_bytes(jpeg(color))
+    cam = self.webcam(Network(), "https://cam.example/x.jpg")
+    await cam._store.async_load()
+    self.assertEqual(cam.times(), [999600, 1000200])
+    self.assertEqual(sorted(path.name.split("_")[0] for path in self.directory.glob("*.jpg")), ["1000200", "999600"])
+    with Image.open(BytesIO(await cam.async_frame_at(999600))) as image:
+      self.assertEqual(image.getpixel((5, 5))[0] // 2, 2, "The later of the two in a slot stays")
+
+  async def test_a_portal_with_an_archive_fills_the_last_day(self):
+    WEBCAM.ARCHIVE_PAUSE_S = 0
+    self.clock.now = 1793995800.0  # 2026-11-06 20:10 UTC, 21:10 in Innsbruck
+    page = "https://www.foto-webcam.eu/webcam/innsbruck/"
+    current = "https://www.foto-webcam.eu/webcam/innsbruck/current/1200.jpg"
+    network = Network({page: b"<meta property='og:image' content='" + current.encode() + b"'>",
+                       current: WEBCAM.Answer(jpeg(), modified=int(self.clock.now) + 22)})
+    archive = ARCHIVES.archive_for(page)
+    for index, (when, url) in enumerate(archive.addresses(self.clock.now - STORE.KEEP_S, self.clock.now)):
+      if index % 7 != 3:  # gaps, as at night
+        network.answers[url] = jpeg((index % 250, 0, 0))
+    cam = self.webcam(network, page)
+    told = []
+    cam.add_listener(lambda: told.append(len(cam.times())))
+    await cam.async_refresh()
+    self.assertEqual(cam.times(), [1793995800])
+    loaded = await cam.async_fill_from_archive()
+    self.assertGreater(loaded, 100)
+    self.assertLessEqual(len(cam.times()), STORE.MAX_FRAMES)
+    self.assertEqual(cam.times()[-1], 1793995800, "The current picture keeps its slot")
+    self.assertTrue(all(when % 600 == 0 for when in cam.times()))
+    self.assertGreaterEqual(cam.times()[0], self.clock.now - STORE.KEEP_S)
+    self.assertNotIn("https://www.foto-webcam.eu/webcam/innsbruck/2026/11/06/2110_lm.jpg",
+                     network.requests, "The current picture's slot is not asked again")
+    self.assertEqual(network.requests[2], "https://www.foto-webcam.eu/webcam/innsbruck/2026/11/06/2100_lm.jpg",
+                     "Newest first")
+    self.assertGreater(len(told), 5, "The time bar grows while the day comes in")
+    again = await cam.async_fill_from_archive()
+    self.assertEqual(again, 0)
+
+  async def test_any_other_webcam_has_no_archive(self):
+    network = Network({"https://cam.example/x.jpg": jpeg()})
+    cam = self.webcam(network, "https://cam.example/x.jpg")
+    await cam.async_refresh()
+    self.assertEqual(await cam.async_fill_from_archive(), 0)
+    self.assertEqual(network.requests, ["https://cam.example/x.jpg"])
+
   async def test_it_runs_until_it_is_stopped_and_can_remove_its_files(self):
     network = Network({"https://cam.example/x.jpg": jpeg()})
     cam = self.webcam(network, "https://cam.example/x.jpg")
@@ -187,6 +275,47 @@ class WebcamTests(unittest.IsolatedAsyncioTestCase):
     await cam.async_stop()
     await cam.async_remove_files()
     self.assertFalse(self.directory.exists())
+
+
+class ArchiveTests(unittest.TestCase):
+  def test_the_portals_are_known_by_their_page_or_picture(self):
+    for address in ("https://www.foto-webcam.eu/webcam/innsbruck/", "https://www.foto-webcam.eu/webcam/innsbruck/current/1200.jpg"):
+      self.assertEqual(ARCHIVES.archive_for(address).portal, "foto-webcam", address)
+    snow = ARCHIVES.archive_for("https://www.snow-online.com/webcam/grosser-arber-mountain-east-.htm",
+                                "https://cams.snow-online.de/images/ecu/content/c_webcam/grosser-arber-mountain-east-_n79474-23867-0_l.jpg")
+    self.assertEqual((snow.portal, snow.step_s), ("snow-online", 3600))
+    for other in ("https://www.snow-online.com/webcam/x.htm", "https://images.bergfex.at/webcams/?id=550&format=4",
+                  "https://cam.example/_n123-x.jpg", "https://www.foto-webcam.eu/", None):
+      self.assertIsNone(ARCHIVES.archive_for(other), other)
+
+  def test_addresses_in_central_european_time_newest_first(self):
+    foto = ARCHIVES.archive_for("https://www.foto-webcam.eu/webcam/innsbruck/")
+    winter = datetime(2026, 11, 7, 9, 10, tzinfo=timezone.utc).timestamp()
+    self.assertEqual(foto.addresses(winter - 600, winter + 300), [
+      (int(winter), "https://www.foto-webcam.eu/webcam/innsbruck/2026/11/07/1010_lm.jpg"),
+      (int(winter) - 600, "https://www.foto-webcam.eu/webcam/innsbruck/2026/11/07/1000_lm.jpg")])
+    summer = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc).timestamp()
+    self.assertEqual(foto.addresses(summer, summer)[0][1], "https://www.foto-webcam.eu/webcam/innsbruck/2026/07/01/1200_lm.jpg")
+    snow = ARCHIVES.archive_for("https://cams.snow-online.de/images/ecu/content/c_webcam/a_n79474-1-0_l.jpg")
+    morning = datetime(2026, 11, 7, 6, 0, tzinfo=timezone.utc).timestamp()
+    self.assertEqual(snow.addresses(morning, morning + 3599),
+                     [(int(morning), "https://archive.snow-online.de/79474/2026/11/07/07/archived_l.jpg")])
+    self.assertEqual(len(foto.addresses(winter - STORE.KEEP_S, winter)), 145)
+
+  def test_a_servers_time(self):
+    self.assertEqual(WEBCAM.http_time("Sat, 07 Nov 2026 09:10:22 GMT"),
+                     int(datetime(2026, 11, 7, 9, 10, 22, tzinfo=timezone.utc).timestamp()))
+    for bad in (None, "", "yesterday", "Sat, 99 Nov 2026 99:99:99 GMT"):
+      self.assertIsNone(WEBCAM.http_time(bad), bad)
+
+  def test_the_webcams_folder_of_earlier_betas_moves(self):
+    with tempfile.TemporaryDirectory() as folder:
+      old, new = Path(folder) / STORE.OLD_FOLDER, Path(folder) / STORE.FOLDER
+      (old / "ht_cam_a").mkdir(parents=True)
+      STORE.move_old_folder(old, new)
+      self.assertTrue((new / "ht_cam_a").is_dir())
+      self.assertFalse(old.exists())
+      STORE.move_old_folder(old, new)
 
 
 class DeclarationTests(unittest.TestCase):
@@ -289,6 +418,17 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
     self.registry.attach(self.entities.extend)
     self.assertEqual(self.entities, ["ht_radar_home"])
     self.assertEqual(self.registry.source_ids_of("nobody"), ["ht_radar_home"])
+    self.assertFalse(self.registry.source("ht_radar_home").running, "Without a panel it loads only when shown")
+
+  async def test_what_a_panel_uses_collects_by_itself(self):
+    self.registry.attach(self.entities.extend)
+    home = {"id": "ht_radar_home", "kind": "radar"}
+    await self.registry.async_set_panel("p1", [home, self.PLACE])
+    self.assertTrue(self.registry.source("ht_radar_home").running)
+    self.assertTrue(self.registry.source("ht_radar_4758_1217").running)
+    await self.registry.async_set_panel("p1", [self.PLACE])
+    self.assertFalse(self.registry.source("ht_radar_home").running, "No panel uses it any more")
+    self.assertIsNotNone(self.registry.source("ht_radar_home"), "The entity stays")
 
   async def test_one_entity_however_many_panels_use_a_thing(self):
     self.registry.attach(self.entities.extend)
@@ -460,6 +600,12 @@ class WiringTests(unittest.TestCase):
     self.assertIn("response_payload.update(frames_payload(history.times()))", self.source)
     self.assertIn('**frames_payload(history.times())', self.source)
     self.assertIn('parsed.get("box")', self.source)
+
+  def test_every_bridge_camera_keeps_its_pictures_in_one_folder(self):
+    self.assertIn("directory = Path(hass.config.path(PICTURE_FOLDER, spec[\"id\"]))", self.source)
+    self.assertIn("directory=directory, first_sources=first_sources", " ".join(self.source.split()))
+    self.assertIn("await hass.async_add_executor_job(move_old_folder,", self.source)
+    self.assertIn('WebcamAnswer(data, http_time(response.headers.get("Last-Modified")))', self.source)
 
   def test_a_removed_panel_is_forgotten(self):
     self.assertIn("await sources.async_forget_panel(str(entry_device_id(entry)))", self.source)

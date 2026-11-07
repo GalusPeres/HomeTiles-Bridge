@@ -237,9 +237,21 @@ class SourceRegistry:
         await remove_files()
       await self._remove_entity(source_id)
     self._sync_runtime()
+    # The home radar stays as an entity without a panel, and then loads only when
+    # somebody shows it.
+    declared = self._declared()
+    for source_id, source in self._sources.items():
+      if source_id not in declared:
+        stop = getattr(source, "async_stop", None)
+        if stop is not None:
+          await stop()
+
+  def _declared(self) -> set:
+    return {spec["id"] for specs in self._panels.values() for spec in specs}
 
   def _sync_runtime(self) -> None:
-    """A source and its entity for everything wanted that does not run yet."""
+    """A source and its entity for everything wanted that does not exist yet; what a
+    panel uses collects its pictures by itself, also while nobody looks."""
     if self._add_entities is None:
       return
     entities = []
@@ -250,10 +262,12 @@ class SourceRegistry:
       self._sources[source_id] = source
       self._specs[source_id] = spec
       source.add_listener(lambda sid=source_id: self._tell(sid))
-      start = getattr(source, "start", None)
-      if start is not None:
-        start()
       entities.append(self._make_entity(spec, source))
+    declared = self._declared()
+    for source_id, source in self._sources.items():
+      start = getattr(source, "start", None)
+      if source_id in declared and start is not None:
+        start()
     if entities:
       self._add_entities(entities)
 
