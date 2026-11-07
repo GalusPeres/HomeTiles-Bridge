@@ -86,11 +86,12 @@ CAMERA_STILL_RETRY_SECONDS: Final = 0.5
 CAMERA_PICK_POLL_SECONDS: Final = 0.02
 # A history sends a picture only when it changed: FFmpeg's output holds each frame
 # back and the feeder writes it twice, so every step of Play came out as two or three
-# JPEGs, the old one first. Unchanged, one now and then so the panel sees a live stream.
-CAMERA_HISTORY_KEEPALIVE_SECONDS: Final = 10.0
-# A history's frame is written twice, so FFmpeg holds nothing back: no repeats are
-# needed to push it out, only some for that sign of life.
-CAMERA_HISTORY_REPEAT_SECONDS: Final = 5.0
+# JPEGs, the old one first. Unchanged, one now and then: a panel that could not show
+# a frame right then (its presentation may skip one) gets it again soon.
+CAMERA_HISTORY_KEEPALIVE_SECONDS: Final = 2.0
+# A history's new frame is written twice, so FFmpeg holds nothing back: repeats are
+# only needed for that second chance.
+CAMERA_HISTORY_REPEAT_SECONDS: Final = 1.0
 # How often a camera is still asked while a frame of its history is shown.
 CAMERA_PICKED_REFRESH_SECONDS: Final = 30.0
 # A still camera's own shape within the panel's box (async_create_session).
@@ -1358,7 +1359,7 @@ class CameraStreamConnection:
     try:
       while process.returncode is None:
         process.stdin.write(frame)
-        if session.flush_next_frame or session.has_history:
+        if session.flush_next_frame:
           session.flush_next_frame = False
           process.stdin.write(frame)
         await process.stdin.drain()
@@ -1464,6 +1465,8 @@ class CameraStreamConnection:
         if new_frame is not None:
           frame = new_frame
           session.latest_image = frame
+          if session.has_history:
+            session.flush_next_frame = True
     except (BrokenPipeError, ConnectionResetError):
       pass
     finally:

@@ -28,6 +28,11 @@ from urllib.parse import urljoin, urlsplit
 
 _LOGGER = logging.getLogger(__name__)
 
+
+class SiteRefused(Exception):
+  """The site answered, and does not let the Bridge read this address (fetch raises it)."""
+
+
 # Bergfex's pictures say max-age=600.
 REFRESH_S = 600.0
 RETRY_S = 120.0
@@ -134,6 +139,7 @@ class WebcamSource:
     self._first = asyncio.Event()
     # True once this address showed it has no picture to offer.
     self.failed = False
+    self.refused = False
 
   # ---- What a camera needs (the rain radar offers the same) ----
 
@@ -224,6 +230,22 @@ class WebcamSource:
     return True
 
   async def _async_load_picture(self) -> Optional[bytes]:
+    """The picture, or None. A site that refuses is told apart: its picture's own
+    address may still work, and only the person who added it can find that."""
+    try:
+      data = await self._async_load_from_address()
+    except SiteRefused:
+      if not self.refused:
+        _LOGGER.info("HomeTiles webcam: %s does not let the Bridge read it", self.url)
+        self.refused = True
+        self._tell_listeners()
+      return None
+    if data is not None and self.refused:
+      self.refused = False
+      self._tell_listeners()
+    return data
+
+  async def _async_load_from_address(self) -> Optional[bytes]:
     now = self._clock()
     if self._picture_url and now - self._page_read_at < PAGE_READ_S:
       data = await self._fetch(self._picture_url, IMAGE_MAX_BYTES)

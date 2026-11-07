@@ -177,12 +177,16 @@ class SourceRegistry:
         prepare()
 
   def status_of(self, device_id: str) -> Dict[str, str]:
-    """"none" for an address without a picture, for the panel's Web Admin."""
+    """For the panel's Web Admin: "blocked" when a site refuses the Bridge, "none" for
+    an address without a picture."""
     result: Dict[str, str] = {}
     for spec in self._panels.get(device_id, []):
       if spec["kind"] == "webcam":
         source = self._sources.get(spec["id"])
-        result[spec["id"]] = "none" if source is not None and source.failed else "ok"
+        if source is not None and source.refused:
+          result[spec["id"]] = "blocked"
+        else:
+          result[spec["id"]] = "none" if source is not None and source.failed else "ok"
     return result
 
   async def async_set_panel(self, device_id: str, sources: List[Dict[str, Any]], radar_source: str = "") -> bool:

@@ -123,6 +123,29 @@ class WebcamTests(unittest.IsolatedAsyncioTestCase):
     self.assertFalse(await down.async_refresh())
     self.assertFalse(down.failed, "Not reached says nothing about the address")
 
+  async def test_a_site_that_refuses_is_told_apart_and_recovers(self):
+    calls = []
+    answer = {"data": None}
+
+    async def fetch(url, limit):
+      calls.append(url)
+      if answer["data"] is None:
+        raise WEBCAM.SiteRefused(url)
+      return answer["data"]
+
+    cam = self.webcam(Network())
+    cam._fetch = fetch
+    told = []
+    cam.add_listener(lambda: told.append(cam.refused))
+    self.assertFalse(await cam.async_refresh())
+    self.assertTrue(cam.refused)
+    self.assertFalse(cam.failed, "Refused says nothing about a picture on the page")
+    self.assertEqual(told, [True])
+    answer["data"] = jpeg()
+    self.assertTrue(await cam.async_refresh())
+    self.assertFalse(cam.refused)
+    self.assertTrue(cam.times())
+
   async def test_a_page_may_not_point_into_the_home_network(self):
     network = Network({"https://cam.example/page": b'<meta property="og:image" content="https://192.168.1.2/c.jpg">',
                        "https://192.168.1.2/c.jpg": jpeg()})
@@ -223,6 +246,7 @@ class FakeSource:
   def __init__(self, spec):
     self.spec = spec
     self.failed = False
+    self.refused = False
     self.running = False
     self.files_removed = False
     self.listener = None
@@ -308,6 +332,8 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.registry.status_of("p1"), {"ht_cam_a": "ok"})
     self.registry.source("ht_cam_a").failed = True
     self.assertEqual(self.registry.status_of("p1"), {"ht_cam_a": "none"})
+    self.registry.source("ht_cam_a").refused = True
+    self.assertEqual(self.registry.status_of("p1"), {"ht_cam_a": "blocked"}, "A site that refuses comes first")
 
   async def test_listeners_hear_which_source_changed(self):
     heard = []

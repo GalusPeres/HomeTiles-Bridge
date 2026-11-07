@@ -99,7 +99,7 @@ from .camera_sources import (
 from homeassistant.helpers import translation
 from .device_helpers import is_bridge_entry, panel_entries
 from .rain_radar import RainRadar, custom_source, is_rain_radar_unique_id
-from .webcam_source import WebcamSource, url_allowed
+from .webcam_source import SiteRefused, WebcamSource, url_allowed
 from .binary_history import (
   BINARY_HISTORY_KIND,
   BINARY_HISTORY_RECORDER_MAX_CHANGES,
@@ -810,6 +810,8 @@ def _build_camera_sources(hass: HomeAssistant) -> SourceRegistry:
         if public and not url_allowed(str(response.url)):
           _LOGGER.info("HomeTiles camera source: a redirect left the public internet at %s", url)
           return None
+        if public and response.status in (401, 403, 429):
+          raise SiteRefused(url)
         if response.status != 200:
           _LOGGER.debug("HomeTiles camera source: HTTP %s from %s", response.status, url)
           return None
@@ -822,6 +824,8 @@ def _build_camera_sources(hass: HomeAssistant) -> SourceRegistry:
             _LOGGER.info("HomeTiles camera source: an answer above %d bytes was not loaded", limit)
             return None
         return b"".join(chunks)
+    except SiteRefused:
+      raise
     except Exception as err:  # pragma: no cover - network dependent
       _LOGGER.debug("HomeTiles camera source: fetch failed (%s)", err)
       return None
