@@ -82,6 +82,8 @@ AUDIO_PROBE_TIMEOUT_SECONDS: Final = 15.0
 AUDIO_END_WAIT_SECONDS: Final = 30.0
 # FFmpeg reads only network inputs: a playlist cannot point it at local files.
 AUDIO_FFMPEG_PROTOCOLS: Final = "http,https,tcp,tls,crypto"
+# A local file the Bridge itself chose (a timer's own sound): files only.
+AUDIO_FFMPEG_FILE_PROTOCOLS: Final = "file"
 # A camera's stream source (Home Assistant's camera entity, not a service
 # call) may also be RTSP.
 AUDIO_FFMPEG_LIVE_PROTOCOLS: Final = "rtsp,rtsps,rtp,srtp,udp,tcp,tls,http,https,crypto"
@@ -113,11 +115,16 @@ def _live_input_options(url: str) -> list[str]:
 
 
 def ffmpeg_audio_command(binary: str, url: str, rate: int, start_ms: int = 0,
-                         live: bool = False) -> list[str]:
-    """FFmpeg reading url from start_ms and writing mono 16-bit PCM at rate."""
+                         live: bool = False, local: bool = False) -> list[str]:
+    """FFmpeg reading url from start_ms and writing mono 16-bit PCM at rate.
+
+    local: url is a file path the Bridge chose, never one from a service call.
+    """
     command = [binary, "-hide_banner", "-nostdin", "-nostats", "-loglevel", "info"]
     if live:
         command += _live_input_options(url)
+    elif local:
+        command += ["-protocol_whitelist", AUDIO_FFMPEG_FILE_PROTOCOLS]
     else:
         command += ["-protocol_whitelist", AUDIO_FFMPEG_PROTOCOLS]
     if start_ms > 0:
@@ -245,6 +252,8 @@ class AudioStreamSession:
     paused: bool = False
     # A camera's sound: no end of its own, kept short on the panel.
     live: bool = False
+    # A local file the Bridge chose (ffmpeg_audio_command).
+    local: bool = False
     # finish_device ended FFmpeg; the panel plays out what it has.
     finishing: bool = False
     # Set while the connection runs, so a stop ends it at once.
@@ -270,7 +279,8 @@ class AudioStreamManager:
         return get_ffmpeg_manager(self.hass).binary
 
     def create_session(self, device_id: str, url: str, rate: int,
-                       start_ms: int = 0, live: bool = False) -> AudioStreamSession:
+                       start_ms: int = 0, live: bool = False,
+                       local: bool = False) -> AudioStreamSession:
         """A new clip for the panel; its previous clip ends."""
         if rate not in AUDIO_RATES:
             raise ValueError("audio_invalid_rate")
@@ -284,6 +294,7 @@ class AudioStreamManager:
             start_ms=max(0, int(start_ms)),
             expires_at=time.monotonic() + AUDIO_SESSION_TTL_SECONDS,
             live=live,
+            local=local,
         )
         self._sessions[session.token] = session
         self._current[device_id] = session
@@ -420,7 +431,7 @@ class AudioStreamConnection:
         try:
             process = await asyncio.create_subprocess_exec(
                 *ffmpeg_audio_command(self._manager.binary(), session.url, session.rate,
-                                      session.start_ms, session.live),
+                                      session.start_ms, session.live, session.local),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
