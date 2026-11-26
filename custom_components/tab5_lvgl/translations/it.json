@@ -124,6 +124,7 @@
           "entities": "Configurazione delle entità (tutti i display)",
           "access_codes": "Codici per serrature e pannelli di allarme (tutti i display)",
           "energy": "Dashboard Energia (tutti i display)",
+          "voice": "Accesso vocale (questo display)",
           "security": "Sicurezza: {security}"
         }
       },
@@ -180,6 +181,18 @@
           "energy_electricity": "Elettricità",
           "energy_gas": "Gas",
           "energy_water": "Acqua"
+        }
+      },
+      "voice": {
+        "title": "Accesso vocale",
+        "description": "Cosa può usare l'assistente vocale di questo display tramite l'API LLM \"HomeTiles room control\". Seleziona solo questa API in un agente di conversazione, usalo in una pipeline con \"Preferisci gestire i comandi localmente\" disattivato e scegli quella pipeline per questo display. Nessuna selezione, nessun dispositivo. Serrature e allarmi sono solo letti.",
+        "data": {
+          "voice_control_areas": "Può controllare: aree",
+          "voice_control_labels": "Può controllare: etichette",
+          "voice_control_entities": "Può controllare: entità",
+          "voice_read_areas": "Può leggere: aree",
+          "voice_read_labels": "Può leggere: etichette",
+          "voice_read_entities": "Può leggere: entità"
         }
       },
       "security": {

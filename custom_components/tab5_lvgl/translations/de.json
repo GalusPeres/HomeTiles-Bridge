@@ -124,6 +124,7 @@
           "entities": "Entity-Konfiguration (alle Displays)",
           "access_codes": "Codes f\u00fcr Schl\u00f6sser und Alarmanlagen (alle Displays)",
           "energy": "Energie Dashboard (alle Displays)",
+          "voice": "Sprachzugriff (dieses Display)",
           "security": "Sicherheit: {security}"
         }
       },
@@ -180,6 +181,18 @@
           "energy_electricity": "Strom",
           "energy_gas": "Gas",
           "energy_water": "Wasser"
+        }
+      },
+      "voice": {
+        "title": "Sprachzugriff",
+        "description": "Was der Sprachassistent dieses Displays über die LLM-API \"HomeTiles room control\" nutzen darf. Hake in einem Konversationsagenten nur diese API an, nutze ihn in einer Pipeline mit ausgeschaltetem \"Befehle bevorzugt lokal verarbeiten\" und wähle diese Pipeline für dieses Display. Ohne Auswahl keine Geräte. Schlösser und Alarmanlagen werden nur gelesen.",
+        "data": {
+          "voice_control_areas": "Steuern: Bereiche",
+          "voice_control_labels": "Steuern: Labels",
+          "voice_control_entities": "Steuern: Entitäten",
+          "voice_read_areas": "Lesen: Bereiche",
+          "voice_read_labels": "Lesen: Labels",
+          "voice_read_entities": "Lesen: Entitäten"
         }
       },
       "security": {

@@ -124,6 +124,7 @@
           "entities": "Entitetskonfiguration (alla skärmar)",
           "access_codes": "Koder för lås och larmpaneler (alla skärmar)",
           "energy": "Energipanel (alla skärmar)",
+          "voice": "Röståtkomst (denna skärm)",
           "security": "Säkerhet: {security}"
         }
       },
@@ -180,6 +181,18 @@
           "energy_electricity": "El",
           "energy_gas": "Gas",
           "energy_water": "Vatten"
+        }
+      },
+      "voice": {
+        "title": "Röståtkomst",
+        "description": "Vad den här skärmens röstassistent får använda via LLM-API:t \"HomeTiles room control\". Markera bara det API:t i en konversationsagent, använd den i en pipeline med \"Föredra lokal hantering av kommandon\" av och välj den pipelinen för den här skärmen. Inget valt betyder inga enheter. Lås och larm läses bara.",
+        "data": {
+          "voice_control_areas": "Får styra: områden",
+          "voice_control_labels": "Får styra: etiketter",
+          "voice_control_entities": "Får styra: entiteter",
+          "voice_read_areas": "Får läsa: områden",
+          "voice_read_labels": "Får läsa: etiketter",
+          "voice_read_entities": "Får läsa: entiteter"
         }
       },
       "security": {

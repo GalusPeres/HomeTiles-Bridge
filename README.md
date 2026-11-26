@@ -121,6 +121,17 @@ The Camera popup shows a time bar once there are two pictures: press Play or dra
 
 The map is drawn from Natural Earth (public domain), the names use the Inter font (SIL Open Font License, `rain_radar_font.LICENSE.txt`). `tools/build_rain_radar_map.py` builds the data files.
 
+### Voice access per display
+
+Home Assistant decides with one exposure list which entities Assist may reach, for every voice device alike. The Bridge adds the LLM API **HomeTiles room control**, which gives each display its own lists instead:
+
+1. **Configure → Voice access (this display)**: choose what the display's voice assistant may **control** and what it may only **read**, each by areas, labels and single entities. Nothing selected means no devices. Areas and labels leave out hidden, config and diagnostic entities; pick those one by one. Locks and alarm panels are only read.
+2. Add a conversation agent with an LLM (Ollama, OpenAI, Anthropic, ...) and tick only **HomeTiles room control** under *Control Home Assistant*.
+3. Make an Assist pipeline with that agent and **Prefer handling commands locally** switched off; Home Assistant's own command handling can reach every exposed entity.
+4. Pick that pipeline in the display's **Assistant** select.
+
+The API knows which display speaks and checks every request against that display's lists before it calls a fixed set of services (on/off, light brightness and color, cover position, thermostat, media, fan speed, scenes, scripts and buttons). Timers keep working on the display that started them; a timer cannot carry a command to run when it ends. A request that does not come from a display, such as typed chat, gets no devices.
+
 ## MQTT Topics
 
 The integration and the display exchange these topics over MQTT, or, for a display on the direct link (HomeTiles v0.9.0 or newer), with the same topics over the display's own connection to the Bridge (TCP port 8140, or up to 8147 when it is taken):
