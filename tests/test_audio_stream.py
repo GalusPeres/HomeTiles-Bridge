@@ -61,7 +61,7 @@ FAILING_FFMPEG = textwrap.dedent("""
 
 
 def fake_command(script, *args):
-    def command(binary, url, rate, start_ms=0, live=False):
+    def command(binary, url, rate, start_ms=0, live=False, local=False):
         return [sys.executable, "-c", script, *map(str, args)]
     return command
 
@@ -108,6 +108,10 @@ class ContractTest(unittest.TestCase):
         # A clip from a service call never reads RTSP.
         clip = AUDIO.ffmpeg_audio_command("ffmpeg", rtsp, 22050)
         self.assertNotIn("rtsp", clip[clip.index("-protocol_whitelist") + 1].split(","))
+        # A timer's own sound file: local files only, nothing from the network.
+        own = AUDIO.ffmpeg_audio_command("ffmpeg", "/config/hometiles/sounds/a.mp3", 44100, local=True)
+        self.assertEqual(own[own.index("-protocol_whitelist") + 1], "file")
+        self.assertEqual(own[own.index("-i") + 1], "/config/hometiles/sounds/a.mp3")
         probe = AUDIO.ffmpeg_probe_command("ffmpeg", rtsp)
         self.assertEqual(probe[-5:], ["-t", "0", "-f", "null", "-"])
 

@@ -124,6 +124,7 @@
           "entities": "Entity configuration (all displays)",
           "access_codes": "Codes for locks and alarm panels (all displays)",
           "energy": "Energy Dashboard (all displays)",
+          "voice": "Voice access (this display)",
           "security": "Security: {security}"
         }
       },
@@ -180,6 +181,18 @@
           "energy_electricity": "Electricity",
           "energy_gas": "Gas",
           "energy_water": "Water"
+        }
+      },
+      "voice": {
+        "title": "Voice access",
+        "description": "What this display's voice assistant may use through the LLM API \"HomeTiles room control\". Tick only that API in a conversation agent, use it in a pipeline with \"Prefer handling commands locally\" off, and pick that pipeline for this display. Nothing selected means no devices. Locks and alarm panels are only read.",
+        "data": {
+          "voice_control_areas": "Can control: areas",
+          "voice_control_labels": "Can control: labels",
+          "voice_control_entities": "Can control: entities",
+          "voice_read_areas": "Can read: areas",
+          "voice_read_labels": "Can read: labels",
+          "voice_read_entities": "Can read: entities"
         }
       },
       "security": {
@@ -270,6 +283,17 @@
           "aggressive": "Aggressive",
           "relaxed": "Relaxed"
         }
+      },
+      "timer_sound": {
+        "name": "Timer sound",
+        "state": {
+          "rising_three": "Rising three",
+          "kitchen_beep": "Kitchen beep",
+          "soft_bell": "Soft bell",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "Off"
+        }
       }
     },
     "switch": {
@@ -308,6 +332,9 @@
     "number": {
       "display_brightness": {
         "name": "Display Brightness"
+      },
+      "timer_volume": {
+        "name": "Timer volume"
       }
     },
     "sensor": {

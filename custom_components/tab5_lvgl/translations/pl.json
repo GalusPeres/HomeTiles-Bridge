@@ -124,6 +124,7 @@
           "entities": "Konfiguracja encji (wszystkie wy\u015bwietlacze)",
           "access_codes": "Kody do zamk\u00f3w i central alarmowych (wszystkie wy\u015bwietlacze)",
           "energy": "Pulpit energii (wszystkie wy\u015bwietlacze)",
+          "voice": "Dostęp głosowy (ten wyświetlacz)",
           "security": "Bezpiecze\u0144stwo: {security}"
         }
       },
@@ -180,6 +181,18 @@
           "energy_electricity": "Pr\u0105d",
           "energy_gas": "Gaz",
           "energy_water": "Woda"
+        }
+      },
+      "voice": {
+        "title": "Dostęp głosowy",
+        "description": "Czego asystent głosowy tego wyświetlacza może używać przez API LLM \"HomeTiles room control\". Zaznacz tylko to API w agencie konwersacji, użyj go w potoku z wyłączonym \"Preferuj lokalną obsługę poleceń\" i wybierz ten potok dla tego wyświetlacza. Brak wyboru oznacza brak urządzeń. Zamki i alarmy są tylko odczytywane.",
+        "data": {
+          "voice_control_areas": "Może sterować: obszary",
+          "voice_control_labels": "Może sterować: etykiety",
+          "voice_control_entities": "Może sterować: encje",
+          "voice_read_areas": "Może odczytywać: obszary",
+          "voice_read_labels": "Może odczytywać: etykiety",
+          "voice_read_entities": "Może odczytywać: encje"
         }
       },
       "security": {
@@ -270,6 +283,17 @@
           "aggressive": "Agresywny",
           "relaxed": "Swobodny"
         }
+      },
+      "timer_sound": {
+        "name": "D\u017awi\u0119k minutnika",
+        "state": {
+          "rising_three": "Trzy rosn\u0105ce",
+          "kitchen_beep": "Kuchenny sygna\u0142",
+          "soft_bell": "Delikatny dzwonek",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "Wy\u0142\u0105czony"
+        }
       }
     },
     "switch": {
@@ -308,6 +332,9 @@
     "number": {
       "display_brightness": {
         "name": "Jasno\u015b\u0107 wy\u015bwietlacza"
+      },
+      "timer_volume": {
+        "name": "G\u0142o\u015bno\u015b\u0107 minutnika"
       }
     },
     "sensor": {

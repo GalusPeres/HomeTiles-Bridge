@@ -33,6 +33,7 @@ from .control_helpers import ACTION_DOMAINS, SWITCH_DOMAINS, build_action_map, e
 from .editable_helpers import (EDITABLE_LISTS, EDITABLE_DOMAINS, NUMBER_DOMAINS, SELECT_DOMAINS, DATETIME_DOMAINS, editable_selection, domain_of, build_editable_payload, build_editable_service_call, add_number_history, MAX_CONTROL_BYTES)
 from .camera_sources import BRIDGE_DEVICE_ID
 from .device_helpers import BRIDGE_ENTRY_KEY, is_bridge_entry, panel_entries
+from .voice_scope import VOICE_KEYS
 from .const import (
   CONF_NUMBERS, CONF_SELECTS, CONF_DATETIMES,
   CONF_ACCESS_CODES,
@@ -863,7 +864,7 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
   async def async_step_init(self, user_input: Dict[str, Any] | None = None):
     return self.async_show_menu(
       step_id="init",
-      menu_options=["panel", "entities", "access_codes", "energy", "security"],
+      menu_options=["panel", "entities", "access_codes", "energy", "voice", "security"],
       description_placeholders={"security": _security_state(self.hass, self.config_entry)},
     )
 
@@ -1115,6 +1116,34 @@ class Tab5OptionsFlowHandler(config_entries.OptionsFlow):
         vol.Optional(CONF_ENERGY_WATER, default=defaults.get(CONF_ENERGY_WATER, False)): bool,
       }),
     )
+
+
+  # ---- Voice access of this panel (voice_scope.py, voice_api.py) ----
+
+  async def async_step_voice(self, user_input: Dict[str, Any] | None = None):
+    current = dict(self.config_entry.data)
+
+    if user_input is not None:
+      updated = dict(current)
+      for key in VOICE_KEYS:
+        values = [item for item in (user_input.get(key) or []) if isinstance(item, str) and item]
+        if values:
+          updated[key] = values
+        else:
+          updated.pop(key, None)
+      self.hass.config_entries.async_update_entry(self.config_entry, data=updated)
+      return self.async_create_entry(title="", data={})
+
+    def field(key: str, chooser: Any) -> Any:
+      return vol.Optional(key, default=list(current.get(key) or [])), chooser
+
+    areas = selector.AreaSelector(selector.AreaSelectorConfig(multiple=True))
+    labels = selector.LabelSelector(selector.LabelSelectorConfig(multiple=True))
+    entities = selector.EntitySelector(selector.EntitySelectorConfig(multiple=True))
+    schema = dict(
+      field(key, chooser) for key, chooser in zip(VOICE_KEYS, (areas, labels, entities, areas, labels, entities))
+    )
+    return self.async_show_form(step_id="voice", data_schema=vol.Schema(schema))
 
 
 # ---------------------------------------------------------------------------

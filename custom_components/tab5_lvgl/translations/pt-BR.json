@@ -124,6 +124,7 @@
           "entities": "Configuração de entidades (todas as telas)",
           "access_codes": "Códigos para fechaduras e painéis de alarme (todas as telas)",
           "energy": "Painel de energia (todas as telas)",
+          "voice": "Acesso por voz (esta tela)",
           "security": "Segurança: {security}"
         }
       },
@@ -180,6 +181,18 @@
           "energy_electricity": "Eletricidade",
           "energy_gas": "Gás",
           "energy_water": "Água"
+        }
+      },
+      "voice": {
+        "title": "Acesso por voz",
+        "description": "O que o assistente de voz desta tela pode usar pela API LLM \"HomeTiles room control\". Marque apenas essa API em um agente de conversa, use-o em um pipeline com \"Preferir lidar com comandos localmente\" desligado e escolha esse pipeline para esta tela. Sem seleção, nenhum dispositivo. Fechaduras e alarmes são apenas lidos.",
+        "data": {
+          "voice_control_areas": "Pode controlar: áreas",
+          "voice_control_labels": "Pode controlar: etiquetas",
+          "voice_control_entities": "Pode controlar: entidades",
+          "voice_read_areas": "Pode ler: áreas",
+          "voice_read_labels": "Pode ler: etiquetas",
+          "voice_read_entities": "Pode ler: entidades"
         }
       },
       "security": {
@@ -270,6 +283,17 @@
           "aggressive": "Agressivo",
           "relaxed": "Relaxado"
         }
+      },
+      "timer_sound": {
+        "name": "Som do timer",
+        "state": {
+          "rising_three": "Três ascendentes",
+          "kitchen_beep": "Bipe de cozinha",
+          "soft_bell": "Sino suave",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "Desligado"
+        }
       }
     },
     "switch": {
@@ -308,6 +332,9 @@
     "number": {
       "display_brightness": {
         "name": "Brilho da tela"
+      },
+      "timer_volume": {
+        "name": "Volume do timer"
       }
     },
     "sensor": {

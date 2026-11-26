@@ -124,6 +124,7 @@
           "entities": "Configuration des entit\u00e9s (tous les \u00e9crans)",
           "access_codes": "Codes des serrures et des alarmes (tous les \u00e9crans)",
           "energy": "Tableau de bord \u00c9nergie (tous les \u00e9crans)",
+          "voice": "Accès vocal (cet écran)",
           "security": "S\u00e9curit\u00e9 : {security}"
         }
       },
@@ -180,6 +181,18 @@
           "energy_electricity": "\u00c9lectricit\u00e9",
           "energy_gas": "Gaz",
           "energy_water": "Eau"
+        }
+      },
+      "voice": {
+        "title": "Accès vocal",
+        "description": "Ce que l'assistant vocal de cet écran peut utiliser via l'API LLM \"HomeTiles room control\". Cochez uniquement cette API dans un agent de conversation, utilisez-le dans un pipeline avec \"Préférer le traitement local des commandes\" désactivé et choisissez ce pipeline pour cet écran. Sans sélection, aucun appareil. Serrures et alarmes sont seulement lues.",
+        "data": {
+          "voice_control_areas": "Peut contrôler : pièces",
+          "voice_control_labels": "Peut contrôler : étiquettes",
+          "voice_control_entities": "Peut contrôler : entités",
+          "voice_read_areas": "Peut lire : pièces",
+          "voice_read_labels": "Peut lire : étiquettes",
+          "voice_read_entities": "Peut lire : entités"
         }
       },
       "security": {
@@ -270,6 +283,17 @@
           "aggressive": "Agressif",
           "relaxed": "Détendu"
         }
+      },
+      "timer_sound": {
+        "name": "Son du minuteur",
+        "state": {
+          "rising_three": "Trois montantes",
+          "kitchen_beep": "Bip de cuisine",
+          "soft_bell": "Cloche douce",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "D\u00e9sactiv\u00e9"
+        }
       }
     },
     "switch": {
@@ -308,6 +332,9 @@
     "number": {
       "display_brightness": {
         "name": "Luminosit\u00e9 de l'\u00e9cran"
+      },
+      "timer_volume": {
+        "name": "Volume du minuteur"
       }
     },
     "sensor": {

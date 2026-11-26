@@ -124,6 +124,7 @@
           "entities": "Entiteitsconfiguratie (alle schermen)",
           "access_codes": "Codes voor sloten en alarmpanelen (alle schermen)",
           "energy": "Energiedashboard (alle schermen)",
+          "voice": "Spraaktoegang (dit scherm)",
           "security": "Beveiliging: {security}"
         }
       },
@@ -180,6 +181,18 @@
           "energy_electricity": "Elektriciteit",
           "energy_gas": "Gas",
           "energy_water": "Water"
+        }
+      },
+      "voice": {
+        "title": "Spraaktoegang",
+        "description": "Wat de spraakassistent van dit scherm mag gebruiken via de LLM-API \"HomeTiles room control\". Vink alleen die API aan in een gespreksagent, gebruik die in een pijplijn met \"Opdrachten bij voorkeur lokaal afhandelen\" uit en kies die pijplijn voor dit scherm. Niets gekozen betekent geen apparaten. Sloten en alarmpanelen worden alleen gelezen.",
+        "data": {
+          "voice_control_areas": "Mag bedienen: ruimtes",
+          "voice_control_labels": "Mag bedienen: labels",
+          "voice_control_entities": "Mag bedienen: entiteiten",
+          "voice_read_areas": "Mag lezen: ruimtes",
+          "voice_read_labels": "Mag lezen: labels",
+          "voice_read_entities": "Mag lezen: entiteiten"
         }
       },
       "security": {
@@ -270,6 +283,17 @@
           "aggressive": "Agressief",
           "relaxed": "Ontspannen"
         }
+      },
+      "timer_sound": {
+        "name": "Timergeluid",
+        "state": {
+          "rising_three": "Drie oplopend",
+          "kitchen_beep": "Keukenpiep",
+          "soft_bell": "Zachte bel",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "Uit"
+        }
       }
     },
     "switch": {
@@ -308,6 +332,9 @@
     "number": {
       "display_brightness": {
         "name": "Schermhelderheid"
+      },
+      "timer_volume": {
+        "name": "Timervolume"
       }
     },
     "sensor": {

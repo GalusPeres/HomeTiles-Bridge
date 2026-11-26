@@ -124,6 +124,7 @@
           "entities": "Configuración de entidades (todas las pantallas)",
           "access_codes": "Códigos de cerraduras y paneles de alarma (todas las pantallas)",
           "energy": "Panel de energía (todas las pantallas)",
+          "voice": "Acceso por voz (esta pantalla)",
           "security": "Seguridad: {security}"
         }
       },
@@ -180,6 +181,18 @@
           "energy_electricity": "Electricidad",
           "energy_gas": "Gas",
           "energy_water": "Agua"
+        }
+      },
+      "voice": {
+        "title": "Acceso por voz",
+        "description": "Lo que el asistente de voz de esta pantalla puede usar a través de la API LLM \"HomeTiles room control\". Marca solo esa API en un agente de conversación, úsalo en una canalización con \"Preferir gestionar comandos localmente\" desactivado y elige esa canalización para esta pantalla. Sin selección, ningún dispositivo. Cerraduras y alarmas solo se leen.",
+        "data": {
+          "voice_control_areas": "Puede controlar: áreas",
+          "voice_control_labels": "Puede controlar: etiquetas",
+          "voice_control_entities": "Puede controlar: entidades",
+          "voice_read_areas": "Puede leer: áreas",
+          "voice_read_labels": "Puede leer: etiquetas",
+          "voice_read_entities": "Puede leer: entidades"
         }
       },
       "security": {
@@ -270,6 +283,17 @@
           "aggressive": "Agresivo",
           "relaxed": "Relajado"
         }
+      },
+      "timer_sound": {
+        "name": "Sonido del temporizador",
+        "state": {
+          "rising_three": "Tres ascendentes",
+          "kitchen_beep": "Pitido de cocina",
+          "soft_bell": "Campana suave",
+          "marimba": "Marimba",
+          "westminster": "Westminster",
+          "off": "Apagado"
+        }
       }
     },
     "switch": {
@@ -308,6 +332,9 @@
     "number": {
       "display_brightness": {
         "name": "Brillo de la pantalla"
+      },
+      "timer_volume": {
+        "name": "Volumen del temporizador"
       }
     },
     "sensor": {
