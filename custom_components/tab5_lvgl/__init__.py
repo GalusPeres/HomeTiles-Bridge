@@ -2519,6 +2519,13 @@ class Tab5Bridge:
     async with self._config_publish_lock:
       self._refresh_runtime_entity_lists()
       await entity_icons.async_load_entity_icons(self.hass, self.tracked_entities)
+      # Every wait comes before the entities' values are read: from here to
+      # the publish nothing pauses, so a state published meanwhile never
+      # reaches the panel before an older value of this configuration, which
+      # the panel would keep (a temperature tile kept a superseded value for
+      # days while the configuration waited for the Energy dashboard).
+      energy_cats = self._energy_categories()
+      energy_entries = await self._build_energy_meta(energy_cats) if energy_cats else []
       config_data: dict[str, Any] = {
           "device_id": self.device_id,
           "base_topic": self.base_topic,
@@ -2575,11 +2582,8 @@ class Tab5Bridge:
           # refresh every minute, only after a reconnect or a lost message.
           "push": 1,
       }
-      energy_cats = self._energy_categories()
-      if energy_cats:
-        energy_entries = await self._build_energy_meta(energy_cats)
-        if energy_entries:
-          config_data["energy"] = energy_entries
+      if energy_entries:
+        config_data["energy"] = energy_entries
       # What this configuration says about each entity; _handle_state_event()
       # republishes it when a later state differs.
       for entity_id in self.tracked_entities:
